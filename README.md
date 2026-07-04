@@ -45,17 +45,23 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 ## 快速开始
 
+查看所有常用维护命令：
+
+```bash
+make help
+```
+
 本地构建：
 
 ```bash
-cargo build
+make build
 target/debug/rainy --help
 ```
 
 本地安装到 Cargo bin：
 
 ```bash
-cargo install --path crates/rainy-cli
+make install
 rainy --help
 ```
 
@@ -95,6 +101,51 @@ Agent 或 CI 使用 JSON 输出：
 rainy capability list --json
 rainy add capability minio-file-storage --provider minio --dry-run --json
 rainy doctor --json
+```
+
+## Makefile 管理命令
+
+仓库提供了 `Makefile` 作为常用管理入口：
+
+```bash
+make help          # 查看所有目标
+make build         # 构建 debug binary
+make release       # 构建 release binary
+make install       # cargo install --path crates/rainy-cli
+make uninstall     # cargo uninstall rainy-cli
+make fmt           # 格式化 Rust 代码
+make fmt-check     # 检查格式
+make test          # 运行 workspace tests
+make e2e           # 只运行 E2E tests
+make clippy        # clippy 严格检查
+make check         # fmt-check + test + clippy
+make ci            # 本地完整 CI smoke
+make schema-check  # 检查 schemas/*.schema.json 可解析
+make conformance   # 检查 community-packs conformance
+make mcp-check     # 编译检查 MCP Python wrapper
+make smoke         # JSON smoke commands
+```
+
+Demo 项目管理：
+
+```bash
+make demo-dry-run      # 预览创建 demo-saas，不写文件
+make demo              # 创建 demo-saas
+make demo-add-plan     # 在 demo-saas 中生成能力 plan
+make demo-add-dry-run  # 预览添加 MinIO 能力
+make demo-add-apply    # 真正添加 MinIO 能力
+make demo-doctor       # 运行 doctor
+make demo-verify       # 运行 verify
+make demo-evidence     # 生成 evidence
+make clean-demo        # 删除 demo-saas
+```
+
+常用变量可以覆盖：
+
+```bash
+make demo PROJECT=my-app PACKAGE=com.example.app
+make demo-add-apply PROJECT=my-app CAPABILITY=redis PROVIDER=local
+make demo-verify PROJECT=my-app PROFILE=ci
 ```
 
 ## 常用命令
@@ -225,18 +276,15 @@ Rainy 的核心使用方式是“先计划，再应用”：
 本地提交前建议运行：
 
 ```bash
-cargo fmt --check
-cargo test --workspace
-cargo clippy --all-targets --all-features -- -D warnings
+make check
 ```
 
 额外 smoke：
 
 ```bash
-cargo run -q --bin rainy -- capability list --json
-cargo run -q --bin rainy -- new demo-saas --golden-path spring-nextjs-saas --dry-run --json
-cargo run -q --bin rainy -- conformance check --path community-packs --json
-python3 -m py_compile integrations/mcp/rainy_mcp.py
+make smoke
+make schema-check
+make mcp-check
 ```
 
 ## 扩展文档
