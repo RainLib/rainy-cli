@@ -1,0 +1,24 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: devcontainer
+name: Dev Container
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Renders a devcontainer config for local full-stack development.
+dependsOn:
+  - docker-compose-local
+providers: []
+inputs: {}
+actions:
+  install:
+    - id: render-devcontainer
+      uses: template.render
+      with:
+        template: templates/devcontainer
+        target: .devcontainer
+validations: []
+doctor:
+  checks: []
+agentRules:
+  - Prefer the devcontainer for reproducing local development issues.

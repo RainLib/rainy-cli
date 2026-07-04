@@ -1,0 +1,49 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: oidc-keycloak
+name: OIDC Keycloak
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Adds OAuth2 resource server dependency, issuer config, and a local Keycloak service.
+dependsOn:
+  - spring-boot-web
+  - docker-compose-local
+providers:
+  - id: keycloak
+    default: true
+inputs:
+  realm:
+    type: string
+    default: demo
+actions:
+  install:
+    - id: add-oauth2-resource-server
+      uses: maven.addDependency
+      with:
+        modulePath: "{{ paths.backend }}"
+        groupId: org.springframework.boot
+        artifactId: spring-boot-starter-oauth2-resource-server
+        version: "${spring-boot.version}"
+    - id: merge-oidc-config
+      uses: yaml.merge
+      with:
+        file: "{{ paths.backend }}/src/main/resources/application.yml"
+        patch:
+          spring:
+            security:
+              oauth2:
+                resourceserver:
+                  jwt:
+                    issuer-uri: "http://localhost:8081/realms/{{ inputs.realm }}"
+    - id: add-compose-service
+      uses: dockerCompose.addService
+      with:
+        file: compose.yaml
+        serviceName: keycloak
+        template: templates/compose/keycloak-service.yaml.hbs
+validations: []
+doctor:
+  checks: []
+agentRules:
+  - Prefer this capability before manually wiring OIDC.

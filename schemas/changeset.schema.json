@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/changeset.schema.json",
+  "title": "Rainy ChangeSet",
+  "type": "object",
+  "required": ["changes"],
+  "properties": {
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "summary"],
+        "properties": {
+          "kind": { "enum": ["create-file", "modify-file", "delete-file"] },
+          "path": { "type": "string" },
+          "before": { "type": ["string", "null"] },
+          "after": { "type": ["string", "null"] },
+          "summary": { "type": "string" },
+          "noop": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

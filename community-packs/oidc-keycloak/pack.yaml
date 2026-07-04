@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: oidc-keycloak
+  version: 0.1.0
+  owner: rainy-community
+  description: Add local Keycloak OIDC support.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/oidc-keycloak.yaml
+  validators: []
+  skills: []

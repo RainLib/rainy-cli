@@ -1,0 +1,46 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: opentelemetry
+name: OpenTelemetry
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Adds basic tracing dependencies and management config.
+dependsOn:
+  - spring-boot-web
+providers: []
+inputs: {}
+actions:
+  install:
+    - id: add-actuator
+      uses: maven.addDependency
+      with:
+        modulePath: "{{ paths.backend }}"
+        groupId: org.springframework.boot
+        artifactId: spring-boot-starter-actuator
+        version: "${spring-boot.version}"
+    - id: add-otel-bridge
+      uses: maven.addDependency
+      with:
+        modulePath: "{{ paths.backend }}"
+        groupId: io.micrometer
+        artifactId: micrometer-tracing-bridge-otel
+        version: "1.3.0"
+    - id: merge-tracing-config
+      uses: yaml.merge
+      with:
+        file: "{{ paths.backend }}/src/main/resources/application.yml"
+        patch:
+          management:
+            tracing:
+              sampling:
+                probability: 1.0
+            endpoints:
+              web:
+                exposure:
+                  include: health,info,prometheus
+validations: []
+doctor:
+  checks: []
+agentRules:
+  - Keep traces free of secrets and direct personal data.

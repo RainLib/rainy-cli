@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --workspace
+      - name: E2E
+        run: cargo test --workspace --test e2e
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Capability JSON smoke
+        run: cargo run -q --bin rainy -- capability list --json
+      - name: Golden Path dry-run JSON smoke
+        run: cargo run -q --bin rainy -- new demo-saas --golden-path spring-nextjs-saas --dry-run --json
+      - name: Pack conformance
+        run: cargo run -q --bin rainy -- conformance check --path community-packs --json

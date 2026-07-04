@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/evidence.schema.json",
+  "title": "Rainy Evidence Report",
+  "type": "object",
+  "required": ["protocolVersion", "summary", "status", "project", "capabilities", "changes", "doctor", "verify", "risks"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.evidence.v1" },
+    "summary": { "type": "string" },
+    "status": { "enum": ["passed", "warning", "failed"] },
+    "project": { "type": "string" },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["capability", "description", "artifacts"],
+        "properties": {
+          "capability": { "type": "string" },
+          "description": { "type": "string" },
+          "artifacts": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "doctor": { "$ref": "doctor-report.schema.json" },
+    "verify": { "$ref": "verify-report.schema.json" },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,54 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: postgres
+name: PostgreSQL
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Adds PostgreSQL JDBC dependency, datasource config, and a local Compose service.
+dependsOn:
+  - spring-boot-web
+  - docker-compose-local
+providers:
+  - id: postgres
+    default: true
+inputs:
+  database:
+    type: string
+    default: demo
+  username:
+    type: string
+    default: demo
+  password:
+    type: string
+    default: demo
+actions:
+  install:
+    - id: add-postgres-driver
+      uses: maven.addDependency
+      with:
+        modulePath: "{{ paths.backend }}"
+        groupId: org.postgresql
+        artifactId: postgresql
+        version: "42.7.3"
+    - id: merge-datasource
+      uses: yaml.merge
+      with:
+        file: "{{ paths.backend }}/src/main/resources/application.yml"
+        patch:
+          spring:
+            datasource:
+              url: "jdbc:postgresql://localhost:5432/{{ inputs.database }}"
+              username: "{{ inputs.username }}"
+              password: "{{ inputs.password }}"
+    - id: add-compose-service
+      uses: dockerCompose.addService
+      with:
+        file: compose.yaml
+        serviceName: postgres
+        template: templates/compose/postgres-service.yaml.hbs
+validations: []
+doctor:
+  checks: []
+agentRules:
+  - Prefer this capability before manually configuring PostgreSQL.

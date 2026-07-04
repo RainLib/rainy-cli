@@ -1,0 +1,52 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: rainy-spring-nextjs-saas
+  title: Rainy Spring + Next.js SaaS
+  description: Create a Rainy Golden Path project and optionally add file storage.
+spec:
+  owner: platform-team
+  type: service
+  parameters:
+    - title: Project
+      required:
+        - name
+        - packageName
+      properties:
+        name:
+          type: string
+          title: Project name
+        packageName:
+          type: string
+          title: Java package
+          default: com.example.demo
+        includeFileStorage:
+          type: boolean
+          title: Include MinIO file storage
+          default: true
+  steps:
+    - id: init
+      name: Init project
+      action: rainy:init-app
+      input:
+        name: ${{ parameters.name }}
+        preset: spring-nextjs
+        package: ${{ parameters.packageName }}
+    - id: fileStorage
+      if: ${{ parameters.includeFileStorage }}
+      name: Add file storage
+      action: rainy:add-capability
+      input:
+        capability: minio-file-storage
+        provider: minio
+        apply: true
+    - id: doctor
+      name: Run doctor
+      action: rainy:doctor
+      input:
+        capability: minio-file-storage
+    - id: evidence
+      name: Generate evidence
+      action: rainy:evidence
+      input:
+        format: markdown

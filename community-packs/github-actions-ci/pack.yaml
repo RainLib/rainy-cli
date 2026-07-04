@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: github-actions-ci
+  version: 0.1.0
+  owner: rainy-community
+  description: GitHub Actions CI baseline.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/github-actions-ci.yaml
+  validators: []
+  skills: []

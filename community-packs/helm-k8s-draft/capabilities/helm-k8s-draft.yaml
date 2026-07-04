@@ -1,0 +1,24 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: helm-k8s-draft
+name: Helm Kubernetes Draft
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Renders a minimal Helm chart draft for later production hardening.
+dependsOn:
+  - spring-boot-web
+providers: []
+inputs: {}
+actions:
+  install:
+    - id: render-chart
+      uses: template.render
+      with:
+        template: templates/chart
+        target: charts/demo-saas
+validations: []
+doctor:
+  checks: []
+agentRules:
+  - Treat generated Helm manifests as drafts until reviewed by platform owners.

@@ -1,0 +1,17 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: nextjs-admin
+name: Next.js Admin
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Provides the frontend Next.js baseline used by the Golden Path.
+dependsOn: []
+providers: []
+inputs: {}
+actions:
+  install: []
+validations: []
+doctor:
+  checks: []
+agentRules: []

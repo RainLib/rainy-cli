@@ -1,0 +1,13 @@
+package {{package.java}}.file;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+@ConfigurationProperties(prefix = "storage.minio")
+public record FileStorageProperties(
+    String endpoint,
+    String bucket,
+    String accessKey,
+    String secretKey,
+    String maxFileSize
+) {
+}

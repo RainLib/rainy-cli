@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/audit.schema.json",
+  "title": "Rainy Audit Record",
+  "type": "object",
+  "required": ["protocolVersion", "timestamp", "command", "status", "outputType", "summary"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.audit.v1" },
+    "timestamp": { "type": "string" },
+    "command": { "type": "string" },
+    "status": { "type": "string" },
+    "traceId": { "type": "string" },
+    "outputType": { "type": "string" },
+    "summary": { "type": "string" }
+  },
+  "additionalProperties": true
+}

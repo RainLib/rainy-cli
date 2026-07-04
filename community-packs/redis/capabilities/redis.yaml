@@ -1,0 +1,45 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: redis
+name: Redis
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Adds Redis dependency, application config, and a local Compose service.
+dependsOn:
+  - spring-boot-web
+  - docker-compose-local
+providers:
+  - id: redis
+    default: true
+inputs: {}
+actions:
+  install:
+    - id: add-redis-starter
+      uses: maven.addDependency
+      with:
+        modulePath: "{{ paths.backend }}"
+        groupId: org.springframework.boot
+        artifactId: spring-boot-starter-data-redis
+        version: "${spring-boot.version}"
+    - id: merge-redis-config
+      uses: yaml.merge
+      with:
+        file: "{{ paths.backend }}/src/main/resources/application.yml"
+        patch:
+          spring:
+            data:
+              redis:
+                host: localhost
+                port: 6379
+    - id: add-compose-service
+      uses: dockerCompose.addService
+      with:
+        file: compose.yaml
+        serviceName: redis
+        template: templates/compose/redis-service.yaml.hbs
+validations: []
+doctor:
+  checks: []
+agentRules:
+  - Prefer this capability before manually configuring Redis.

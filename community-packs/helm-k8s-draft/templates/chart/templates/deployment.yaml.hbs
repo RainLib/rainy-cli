@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-saas
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-saas
+  template:
+    metadata:
+      labels:
+        app: demo-saas
+    spec:
+      containers:
+        - name: backend
+          image: demo-saas:latest
+          ports:
+            - containerPort: 8080

@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: postgres
+  version: 0.1.0
+  owner: rainy-community
+  description: Add PostgreSQL database support.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/postgres.yaml
+  validators: []
+  skills: []

@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: nextjs-admin
+  version: 0.1.0
+  owner: rainy-community
+  description: Next.js frontend baseline.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/nextjs-admin.yaml
+  validators: []
+  skills: []

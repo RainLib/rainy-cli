@@ -1,0 +1,24 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: openapi-contract
+name: OpenAPI Contract
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Renders a starter OpenAPI contract for the project.
+dependsOn:
+  - spring-boot-web
+providers: []
+inputs: {}
+actions:
+  install:
+    - id: render-openapi
+      uses: template.render
+      with:
+        template: templates/openapi
+        target: openapi
+validations: []
+doctor:
+  checks: []
+agentRules:
+  - Update openapi/openapi.yaml before changing public API behavior.

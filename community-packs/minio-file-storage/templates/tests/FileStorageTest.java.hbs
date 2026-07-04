@@ -1,0 +1,16 @@
+package {{package.java}}.file;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class FileStorageTest {
+    @Test
+    void providerUsesBucket() {
+        var service = new StorageService(
+            new FileStorageProperties("http://localhost:9000", "demo-files", "minioadmin", "minioadmin", "20MB")
+        );
+
+        assertThat(service.provider()).isEqualTo("minio:demo-files");
+    }
+}

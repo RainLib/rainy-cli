@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: opentelemetry
+  version: 0.1.0
+  owner: rainy-community
+  description: Add OpenTelemetry tracing defaults.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/opentelemetry.yaml
+  validators: []
+  skills: []

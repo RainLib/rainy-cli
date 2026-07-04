@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: openapi-contract
+  version: 0.1.0
+  owner: rainy-community
+  description: Add a starter OpenAPI contract.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/openapi-contract.yaml
+  validators: []
+  skills: []

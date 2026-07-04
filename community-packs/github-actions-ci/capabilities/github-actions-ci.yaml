@@ -1,0 +1,17 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: github-actions-ci
+name: GitHub Actions CI
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Provides the GitHub Actions CI baseline used by the Golden Path.
+dependsOn: []
+providers: []
+inputs: {}
+actions:
+  install: []
+validations: []
+doctor:
+  checks: []
+agentRules: []

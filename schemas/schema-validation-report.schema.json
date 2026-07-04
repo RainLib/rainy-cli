@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/schema-validation-report.schema.json",
+  "title": "Rainy Schema Validation Report",
+  "type": "object",
+  "required": ["protocolVersion", "status", "schema", "file", "issues"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.schema-validation.v1" },
+    "status": { "enum": ["passed", "failed"] },
+    "schema": { "type": "string" },
+    "file": { "type": "string" },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "message"],
+        "properties": {
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

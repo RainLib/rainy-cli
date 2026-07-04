@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/plan.schema.json",
+  "title": "Rainy Execution Plan",
+  "type": "object",
+  "required": ["id", "capability", "provider", "actions"],
+  "properties": {
+    "id": { "type": "string" },
+    "capability": { "type": "string" },
+    "provider": { "type": "string" },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "uses", "input"],
+        "properties": {
+          "id": { "type": "string" },
+          "uses": { "type": "string" },
+          "input": true
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

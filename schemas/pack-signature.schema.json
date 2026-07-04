@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/pack-signature.schema.json",
+  "title": "Rainy Pack Signature",
+  "type": "object",
+  "required": ["protocolVersion", "algorithm", "digest", "signedAt", "files"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.pack-signature.v1" },
+    "algorithm": { "const": "sha256" },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "signedAt": { "type": "string" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "digest"],
+        "properties": {
+          "path": { "type": "string" },
+          "digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

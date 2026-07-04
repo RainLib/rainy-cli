@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: spring-boot-web
+  version: 0.1.0
+  owner: rainy-community
+  description: Spring Boot web application baseline.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/spring-boot-web.yaml
+  validators: []
+  skills: []

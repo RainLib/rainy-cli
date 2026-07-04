@@ -1,0 +1,34 @@
+# Rust
+/target/
+
+# Rainy local outputs
+**/*.rainy-tmp
+/.rainy/
+/demo-saas/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node / frontend smoke runs
+node_modules/
+.next/
+dist/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/registry-index.schema.json",
+  "title": "Rainy HTTP Registry Index",
+  "type": "object",
+  "required": ["protocolVersion", "packs"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.registry.v1" },
+    "packs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "baseUrl", "files"],
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "baseUrl": { "type": "string" },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

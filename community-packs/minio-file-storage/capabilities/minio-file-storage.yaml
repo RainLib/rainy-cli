@@ -1,0 +1,119 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+
+id: minio-file-storage
+name: MinIO File Storage
+version: 0.1.0
+status: beta
+owner: rainy-community
+
+description: Adds S3-compatible upload/download support using MinIO.
+
+dependsOn:
+  - spring-boot-web
+  - nextjs-admin
+  - docker-compose-local
+
+providers:
+  - id: minio
+    default: true
+    requiredConfig:
+      - storage.minio.endpoint
+      - storage.minio.bucket
+      - storage.minio.access-key
+      - storage.minio.secret-key
+
+inputs:
+  bucket:
+    type: string
+    default: demo-files
+  maxFileSize:
+    type: string
+    default: 20MB
+
+actions:
+  install:
+    - id: add-minio-dependency
+      uses: maven.addDependency
+      with:
+        modulePath: "{{ paths.backend }}"
+        groupId: io.minio
+        artifactId: minio
+        version: "8.5.12"
+
+    - id: merge-storage-config
+      uses: yaml.merge
+      with:
+        file: "{{ paths.backend }}/src/main/resources/application.yml"
+        patch:
+          storage:
+            provider: minio
+            minio:
+              endpoint: "http://localhost:9000"
+              bucket: "{{ inputs.bucket }}"
+              access-key: minioadmin
+              secret-key: minioadmin
+              max-file-size: "{{ inputs.maxFileSize }}"
+
+    - id: render-backend
+      uses: template.render
+      with:
+        template: templates/backend
+        target: "{{ paths.backend }}/src/main/java/{{ packagePath }}/file"
+
+    - id: render-frontend
+      uses: template.render
+      with:
+        template: templates/frontend
+        target: "{{ paths.frontend }}/src/components/file-upload"
+
+    - id: add-compose-service
+      uses: dockerCompose.addService
+      with:
+        file: compose.yaml
+        serviceName: minio
+        template: templates/compose/minio-service.yaml.hbs
+
+    - id: render-tests
+      uses: template.render
+      with:
+        template: templates/tests
+        target: "{{ paths.backend }}/src/test/java/{{ packagePath }}/file"
+
+validations:
+  - id: backend-test
+    command: "./mvnw test"
+    workingDirectory: "{{ paths.backend }}"
+
+  - id: frontend-build
+    command: "pnpm build"
+    workingDirectory: "{{ paths.frontend }}"
+
+  - id: docker-compose-config
+    command: "docker compose config"
+    workingDirectory: "."
+
+doctor:
+  checks:
+    - id: dependency-exists
+      uses: maven.hasDependency
+      with:
+        modulePath: "{{ paths.backend }}"
+        groupId: io.minio
+        artifactId: minio
+
+    - id: config-exists
+      uses: yaml.hasPath
+      with:
+        file: "{{ paths.backend }}/src/main/resources/application.yml"
+        path: storage.minio.endpoint
+
+    - id: frontend-component-exists
+      uses: file.exists
+      with:
+        path: "{{ paths.frontend }}/src/components/file-upload"
+
+agentRules:
+  - Prefer this capability before manually writing file upload code.
+  - Do not expose storage credentials to frontend.
+  - Use generated StorageService instead of directly instantiating MinIO client in controllers.

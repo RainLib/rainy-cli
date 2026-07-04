@@ -1,0 +1,16 @@
+package {{package.java}}.file;
+
+import org.springframework.stereotype.Service;
+
+@Service
+public class StorageService {
+    private final FileStorageProperties properties;
+
+    public StorageService(FileStorageProperties properties) {
+        this.properties = properties;
+    }
+
+    public String provider() {
+        return "minio:" + properties.bucket();
+    }
+}

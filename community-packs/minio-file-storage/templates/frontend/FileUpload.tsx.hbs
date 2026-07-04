@@ -1,0 +1,18 @@
+"use client";
+
+import { useState } from "react";
+
+export function FileUpload() {
+  const [fileName, setFileName] = useState("");
+
+  return (
+    <label>
+      <span>Upload file</span>
+      <input
+        type="file"
+        onChange={(event) => setFileName(event.currentTarget.files?.[0]?.name ?? "")}
+      />
+      {fileName ? <small>{fileName}</small> : null}
+    </label>
+  );
+}

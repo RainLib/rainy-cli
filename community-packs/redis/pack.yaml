@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: redis
+  version: 0.1.0
+  owner: rainy-community
+  description: Add Redis cache support.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/redis.yaml
+  validators: []
+  skills: []

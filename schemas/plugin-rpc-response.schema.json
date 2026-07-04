@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/plugin-rpc-response.schema.json",
+  "title": "Rainy Plugin RPC Response",
+  "type": "object",
+  "required": ["protocolVersion", "changeSet"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.plugin-rpc.v1" },
+    "changeSet": { "$ref": "changeset.schema.json" }
+  },
+  "additionalProperties": true
+}

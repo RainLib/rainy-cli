@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/capability-lock.schema.json",
+  "title": "Rainy Capability Lock",
+  "type": "object",
+  "required": ["lockfileVersion", "project", "rainy", "capabilities"],
+  "properties": {
+    "lockfileVersion": { "const": 1 },
+    "project": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" }
+      }
+    },
+    "rainy": {
+      "type": "object",
+      "required": ["version"],
+      "properties": {
+        "version": { "type": "string" }
+      }
+    },
+    "capabilities": { "type": "object" },
+    "skills": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

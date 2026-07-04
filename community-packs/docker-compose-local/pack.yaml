@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: docker-compose-local
+  version: 0.1.0
+  owner: rainy-community
+  description: Docker Compose local development baseline.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/docker-compose-local.yaml
+  validators: []
+  skills: []

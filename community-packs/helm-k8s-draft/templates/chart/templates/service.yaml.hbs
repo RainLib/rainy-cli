@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-saas
+spec:
+  type: ClusterIP
+  selector:
+    app: demo-saas
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,0 +1,17 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+
+metadata:
+  name: minio-file-storage
+  version: 0.1.0
+  owner: rainy-community
+  description: Add S3-compatible file storage using MinIO.
+
+requires:
+  rainy: ">=0.1.0"
+
+exports:
+  capabilities:
+    - capabilities/minio-file-storage.yaml
+  validators: []
+  skills: []

@@ -1,0 +1,17 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: docker-compose-local
+name: Docker Compose Local
+version: 0.1.0
+status: beta
+owner: rainy-community
+description: Provides local Docker Compose wiring for Golden Path projects.
+dependsOn: []
+providers: []
+inputs: {}
+actions:
+  install: []
+validations: []
+doctor:
+  checks: []
+agentRules: []

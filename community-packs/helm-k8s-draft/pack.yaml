@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: helm-k8s-draft
+  version: 0.1.0
+  owner: rainy-community
+  description: Add a draft Helm chart.
+requires:
+  rainy: ">=0.1.0"
+exports:
+  capabilities:
+    - capabilities/helm-k8s-draft.yaml
+  validators: []
+  skills: []
