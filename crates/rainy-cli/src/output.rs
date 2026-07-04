@@ -84,6 +84,9 @@ pub enum CommandOutput {
     AgentContext {
         context: String,
     },
+    Update {
+        report: crate::update::UpdateReport,
+    },
 }
 
 impl CommandOutput {
@@ -157,6 +160,7 @@ impl CommandOutput {
             Self::Schemas { .. } => "schemas",
             Self::SchemaValidation { .. } => "schema-validation",
             Self::AgentContext { .. } => "agent-context",
+            Self::Update { .. } => "update",
         }
     }
 
@@ -173,6 +177,7 @@ impl CommandOutput {
             Self::Verify { report } => &report.status,
             Self::Conformance { report } => &report.status,
             Self::SchemaValidation { report } => &report.status,
+            Self::Update { .. } => "ok",
             _ => "ok",
         }
     }
@@ -228,6 +233,17 @@ impl CommandOutput {
             Self::Schemas { schemas } => format!("listed {} schemas", schemas.len()),
             Self::SchemaValidation { report } => format!("schema validation {}", report.status),
             Self::AgentContext { .. } => "rendered agent context".to_string(),
+            Self::Update { report } => {
+                if report.update_available {
+                    format!(
+                        "update available {} -> {}",
+                        report.current_version,
+                        report.latest_version.as_deref().unwrap_or("unknown")
+                    )
+                } else {
+                    format!("rainy is up to date at {}", report.current_version)
+                }
+            }
         }
     }
 
@@ -416,6 +432,23 @@ impl CommandOutput {
                 }
             }
             Self::AgentContext { context } => println!("{context}"),
+            Self::Update { report } => {
+                if report.update_available {
+                    println!(
+                        "Rainy update available: {} -> {}",
+                        report.current_version,
+                        report.latest_version.as_deref().unwrap_or("unknown")
+                    );
+                    if report.skipped {
+                        println!("This version is currently skipped.");
+                    } else {
+                        println!("Update with: rainy self update");
+                    }
+                } else {
+                    println!("Rainy is up to date: {}", report.current_version);
+                }
+                println!("Install command: {}", report.install_command);
+            }
         }
     }
 }

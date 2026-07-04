@@ -45,6 +45,8 @@ pub enum Commands {
     Skill(SkillCommand),
     Conformance(ConformanceCommand),
     Schema(SchemaCommand),
+    #[command(name = "self")]
+    SelfCommand(SelfCommand),
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -358,4 +360,28 @@ pub struct SchemaValidateArgs {
 
     #[arg(long)]
     pub file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct SelfCommand {
+    #[command(subcommand)]
+    pub command: SelfSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SelfSubcommand {
+    Check,
+    Update(SelfUpdateArgs),
+    Skip(SelfSkipArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SelfUpdateArgs {
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SelfSkipArgs {
+    pub version: Option<String>,
 }

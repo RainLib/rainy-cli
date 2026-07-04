@@ -1,0 +1,88 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            binary: rainy
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            binary: rainy
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            binary: rainy
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            binary: rainy.exe
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --bin rainy
+      - name: Package Unix binary
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" rainy
+          tar -czf "dist/rainy-${{ matrix.target }}.tar.gz" rainy
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "rainy-${{ matrix.target }}.tar.gz" > "rainy-${{ matrix.target }}.tar.gz.sha256")
+          else
+            (cd dist && shasum -a 256 "rainy-${{ matrix.target }}.tar.gz" > "rainy-${{ matrix.target }}.tar.gz.sha256")
+          fi
+      - name: Package Windows binary
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" rainy.exe
+          Compress-Archive -Path rainy.exe -DestinationPath "dist/rainy-${{ matrix.target }}.zip"
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/rainy-${{ matrix.target }}.zip").Hash.ToLowerInvariant()
+          "$hash  rainy-${{ matrix.target }}.zip" | Out-File -NoNewline -Encoding ascii "dist/rainy-${{ matrix.target }}.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rainy-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Add installer scripts
+        run: |
+          cp scripts/install.sh dist/install.sh
+          cp scripts/install.ps1 dist/install.ps1
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

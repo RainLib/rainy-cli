@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/update-report.schema.json",
+  "title": "Rainy Update Report",
+  "type": "object",
+  "required": ["protocolVersion", "repository", "currentVersion", "updateAvailable", "skipped", "installCommand"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.update.v1" },
+    "repository": { "type": "string" },
+    "currentVersion": { "type": "string" },
+    "latestVersion": { "type": ["string", "null"] },
+    "updateAvailable": { "type": "boolean" },
+    "skipped": { "type": "boolean" },
+    "installCommand": { "type": "string" }
+  },
+  "additionalProperties": true
+}

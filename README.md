@@ -65,6 +65,32 @@ make install
 rainy --help
 ```
 
+从 GitHub Release 安装预编译包：
+
+```bash
+curl -fsSL https://github.com/rainy-dev/rainy/releases/latest/download/install.sh | sh
+```
+
+Windows PowerShell：
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "iwr https://github.com/rainy-dev/rainy/releases/latest/download/install.ps1 -UseB | iex"
+```
+
+安装脚本会根据当前系统下载对应的 release asset：
+
+- Linux x86_64: `rainy-x86_64-unknown-linux-gnu.tar.gz`
+- macOS Intel: `rainy-x86_64-apple-darwin.tar.gz`
+- macOS Apple Silicon: `rainy-aarch64-apple-darwin.tar.gz`
+- Windows x64: `rainy-x86_64-pc-windows-msvc.zip`
+
+默认安装目录是 `~/.rainy/bin`。可以覆盖：
+
+```bash
+INSTALL_DIR=/usr/local/bin sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.1.0 sh scripts/install.sh
+```
+
 从空目录创建 Golden Path 项目：
 
 ```bash
@@ -112,6 +138,7 @@ make help          # 查看所有目标
 make build         # 构建 debug binary
 make release       # 构建 release binary
 make install       # cargo install --path crates/rainy-cli
+make install-script # 从 GitHub Release 安装预编译包
 make uninstall     # cargo uninstall rainy-cli
 make fmt           # 格式化 Rust 代码
 make fmt-check     # 检查格式
@@ -123,6 +150,7 @@ make ci            # 本地完整 CI smoke
 make schema-check  # 检查 schemas/*.schema.json 可解析
 make conformance   # 检查 community-packs conformance
 make mcp-check     # 编译检查 MCP Python wrapper
+make installer-check # 检查安装脚本语法
 make smoke         # JSON smoke commands
 ```
 
@@ -216,6 +244,30 @@ rainy agent context
 rainy skill sync
 ```
 
+版本检查和更新：
+
+```bash
+rainy self check
+rainy self check --json
+rainy self update
+rainy self skip 0.2.0
+```
+
+release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
+
+```text
+Rainy CLI update available: 0.1.0 -> 0.2.0.
+Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this version.
+```
+
+自动检查默认行为：
+
+- debug 构建、CI、`--json`、`--quiet` 不会自动输出更新提示。
+- 默认 24 小时检查一次。
+- `RAINY_NO_UPDATE_CHECK=1` 或 `RAINY_SKIP_UPDATE_CHECK=1` 可以关闭自动检查。
+- `RAINY_UPDATE_CHECK_INTERVAL_HOURS=0` 可以让每次运行都检查。
+- `RAINY_UPDATE_REPO=owner/repo` 可以覆盖 GitHub release 仓库。
+
 ## 使用模型
 
 Rainy 的核心使用方式是“先计划，再应用”：
@@ -250,6 +302,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - Doctor / Verify / Evidence：健康检查、能力验证、证据报告、secret 脱敏、默认开发 secret warning。
 - Audit log：成功和失败命令会写 `.rainy/audit.log`。
 - Plugin：外部 `rainy-*` 命令、HTTP adapter、Wasm action plugin、manifest 权限、重名 warning、禁止覆盖内置命令。
+- Release 安装和自更新：GitHub Actions 多平台 release 构建、`install.sh` / `install.ps1` 安装脚本、`rainy self check/update/skip`。
 - MCP 示例：stdio JSON-RPC wrapper 调用 Rainy CLI，默认 dry-run 计划能力接入。
 - Backstage 示例：scaffolder actions 和模板示例。
 - Schema / conformance：schema list/validate、pack/plugin conformance 检查。
@@ -268,7 +321,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 
 - 企业私有 starter / enterprise packs。
 - 企业审批系统、权限平台、密钥系统的真实集成。
-- 发布到 crates.io、Homebrew、npm 或二进制 release 的流水线。
+- 发布到 crates.io、Homebrew、npm 的流水线。
 - 完整 Backstage 插件发布包。
 
 ## 开发验证
@@ -285,6 +338,7 @@ make check
 make smoke
 make schema-check
 make mcp-check
+make installer-check
 ```
 
 ## 扩展文档

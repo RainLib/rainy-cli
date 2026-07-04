@@ -14,6 +14,7 @@ mod plugin;
 mod policy;
 mod registry;
 mod schema;
+mod update;
 mod verify;
 
 use clap::Parser;
@@ -34,6 +35,9 @@ fn main() {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let audit_command = command_label(&cli.command).to_string();
+
+    let is_self_command = matches!(cli.command, Commands::SelfCommand(_));
+    update::maybe_notify(json, cli.quiet, is_self_command);
 
     match run(cli) {
         Ok(output) => {
@@ -70,6 +74,7 @@ fn command_label(command: &Commands) -> &'static str {
         Commands::Skill(_) => "skill",
         Commands::Conformance(_) => "conformance",
         Commands::Schema(_) => "schema",
+        Commands::SelfCommand(_) => "self",
         Commands::External(_) => "external",
     }
 }
@@ -130,6 +135,7 @@ fn run(cli: Cli) -> RainyResult<CommandOutput> {
         },
         Commands::Conformance(command) => conformance::handle_conformance_command(command),
         Commands::Schema(command) => schema::handle_schema_command(command),
+        Commands::SelfCommand(command) => update::handle_self_command(command),
         Commands::External(args) => plugin::run_external(&workspace, args),
     }
 }

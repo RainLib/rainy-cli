@@ -21,6 +21,7 @@ help:
 	@printf '%s\n' '  make build              Build debug binary'
 	@printf '%s\n' '  make release            Build release binary'
 	@printf '%s\n' '  make install            Install rainy via cargo install --path'
+	@printf '%s\n' '  make install-script     Install from GitHub Release via scripts/install.sh'
 	@printf '%s\n' '  make uninstall          Uninstall rainy-cli cargo package'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Quality gates:'
@@ -36,6 +37,7 @@ help:
 	@printf '%s\n' '  make schema-check       Parse all schema JSON files'
 	@printf '%s\n' '  make conformance        Check community packs conformance'
 	@printf '%s\n' '  make mcp-check          Python compile-check MCP wrapper'
+	@printf '%s\n' '  make installer-check    Syntax-check installer scripts where possible'
 	@printf '%s\n' '  make smoke              JSON smoke commands'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Demo project:'
@@ -62,6 +64,10 @@ release:
 .PHONY: install
 install:
 	$(CARGO) install --path crates/rainy-cli
+
+.PHONY: install-script
+install-script:
+	sh scripts/install.sh
 
 .PHONY: uninstall
 uninstall:
@@ -102,6 +108,11 @@ conformance: build
 mcp-check:
 	$(PYTHON) -m py_compile integrations/mcp/rainy_mcp.py
 
+.PHONY: installer-check
+installer-check:
+	sh -n scripts/install.sh
+	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -Command '$$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$$null)'; else printf '%s\n' 'pwsh not found; skipping install.ps1 syntax check'; fi
+
 .PHONY: smoke
 smoke: build
 	$(RAINY_BIN) capability list --json
@@ -109,7 +120,7 @@ smoke: build
 	$(RAINY_BIN) conformance check --path community-packs --json
 
 .PHONY: ci
-ci: fmt-check test clippy schema-check mcp-check smoke
+ci: fmt-check test clippy schema-check mcp-check installer-check smoke
 
 .PHONY: demo-dry-run
 demo-dry-run: build
