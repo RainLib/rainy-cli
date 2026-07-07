@@ -24,9 +24,11 @@ pub struct UpdateReport {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateState {
+    repository: Option<String>,
     last_checked: Option<DateTime<Utc>>,
     latest_version: Option<String>,
     skip_version: Option<String>,
+    skip_repository: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,9 +42,9 @@ struct GitHubRelease {
 
 pub fn handle_self_command(command: SelfCommand) -> RainyResult<CommandOutput> {
     match command.command {
-        SelfSubcommand::Check => check_command(),
-        SelfSubcommand::Update(args) => update_command(args.force),
-        SelfSubcommand::Skip(args) => skip_command(args.version),
+        SelfSubcommand::Check(args) => check_command(args.repo),
+        SelfSubcommand::Update(args) => update_command(args.force, args.version, args.repo),
+        SelfSubcommand::Skip(args) => skip_command(args.version, args.repo),
     }
 }
 
@@ -56,7 +58,7 @@ pub fn maybe_notify(json: bool, quiet: bool, is_self_command: bool) {
     if !should_check(&state) {
         return;
     }
-    let Ok(report) = check_latest_with_state(&mut state) else {
+    let Ok(report) = check_latest_with_state(&mut state, None) else {
         let _ = save_state(&state);
         return;
     };
@@ -72,26 +74,31 @@ pub fn maybe_notify(json: bool, quiet: bool, is_self_command: bool) {
     }
 }
 
-fn check_command() -> RainyResult<CommandOutput> {
+fn check_command(repo: Option<String>) -> RainyResult<CommandOutput> {
     let mut state = load_state().unwrap_or_default();
-    let report = check_latest_with_state(&mut state)?;
+    let report = check_latest_with_state(&mut state, repo.as_deref())?;
     save_state(&state)?;
     Ok(CommandOutput::Update { report })
 }
 
-fn update_command(force: bool) -> RainyResult<CommandOutput> {
-    if !force {
+fn update_command(
+    force: bool,
+    version: Option<String>,
+    repo: Option<String>,
+) -> RainyResult<CommandOutput> {
+    if !force && version.is_none() {
         let mut state = load_state().unwrap_or_default();
-        let report = check_latest_with_state(&mut state)?;
+        let report = check_latest_with_state(&mut state, repo.as_deref())?;
         save_state(&state)?;
         if !report.update_available {
             return Ok(CommandOutput::Update { report });
         }
     }
 
-    run_install_script()?;
+    run_install_script(repo.as_deref(), version.as_deref())?;
     let mut state = load_state().unwrap_or_default();
     state.skip_version = None;
+    state.skip_repository = None;
     state.last_checked = Some(Utc::now());
     save_state(&state)?;
     Ok(CommandOutput::message(
@@ -99,33 +106,36 @@ fn update_command(force: bool) -> RainyResult<CommandOutput> {
     ))
 }
 
-fn skip_command(version: Option<String>) -> RainyResult<CommandOutput> {
+fn skip_command(version: Option<String>, repo: Option<String>) -> RainyResult<CommandOutput> {
     let mut state = load_state().unwrap_or_default();
+    let repository = repository_slug(repo.as_deref())?;
     let version = match version {
         Some(version) => normalize_version(&version),
         None => {
-            let report = check_latest_with_state(&mut state)?;
+            let report = check_latest_with_state(&mut state, Some(&repository))?;
             report.latest_version.unwrap_or_else(current_version)
         }
     };
     state.skip_version = Some(version.clone());
+    state.skip_repository = Some(repository);
     save_state(&state)?;
     Ok(CommandOutput::message(format!(
         "Skipped Rainy update version {version}."
     )))
 }
 
-fn check_latest_with_state(state: &mut UpdateState) -> RainyResult<UpdateReport> {
-    let repository = repository_slug()?;
+fn check_latest_with_state(
+    state: &mut UpdateState,
+    repo: Option<&str>,
+) -> RainyResult<UpdateReport> {
+    let repository = repository_slug(repo)?;
     let latest = latest_release_version(&repository)?;
+    state.repository = Some(repository.clone());
     state.last_checked = Some(Utc::now());
     state.latest_version = Some(latest.clone());
     let current = current_version();
     let update_available = version_gt(&latest, &current);
-    let skipped = state
-        .skip_version
-        .as_deref()
-        .is_some_and(|skipped| normalize_version(skipped) == latest);
+    let skipped = is_skipped(state, &repository, &latest);
     Ok(UpdateReport {
         protocol_version: UPDATE_PROTOCOL.to_string(),
         repository: repository.clone(),
@@ -154,7 +164,11 @@ fn latest_release_version(repository: &str) -> RainyResult<String> {
             String::from_utf8_lossy(&output.stderr).to_string(),
         ));
     }
-    let release: GitHubRelease = serde_json::from_slice(&output.stdout)?;
+    parse_latest_release_version(&output.stdout)
+}
+
+fn parse_latest_release_version(release_json: &[u8]) -> RainyResult<String> {
+    let release: GitHubRelease = serde_json::from_slice(release_json)?;
     if release.draft || release.prerelease {
         return Err(RainyError::config(
             "UPDATE_CHECK_FAILED",
@@ -164,28 +178,36 @@ fn latest_release_version(repository: &str) -> RainyResult<String> {
     Ok(normalize_version(&release.tag_name))
 }
 
-fn run_install_script() -> RainyResult<()> {
-    let repository = repository_slug()?;
+fn run_install_script(repo: Option<&str>, version: Option<&str>) -> RainyResult<()> {
+    let repository = repository_slug(repo)?;
+    let version = version.map(normalize_version);
     let install_url = format!("https://github.com/{repository}/releases/latest/download");
     let status = if cfg!(windows) {
-        let command = format!(
+        let ps_command = format!(
             "$ErrorActionPreference='Stop'; $script=Join-Path $env:TEMP 'rainy-install.ps1'; Invoke-WebRequest -UseBasicParsing '{install_url}/install.ps1' -OutFile $script; & $script"
         );
-        std::process::Command::new("powershell")
+        let mut command = std::process::Command::new("powershell");
+        command
             .args([
                 "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                &command,
+                &ps_command,
             ])
-            .status()
+            .env("RAINY_REPO", &repository);
+        if let Some(version) = &version {
+            command.env("RAINY_VERSION", version);
+        }
+        command.status()
     } else {
         let command = format!("curl -fsSL {install_url}/install.sh | sh");
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .status()
+        let mut shell = std::process::Command::new("sh");
+        shell.arg("-c").arg(command).env("RAINY_REPO", &repository);
+        if let Some(version) = &version {
+            shell.env("RAINY_VERSION", version);
+        }
+        shell.status()
     }?;
     if !status.success() {
         return Err(RainyError::config(
@@ -216,33 +238,58 @@ fn should_check(state: &UpdateState) -> bool {
         .is_none_or(|checked| Utc::now() - checked >= Duration::hours(interval))
 }
 
+fn is_skipped(state: &UpdateState, repository: &str, latest: &str) -> bool {
+    let Some(skip_version) = state.skip_version.as_deref() else {
+        return false;
+    };
+    if normalize_version(skip_version) != normalize_version(latest) {
+        return false;
+    }
+    state
+        .skip_repository
+        .as_deref()
+        .is_none_or(|skip_repository| skip_repository == repository)
+}
+
 fn env_truthy(key: &str) -> bool {
     std::env::var(key)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
 }
 
-fn repository_slug() -> RainyResult<String> {
+fn repository_slug(repo: Option<&str>) -> RainyResult<String> {
+    if let Some(repository) = repo
+        && !repository.trim().is_empty()
+    {
+        return normalize_repository_slug(repository);
+    }
     if let Ok(repository) = std::env::var("RAINY_UPDATE_REPO")
         && !repository.trim().is_empty()
     {
-        return Ok(repository.trim().trim_end_matches('/').to_string());
+        return normalize_repository_slug(&repository);
     }
-    let repository = env!("CARGO_PKG_REPOSITORY")
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    repository
+    normalize_repository_slug(env!("CARGO_PKG_REPOSITORY"))
+}
+
+fn normalize_repository_slug(repository: &str) -> RainyResult<String> {
+    let repository = repository.trim().trim_end_matches('/').to_string();
+    let slug = repository
         .strip_prefix("https://github.com/")
         .or_else(|| repository.strip_prefix("git@github.com:"))
         .map(|slug| slug.trim_end_matches(".git").to_string())
-        .filter(|slug| slug.split('/').count() == 2)
-        .ok_or_else(|| {
-            RainyError::config(
-                "UPDATE_REPOSITORY_INVALID",
-                "set RAINY_UPDATE_REPO=owner/repo to enable update checks",
-            )
-        })
+        .unwrap_or(repository);
+    if slug.split('/').count() == 2 && slug.chars().all(valid_repository_char) {
+        Ok(slug)
+    } else {
+        Err(RainyError::config(
+            "UPDATE_REPOSITORY_INVALID",
+            "set --repo or RAINY_UPDATE_REPO to owner/repo",
+        ))
+    }
+}
+
+fn valid_repository_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/')
 }
 
 fn install_command(repository: &str) -> String {
@@ -328,5 +375,65 @@ mod tests {
         assert!(version_gt("v1.0.0", "0.99.0"));
         assert!(!version_gt("0.1.0", "0.1.0"));
         assert!(!version_gt("0.1.0", "0.2.0"));
+    }
+
+    #[test]
+    fn normalizes_repository_slug() {
+        assert_eq!(
+            repository_slug(Some("owner/repo")).expect("owner repo"),
+            "owner/repo"
+        );
+        assert_eq!(
+            repository_slug(Some("https://github.com/owner/repo.git")).expect("https repo"),
+            "owner/repo"
+        );
+        assert!(repository_slug(Some("owner/repo;rm")).is_err());
+    }
+
+    #[test]
+    fn parses_latest_release_version() {
+        let version = parse_latest_release_version(
+            br#"{"tag_name":"v1.2.3","draft":false,"prerelease":false}"#,
+        )
+        .expect("release version");
+        assert_eq!(version, "1.2.3");
+    }
+
+    #[test]
+    fn rejects_draft_or_prerelease_latest_release() {
+        let draft = parse_latest_release_version(
+            br#"{"tag_name":"v1.2.3","draft":true,"prerelease":false}"#,
+        )
+        .expect_err("draft rejected");
+        assert!(draft.to_string().contains("draft or prerelease"));
+
+        let prerelease = parse_latest_release_version(
+            br#"{"tag_name":"v1.2.3-rc.1","draft":false,"prerelease":true}"#,
+        )
+        .expect_err("prerelease rejected");
+        assert!(prerelease.to_string().contains("draft or prerelease"));
+    }
+
+    #[test]
+    fn skipped_versions_are_repository_scoped() {
+        let state = UpdateState {
+            skip_version: Some("1.2.3".to_string()),
+            skip_repository: Some("owner/repo".to_string()),
+            ..UpdateState::default()
+        };
+        assert!(is_skipped(&state, "owner/repo", "v1.2.3"));
+        assert!(!is_skipped(&state, "other/repo", "v1.2.3"));
+        assert!(!is_skipped(&state, "owner/repo", "1.2.4"));
+    }
+
+    #[test]
+    fn skipped_versions_without_repository_remain_backwards_compatible() {
+        let state = UpdateState {
+            skip_version: Some("1.2.3".to_string()),
+            skip_repository: None,
+            ..UpdateState::default()
+        };
+        assert!(is_skipped(&state, "owner/repo", "1.2.3"));
+        assert!(is_skipped(&state, "other/repo", "v1.2.3"));
     }
 }

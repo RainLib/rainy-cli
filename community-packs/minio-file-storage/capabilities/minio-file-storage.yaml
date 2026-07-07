@@ -82,7 +82,7 @@ actions:
 
 validations:
   - id: backend-test
-    command: "./mvnw test"
+    command: "mvn test"
     workingDirectory: "{{ paths.backend }}"
 
   - id: frontend-build

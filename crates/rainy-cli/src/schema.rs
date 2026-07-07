@@ -146,6 +146,16 @@ fn validate_value(
         });
     }
 
+    if let Some(min_length) = schema.get("minLength").and_then(Value::as_u64)
+        && let Some(text) = instance.as_str()
+        && text.chars().count() < min_length as usize
+    {
+        issues.push(SchemaIssue {
+            path: path.to_string(),
+            message: format!("string length is less than minLength {min_length}"),
+        });
+    }
+
     if let Some(required) = schema.get("required").and_then(Value::as_array)
         && let Some(object) = instance.as_object()
     {

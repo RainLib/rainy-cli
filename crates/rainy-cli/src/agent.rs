@@ -46,6 +46,7 @@ fn build_context(workspace: &Path) -> RainyResult<String> {
     out.push_str("- `rainy capability list`\n");
     out.push_str("- `rainy doctor`\n");
     out.push_str("- `rainy verify --profile local`\n");
+    out.push_str("- `rainy verify --profile ci`\n");
     out.push_str("- `rainy evidence generate`\n\n");
     out.push_str("## Capability Usage\n");
     out.push_str(&format!(
@@ -75,7 +76,8 @@ fn write_enterprise_agent_files(workspace: &Path, context: &str) -> RainyResult<
 - Backend test: `cd apps/backend && ./mvnw test`
 - Frontend build: `cd apps/frontend && pnpm build`
 - Project health: `rainy doctor`
-- Verification: `rainy verify --profile local`
+- Local verification: `rainy verify --profile local`
+- CI verification: `rainy verify --profile ci`
 - Evidence: `rainy evidence generate`
 "#;
     std::fs::write(dir.join("commands.md"), commands)?;

@@ -11,7 +11,20 @@ fn rainy() -> Command {
 }
 
 fn run(args: &[&str]) -> Output {
-    let output = rainy().args(args).output().expect("run rainy");
+    run_with_env(args, &[])
+}
+
+fn run_without_external_tools(args: &[&str]) -> Output {
+    run_with_env(args, &[("PATH", "")])
+}
+
+fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut command = rainy();
+    command.args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("run rainy");
     if !output.status.success() {
         panic!(
             "rainy failed\nargs: {args:?}\nstdout:\n{}\nstderr:\n{}",
@@ -38,6 +51,13 @@ fn golden_path_add_minio_verify_and_evidence() {
     ]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
+    let generated_ci = fs::read_to_string(app.join(".github/workflows/ci.yml")).expect("ci yml");
+    assert!(generated_ci.contains("actions/checkout@v5"));
+    assert!(generated_ci.contains("actions/setup-java@v4"));
+    assert!(generated_ci.contains("Install Maven"));
+    assert!(generated_ci.contains("pnpm install --frozen-lockfile=false"));
+    assert!(generated_ci.contains("Install Rainy CLI"));
+    assert!(generated_ci.contains("~/.rainy/bin/rainy verify --profile ci --json"));
 
     run(&[
         "--workspace",
@@ -91,8 +111,8 @@ fn golden_path_add_minio_verify_and_evidence() {
     ]);
     let doctor = run(&["--workspace", &app_path, "doctor", "--json"]);
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("DEFAULT_SECRET_VALUE"));
-    run(&["--workspace", &app_path, "verify", "--profile", "local"]);
-    run(&["--workspace", &app_path, "evidence", "generate"]);
+    run_without_external_tools(&["--workspace", &app_path, "verify", "--profile", "local"]);
+    run_without_external_tools(&["--workspace", &app_path, "evidence", "generate"]);
 
     assert!(app.join("evidence/report.md").exists());
     assert!(app.join("evidence/report.json").exists());
@@ -199,6 +219,44 @@ fn doctor_fails_when_installed_capability_artifact_is_missing() {
 }
 
 #[test]
+fn verify_ci_profile_rejects_unknown_steps() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "demo-saas"]);
+    let app = temp.path().join("demo-saas");
+    let app_path = app.to_string_lossy().to_string();
+    let rainy_yaml = app.join("rainy.yaml");
+    let config = fs::read_to_string(&rainy_yaml).expect("read rainy.yaml");
+    fs::write(
+        &rainy_yaml,
+        config.replace(
+            "      - security-basic\n",
+            "      - security-basic\n      - unknown-production-step\n",
+        ),
+    )
+    .expect("write rainy.yaml");
+
+    let output = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "verify",
+            "--profile",
+            "ci",
+            "--json",
+        ])
+        .output()
+        .expect("run rainy");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("VERIFY_FAILED"));
+    assert!(stderr.contains("unknown-production-step"));
+    assert!(stderr.contains("unknown verify step is not allowed in strict profile"));
+}
+
+#[test]
 fn plan_file_apply_remove_upgrade_and_skill_sync() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
@@ -253,7 +311,7 @@ fn plan_file_apply_remove_upgrade_and_skill_sync() {
         "minio-file-storage",
         "--dry-run",
     ]);
-    run(&[
+    run_without_external_tools(&[
         "--workspace",
         &app_path,
         "verify",
@@ -1354,7 +1412,7 @@ fn community_pack_matrix_installs_extended_golden_path_capabilities() {
     );
 
     run(&["--workspace", &app_path, "doctor"]);
-    run(&["--workspace", &app_path, "verify", "--profile", "local"]);
+    run_without_external_tools(&["--workspace", &app_path, "verify", "--profile", "local"]);
 }
 
 #[test]
@@ -1642,6 +1700,33 @@ fn schema_validation_org_policy_and_http_plugin_adapter_work() {
         .expect("run rainy");
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("SCHEMA_VALIDATION_FAILED"));
+    let bad_empty_name = temp.path().join("bad-empty-name.yaml");
+    write(
+        &bad_empty_name,
+        r#"apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: ""
+paths:
+  backend: apps/backend
+  frontend: apps/frontend
+package:
+  java: com.example.demo
+"#,
+    );
+    let bad_empty = rainy()
+        .args([
+            "schema",
+            "validate",
+            "--schema",
+            "rainy-project",
+            "--file",
+            &bad_empty_name.to_string_lossy(),
+        ])
+        .output()
+        .expect("run rainy");
+    assert!(!bad_empty.status.success());
+    assert!(String::from_utf8_lossy(&bad_empty.stderr).contains("minLength"));
 
     let policy_pack = app.join("policy-packs/policy-pack");
     write(
