@@ -80,6 +80,7 @@ powershell -ExecutionPolicy Bypass -c "iwr https://github.com/rainy-dev/rainy/re
 安装脚本会根据当前系统下载对应的 release asset：
 
 - Linux x86_64: `rainy-x86_64-unknown-linux-gnu.tar.gz`
+- Linux arm64: `rainy-aarch64-unknown-linux-gnu.tar.gz`
 - macOS Intel: `rainy-x86_64-apple-darwin.tar.gz`
 - macOS Apple Silicon: `rainy-aarch64-apple-darwin.tar.gz`
 - Windows x64: `rainy-x86_64-pc-windows-msvc.zip`
@@ -89,6 +90,12 @@ powershell -ExecutionPolicy Bypass -c "iwr https://github.com/rainy-dev/rainy/re
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
 RAINY_REPO=owner/repo RAINY_VERSION=v0.1.0 sh scripts/install.sh
+```
+
+Windows 安装脚本也支持同样的参数：
+
+```powershell
+.\scripts\install.ps1 -Repo owner/repo -Version v0.1.0 -InstallDir "$HOME\.rainy\bin" -AddToPath
 ```
 
 从空目录创建 Golden Path 项目：
@@ -118,6 +125,7 @@ rainy add capability minio-file-storage --provider minio --apply
 ```bash
 rainy doctor
 rainy verify --profile local
+rainy verify --profile ci
 rainy evidence generate
 ```
 
@@ -147,10 +155,13 @@ make e2e           # 只运行 E2E tests
 make clippy        # clippy 严格检查
 make check         # fmt-check + test + clippy
 make ci            # 本地完整 CI smoke
+make release-check # 发 GitHub Release 前的本地检查
+make production-check # 生产可用性本地检查，等同 release-check
 make schema-check  # 检查 schemas/*.schema.json 可解析
 make conformance   # 检查 community-packs conformance
 make mcp-check     # 编译检查 MCP Python wrapper
 make installer-check # 检查安装脚本语法
+make installer-test # 检查安装器平台识别和 checksum 失败路径
 make smoke         # JSON smoke commands
 ```
 
@@ -249,8 +260,11 @@ rainy skill sync
 ```bash
 rainy self check
 rainy self check --json
+rainy self check --repo owner/repo
 rainy self update
+rainy self update --repo owner/repo --version v0.1.0
 rainy self skip 0.2.0
+rainy self skip --repo owner/repo 0.2.0
 ```
 
 release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
@@ -267,6 +281,34 @@ Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this versi
 - `RAINY_NO_UPDATE_CHECK=1` 或 `RAINY_SKIP_UPDATE_CHECK=1` 可以关闭自动检查。
 - `RAINY_UPDATE_CHECK_INTERVAL_HOURS=0` 可以让每次运行都检查。
 - `RAINY_UPDATE_REPO=owner/repo` 可以覆盖 GitHub release 仓库。
+
+## 发布流程
+
+GitHub Release 由 `.github/workflows/release.yml` 负责。发版前建议本地先跑：
+
+```bash
+make release-check
+```
+
+创建并推送版本标签后会触发 release workflow：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和安装脚本检查，然后分别构建并上传：
+
+- `rainy-x86_64-unknown-linux-gnu.tar.gz`
+- `rainy-aarch64-unknown-linux-gnu.tar.gz`
+- `rainy-x86_64-apple-darwin.tar.gz`
+- `rainy-aarch64-apple-darwin.tar.gz`
+- `rainy-x86_64-pc-windows-msvc.zip`
+- 对应的 `.sha256` 文件
+- `install.sh`
+- `install.ps1`
+
+用户安装或更新时，脚本会按当前操作系统和 CPU 架构拉取对应 release asset。fork 或私有发布仓库可以通过 `RAINY_REPO=owner/repo`、`RAINY_UPDATE_REPO=owner/repo` 或 `--repo owner/repo` 指定。
 
 ## 使用模型
 
@@ -286,6 +328,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - `add capability`、`apply`、`pack install/update`、`plugin install/call` 默认是 dry-run，需要显式 `--apply` 才会写文件。
 - `new` / `init app` 默认会创建项目，但支持 `--dry-run`。
 - 所有命令支持全局 `--json`，方便 Agent、MCP、CI 调用。
+- `verify --profile local` 适合开发机，缺少本地工具链时可给 warning；`verify --profile ci` 是严格门禁，未知步骤或缺失验证工具会失败。
 - 策略会阻止敏感路径、危险命令、需要审批的操作和插件越权写入。
 
 ## 当前建设进度
@@ -306,16 +349,16 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - MCP 示例：stdio JSON-RPC wrapper 调用 Rainy CLI，默认 dry-run 计划能力接入。
 - Backstage 示例：scaffolder actions 和模板示例。
 - Schema / conformance：schema list/validate、pack/plugin conformance 检查。
-- 测试：当前有 1 个 unit test 和 23 个 E2E tests，覆盖 Golden Path、policy、plugin、schema、conformance、事务回滚等主流程。
-- CI 示例：格式、测试、E2E、clippy、JSON smoke、conformance。
+- 测试：包含 unit 和 E2E tests，覆盖 Golden Path、policy、plugin、schema、conformance、事务回滚、自更新状态等主流程。
+- CI / release 门禁：格式、测试、E2E、clippy、schema、MCP wrapper、安装脚本语法、安装器平台/checksum 测试、JSON smoke、conformance、多平台 release 构建；Golden Path 生成的项目 CI 会准备 Java/Maven/Node/pnpm、安装前端依赖、安装 Rainy CLI，再运行严格 `verify --profile ci`。
 
 部分完成 / 示例级：
 
 - Backstage 集成目前是示例代码，未打包成可直接发布的 Backstage npm 包。
 - MCP wrapper 是最小可运行示例，生产环境还需要接入具体 MCP host 配置、权限边界和部署方式。
-- `verify` 会在本地工具链缺失时对部分外部命令给 warning，而不是强制安装 Maven、Node、Docker 等。
+- `verify --profile local` 会在本地工具链缺失时对部分外部命令给 warning；生产门禁应使用严格的 `verify --profile ci`。
 - pack signing 是 sha256 签名/校验初版，不是完整供应链签名体系。
-- schema validator 是内置轻量实现，覆盖当前 schema 使用的规则，不等同完整 JSON Schema 规范实现。
+- schema validator 是内置轻量实现，覆盖当前仓库 schema 使用的核心规则，不等同完整 JSON Schema 规范实现。
 
 未包含在当前开源仓库：
 
@@ -329,7 +372,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 本地提交前建议运行：
 
 ```bash
-make check
+make production-check
 ```
 
 额外 smoke：
@@ -339,10 +382,12 @@ make smoke
 make schema-check
 make mcp-check
 make installer-check
+make installer-test
 ```
 
 ## 扩展文档
 
+- Current architecture and flow: [docs/architecture-and-flow.md](docs/architecture-and-flow.md)
 - Capability Pack authoring: [docs/capability-pack-authoring.md](docs/capability-pack-authoring.md)
 - Plugin protocol: [docs/plugin-protocol.md](docs/plugin-protocol.md)
 - MCP wrapper: [integrations/mcp](integrations/mcp)

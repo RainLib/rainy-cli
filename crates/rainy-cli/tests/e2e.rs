@@ -38,6 +38,12 @@ fn golden_path_add_minio_verify_and_evidence() {
     ]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
+    let generated_ci = fs::read_to_string(app.join(".github/workflows/ci.yml")).expect("ci yml");
+    assert!(generated_ci.contains("actions/setup-java@v4"));
+    assert!(generated_ci.contains("Install Maven"));
+    assert!(generated_ci.contains("pnpm install --frozen-lockfile=false"));
+    assert!(generated_ci.contains("Install Rainy CLI"));
+    assert!(generated_ci.contains("~/.rainy/bin/rainy verify --profile ci --json"));
 
     run(&[
         "--workspace",
@@ -196,6 +202,44 @@ fn doctor_fails_when_installed_capability_artifact_is_missing() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("DOCTOR_FAILED"));
     assert!(stderr.contains("apps/frontend/src/components/file-upload"));
+}
+
+#[test]
+fn verify_ci_profile_rejects_unknown_steps() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "demo-saas"]);
+    let app = temp.path().join("demo-saas");
+    let app_path = app.to_string_lossy().to_string();
+    let rainy_yaml = app.join("rainy.yaml");
+    let config = fs::read_to_string(&rainy_yaml).expect("read rainy.yaml");
+    fs::write(
+        &rainy_yaml,
+        config.replace(
+            "      - security-basic\n",
+            "      - security-basic\n      - unknown-production-step\n",
+        ),
+    )
+    .expect("write rainy.yaml");
+
+    let output = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "verify",
+            "--profile",
+            "ci",
+            "--json",
+        ])
+        .output()
+        .expect("run rainy");
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("VERIFY_FAILED"));
+    assert!(stderr.contains("unknown-production-step"));
+    assert!(stderr.contains("unknown verify step is not allowed in strict profile"));
 }
 
 #[test]
@@ -1642,6 +1686,33 @@ fn schema_validation_org_policy_and_http_plugin_adapter_work() {
         .expect("run rainy");
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("SCHEMA_VALIDATION_FAILED"));
+    let bad_empty_name = temp.path().join("bad-empty-name.yaml");
+    write(
+        &bad_empty_name,
+        r#"apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: ""
+paths:
+  backend: apps/backend
+  frontend: apps/frontend
+package:
+  java: com.example.demo
+"#,
+    );
+    let bad_empty = rainy()
+        .args([
+            "schema",
+            "validate",
+            "--schema",
+            "rainy-project",
+            "--file",
+            &bad_empty_name.to_string_lossy(),
+        ])
+        .output()
+        .expect("run rainy");
+    assert!(!bad_empty.status.success());
+    assert!(String::from_utf8_lossy(&bad_empty.stderr).contains("minLength"));
 
     let policy_pack = app.join("policy-packs/policy-pack");
     write(

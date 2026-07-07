@@ -10,8 +10,39 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: verify release inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Schema parse
+        run: python3 -c "import json, pathlib; [json.loads(path.read_text()) for path in sorted(pathlib.Path('schemas').glob('*.schema.json'))]"
+      - name: MCP wrapper syntax
+        run: python3 -m py_compile integrations/mcp/rainy_mcp.py
+      - name: Installer syntax
+        run: |
+          sh -n scripts/install.sh
+          sh -n scripts/test-install.sh
+          if command -v pwsh >/dev/null 2>&1; then
+            pwsh -NoProfile -Command '$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$null)'
+          else
+            echo 'pwsh not found; skipping install.ps1 syntax check'
+          fi
+      - name: Installer tests
+        run: sh scripts/test-install.sh
+
   build:
     name: build ${{ matrix.target }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -19,6 +50,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            binary: rainy
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
             archive: tar.gz
             binary: rainy
           - os: macos-13

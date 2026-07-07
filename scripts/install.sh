@@ -13,11 +13,14 @@ need() {
 }
 
 detect_target() {
-  os="$(uname -s)"
-  arch="$(uname -m)"
+  os="${RAINY_INSTALLER_OS:-$(uname -s)}"
+  arch="${RAINY_INSTALLER_ARCH:-$(uname -m)}"
   case "$os:$arch" in
     Linux:x86_64|Linux:amd64)
       echo "x86_64-unknown-linux-gnu"
+      ;;
+    Linux:arm64|Linux:aarch64)
+      echo "aarch64-unknown-linux-gnu"
       ;;
     Darwin:x86_64|Darwin:amd64)
       echo "x86_64-apple-darwin"
@@ -49,6 +52,20 @@ checksum_verify() {
     echo "rainy installer: sha256 tool not found; skipping checksum verification" >&2
   fi
 }
+
+if [ "${RAINY_INSTALLER_PRINT_TARGET:-0}" = "1" ]; then
+  detect_target
+  exit 0
+fi
+
+if [ -n "${RAINY_INSTALLER_CHECKSUM_ARCHIVE:-}" ] || [ -n "${RAINY_INSTALLER_CHECKSUM_FILE:-}" ]; then
+  if [ -z "${RAINY_INSTALLER_CHECKSUM_ARCHIVE:-}" ] || [ -z "${RAINY_INSTALLER_CHECKSUM_FILE:-}" ]; then
+    echo "rainy installer: RAINY_INSTALLER_CHECKSUM_ARCHIVE and RAINY_INSTALLER_CHECKSUM_FILE must both be set" >&2
+    exit 1
+  fi
+  checksum_verify "$RAINY_INSTALLER_CHECKSUM_ARCHIVE" "$RAINY_INSTALLER_CHECKSUM_FILE"
+  exit 0
+fi
 
 need curl
 need tar

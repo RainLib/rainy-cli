@@ -32,12 +32,15 @@ help:
 	@printf '%s\n' '  make clippy             Run clippy with warnings denied'
 	@printf '%s\n' '  make check              fmt-check + test + clippy'
 	@printf '%s\n' '  make ci                 Full local CI smoke'
+	@printf '%s\n' '  make release-check      Local checks before tagging a GitHub Release'
+	@printf '%s\n' '  make production-check   Alias for release-check'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Protocol / integration checks:'
 	@printf '%s\n' '  make schema-check       Parse all schema JSON files'
 	@printf '%s\n' '  make conformance        Check community packs conformance'
 	@printf '%s\n' '  make mcp-check          Python compile-check MCP wrapper'
 	@printf '%s\n' '  make installer-check    Syntax-check installer scripts where possible'
+	@printf '%s\n' '  make installer-test     Run installer platform/checksum tests'
 	@printf '%s\n' '  make smoke              JSON smoke commands'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Demo project:'
@@ -111,7 +114,12 @@ mcp-check:
 .PHONY: installer-check
 installer-check:
 	sh -n scripts/install.sh
+	sh -n scripts/test-install.sh
 	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -Command '$$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$$null)'; else printf '%s\n' 'pwsh not found; skipping install.ps1 syntax check'; fi
+
+.PHONY: installer-test
+installer-test:
+	sh scripts/test-install.sh
 
 .PHONY: smoke
 smoke: build
@@ -120,7 +128,13 @@ smoke: build
 	$(RAINY_BIN) conformance check --path community-packs --json
 
 .PHONY: ci
-ci: fmt-check test clippy schema-check mcp-check installer-check smoke
+ci: fmt-check test clippy schema-check mcp-check installer-check installer-test smoke
+
+.PHONY: release-check
+release-check: ci
+
+.PHONY: production-check
+production-check: release-check
 
 .PHONY: demo-dry-run
 demo-dry-run: build

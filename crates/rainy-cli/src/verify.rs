@@ -68,11 +68,12 @@ pub fn run_verify(
         })?;
 
     let mut checks = Vec::new();
+    let strict = strict_verify_enabled(profile);
     for step in steps {
-        checks.push(run_step(workspace, &step, capability)?);
+        checks.push(run_step(workspace, &step, capability, strict)?);
     }
     checks.extend(run_capability_validations(
-        workspace, &config, &lock, capability,
+        workspace, &config, &lock, capability, strict,
     )?);
 
     let status = if checks.iter().any(|check| check.status == "failed") {
@@ -95,6 +96,7 @@ fn run_step(
     workspace: &Path,
     step: &str,
     capability: Option<&str>,
+    strict: bool,
 ) -> RainyResult<VerifyCheckResult> {
     match step {
         "doctor" => {
@@ -131,15 +133,22 @@ fn run_step(
             stdout: None,
             stderr: None,
         }),
-        other => Ok(VerifyCheckResult {
-            id: other.to_string(),
-            status: "warning".to_string(),
-            message: "unknown verify step skipped".to_string(),
-            duration_ms: None,
-            command: None,
-            stdout: None,
-            stderr: None,
-        }),
+        other => {
+            let status = if strict { "failed" } else { "warning" };
+            Ok(VerifyCheckResult {
+                id: other.to_string(),
+                status: status.to_string(),
+                message: if strict {
+                    "unknown verify step is not allowed in strict profile".to_string()
+                } else {
+                    "unknown verify step skipped".to_string()
+                },
+                duration_ms: None,
+                command: None,
+                stdout: None,
+                stderr: None,
+            })
+        }
     }
 }
 
@@ -191,13 +200,15 @@ fn run_capability_validations(
     config: &config::ProjectConfig,
     lock: &config::CapabilityLock,
     capability: Option<&str>,
+    strict: bool,
 ) -> RainyResult<Vec<VerifyCheckResult>> {
     let registry = match RegistryClient::load(workspace) {
         Ok(registry) => registry,
         Err(err) => {
+            let status = if strict { "failed" } else { "warning" };
             return Ok(vec![VerifyCheckResult {
                 id: "capability-validations".to_string(),
-                status: "warning".to_string(),
+                status: status.to_string(),
                 message: err.to_string(),
                 duration_ms: None,
                 command: None,
@@ -216,6 +227,7 @@ fn run_capability_validations(
             workspace,
             config,
             &definition,
+            strict,
         )?);
     }
     Ok(checks)
@@ -225,11 +237,12 @@ fn run_validations_for_capability(
     workspace: &Path,
     config: &config::ProjectConfig,
     capability: &CapabilityDefinition,
+    strict: bool,
 ) -> RainyResult<Vec<VerifyCheckResult>> {
     capability
         .validations
         .iter()
-        .map(|validation| run_validation(workspace, config, capability, validation))
+        .map(|validation| run_validation(workspace, config, capability, validation, strict))
         .collect()
 }
 
@@ -238,6 +251,7 @@ fn run_validation(
     config: &config::ProjectConfig,
     capability: &CapabilityDefinition,
     validation: &ValidationCommand,
+    strict: bool,
 ) -> RainyResult<VerifyCheckResult> {
     let command = render_string(config, &capability.inputs, &validation.command)?;
     let working_directory = validation
@@ -260,12 +274,15 @@ fn run_validation(
 
     let cwd = workspace.join(&working_directory);
     if command_executable_missing(&cwd, &command) {
+        let status = if strict { "failed" } else { "warning" };
         return Ok(VerifyCheckResult {
             id: format!("{}:{}", capability.id, validation.id),
-            status: "warning".to_string(),
-            message: format!(
-                "validation command skipped because executable is unavailable: {command}"
-            ),
+            status: status.to_string(),
+            message: if strict {
+                format!("validation command failed because executable is unavailable: {command}")
+            } else {
+                format!("validation command skipped because executable is unavailable: {command}")
+            },
             duration_ms: None,
             command: Some(command),
             stdout: None,
@@ -288,7 +305,7 @@ fn run_validation(
         || stderr.contains("not found");
     let status = if output.status.success() {
         "passed"
-    } else if output.status.code() == Some(127) || environment_missing {
+    } else if !strict && (output.status.code() == Some(127) || environment_missing) {
         "warning"
     } else {
         "failed"
@@ -298,7 +315,7 @@ fn run_validation(
         status: status.to_string(),
         message: if output.status.success() {
             "validation command passed".to_string()
-        } else if output.status.code() == Some(127) || environment_missing {
+        } else if !strict && (output.status.code() == Some(127) || environment_missing) {
             "validation command skipped because local toolchain/dependencies are unavailable"
                 .to_string()
         } else {
@@ -309,6 +326,16 @@ fn run_validation(
         stdout: Some(stdout),
         stderr: Some(stderr),
     })
+}
+
+fn strict_verify_enabled(profile: &str) -> bool {
+    profile == "ci" || env_truthy("RAINY_VERIFY_STRICT")
+}
+
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 fn command_executable_missing(cwd: &Path, command: &str) -> bool {

@@ -36,15 +36,20 @@ try {
   Write-Host "Installing rainy $ResolvedVersion for $Target"
   Invoke-WebRequest -UseBasicParsing "$BaseUrl/$Asset" -OutFile $Archive
 
+  $HasChecksum = $false
   try {
     Invoke-WebRequest -UseBasicParsing "$BaseUrl/$Asset.sha256" -OutFile $Checksum
+    $HasChecksum = $true
+  } catch {
+    Write-Warning "rainy installer: checksum file not found; continuing without checksum: $_"
+  }
+
+  if ($HasChecksum) {
     $Expected = (Get-Content $Checksum | Select-Object -First 1).Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)[0].ToLowerInvariant()
     $Actual = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
     if ($Expected -ne $Actual) {
       throw "checksum mismatch: expected $Expected, actual $Actual"
     }
-  } catch {
-    Write-Warning "rainy installer: checksum verification skipped or failed to download checksum: $_"
   }
 
   $ExtractDir = Join-Path $TempDir "extract"

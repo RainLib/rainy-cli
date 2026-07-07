@@ -370,18 +370,33 @@ pub struct SelfCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SelfSubcommand {
-    Check,
+    Check(SelfCheckArgs),
     Update(SelfUpdateArgs),
     Skip(SelfSkipArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SelfCheckArgs {
+    #[arg(long)]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct SelfUpdateArgs {
     #[arg(long)]
     pub force: bool,
+
+    #[arg(long)]
+    pub version: Option<String>,
+
+    #[arg(long)]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct SelfSkipArgs {
     pub version: Option<String>,
+
+    #[arg(long)]
+    pub repo: Option<String>,
 }
