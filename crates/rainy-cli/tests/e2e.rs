@@ -11,7 +11,20 @@ fn rainy() -> Command {
 }
 
 fn run(args: &[&str]) -> Output {
-    let output = rainy().args(args).output().expect("run rainy");
+    run_with_env(args, &[])
+}
+
+fn run_without_external_tools(args: &[&str]) -> Output {
+    run_with_env(args, &[("PATH", "")])
+}
+
+fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut command = rainy();
+    command.args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("run rainy");
     if !output.status.success() {
         panic!(
             "rainy failed\nargs: {args:?}\nstdout:\n{}\nstderr:\n{}",
@@ -97,8 +110,8 @@ fn golden_path_add_minio_verify_and_evidence() {
     ]);
     let doctor = run(&["--workspace", &app_path, "doctor", "--json"]);
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("DEFAULT_SECRET_VALUE"));
-    run(&["--workspace", &app_path, "verify", "--profile", "local"]);
-    run(&["--workspace", &app_path, "evidence", "generate"]);
+    run_without_external_tools(&["--workspace", &app_path, "verify", "--profile", "local"]);
+    run_without_external_tools(&["--workspace", &app_path, "evidence", "generate"]);
 
     assert!(app.join("evidence/report.md").exists());
     assert!(app.join("evidence/report.json").exists());
@@ -297,7 +310,7 @@ fn plan_file_apply_remove_upgrade_and_skill_sync() {
         "minio-file-storage",
         "--dry-run",
     ]);
-    run(&[
+    run_without_external_tools(&[
         "--workspace",
         &app_path,
         "verify",
@@ -1398,7 +1411,7 @@ fn community_pack_matrix_installs_extended_golden_path_capabilities() {
     );
 
     run(&["--workspace", &app_path, "doctor"]);
-    run(&["--workspace", &app_path, "verify", "--profile", "local"]);
+    run_without_external_tools(&["--workspace", &app_path, "verify", "--profile", "local"]);
 }
 
 #[test]
