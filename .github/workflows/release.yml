@@ -56,7 +56,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             binary: rainy
-          - os: macos-13
+          - os: macos-26-intel
             target: x86_64-apple-darwin
             archive: tar.gz
             binary: rainy
