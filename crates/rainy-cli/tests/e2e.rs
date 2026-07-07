@@ -52,6 +52,7 @@ fn golden_path_add_minio_verify_and_evidence() {
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
     let generated_ci = fs::read_to_string(app.join(".github/workflows/ci.yml")).expect("ci yml");
+    assert!(generated_ci.contains("actions/checkout@v5"));
     assert!(generated_ci.contains("actions/setup-java@v4"));
     assert!(generated_ci.contains("Install Maven"));
     assert!(generated_ci.contains("pnpm install --frozen-lockfile=false"));
