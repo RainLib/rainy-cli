@@ -60,7 +60,7 @@ jobs:
             target: x86_64-apple-darwin
             archive: tar.gz
             binary: rainy
-          - os: macos-14
+          - os: macos-26
             target: aarch64-apple-darwin
             archive: tar.gz
             binary: rainy
