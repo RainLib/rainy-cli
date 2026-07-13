@@ -140,8 +140,8 @@ smoke: build
 
 .PHONY: repo-check
 repo-check:
-	@! rg -n 'rainy-dev/rainy' Cargo.toml README.md docs scripts crates integrations .github
-	@rg -n 'RainLib/rainy-cli' Cargo.toml README.md scripts/install.sh scripts/install.ps1 >/dev/null
+	@! git grep -n 'rainy-dev/rainy' -- Cargo.toml README.md docs scripts crates integrations .github
+	@git grep -n 'RainLib/rainy-cli' -- Cargo.toml README.md scripts/install.sh scripts/install.ps1 >/dev/null
 
 .PHONY: security-check
 security-check:
