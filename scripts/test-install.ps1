@@ -67,7 +67,7 @@ function Assert-InstallerFails {
 
 New-Item -ItemType Directory -Force -Path $ServerRoot | Out-Null
 try {
-  $Release011 = Write-TestRelease -Version "v0.1.1"
+  $Release012 = Write-TestRelease -Version "v0.1.2"
   $Python = (Get-Command python -ErrorAction SilentlyContinue)
   if (-not $Python) { $Python = Get-Command python3 -ErrorAction Stop }
   $Server = Start-Process -FilePath $Python.Source -ArgumentList @(
@@ -81,25 +81,25 @@ try {
   if (-not (Test-Path $PortFile)) { throw "installer test server did not start" }
   $ServerBase = "http://127.0.0.1:$(Get-Content $PortFile)"
 
-  & $Installer -Version "v0.1.1" -InstallDir $InstallDir -BaseUrl "$ServerBase/v0.1.1"
-  Assert-Version -Expected "0.1.1"
+  & $Installer -Version "v0.1.2" -InstallDir $InstallDir -BaseUrl "$ServerBase/v0.1.2"
+  Assert-Version -Expected "0.1.2"
 
   Write-TestRelease -Version "v9.9.9" | Out-Null
   Assert-InstallerFails -Version "v9.9.9" -BaseUrl "$ServerBase/v9.9.9"
-  Assert-Version -Expected "0.1.1"
+  Assert-Version -Expected "0.1.2"
 
-  $Archive = Join-Path $Release011 "rainy-x86_64-pc-windows-msvc.zip"
+  $Archive = Join-Path $Release012 "rainy-x86_64-pc-windows-msvc.zip"
   ("0" * 64 + "  rainy-x86_64-pc-windows-msvc.zip") | Out-File -NoNewline -Encoding ascii "$Archive.sha256"
-  Assert-InstallerFails -Version "v0.1.1" -BaseUrl "$ServerBase/v0.1.1"
-  Assert-Version -Expected "0.1.1"
+  Assert-InstallerFails -Version "v0.1.2" -BaseUrl "$ServerBase/v0.1.2"
+  Assert-Version -Expected "0.1.2"
 
   Remove-Item "$Archive.sha256"
-  Assert-InstallerFails -Version "v0.1.1" -BaseUrl "$ServerBase/v0.1.1"
-  Assert-Version -Expected "0.1.1"
+  Assert-InstallerFails -Version "v0.1.2" -BaseUrl "$ServerBase/v0.1.2"
+  Assert-Version -Expected "0.1.2"
 
   Remove-Item $Archive
-  Assert-InstallerFails -Version "v0.1.1" -BaseUrl "$ServerBase/v0.1.1"
-  Assert-Version -Expected "0.1.1"
+  Assert-InstallerFails -Version "v0.1.2" -BaseUrl "$ServerBase/v0.1.2"
+  Assert-Version -Expected "0.1.2"
 } finally {
   if ($Server -and -not $Server.HasExited) { Stop-Process -Id $Server.Id -Force }
   Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue

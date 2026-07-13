@@ -52,7 +52,7 @@ try {
   $Archive = Join-Path $TempDir $Asset
   $Checksum = "$Archive.sha256"
   Write-Host "Installing rainy $ResolvedVersion for $Target"
-  Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "$BaseUrl/$Asset" -OutFile $Archive
+  Invoke-WebRequest -UseBasicParsing -TimeoutSec 600 "$BaseUrl/$Asset" -OutFile $Archive
 
   Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "$BaseUrl/$Asset.sha256" -OutFile $Checksum
   $Expected = (Get-Content $Checksum | Select-Object -First 1).Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)[0].ToLowerInvariant()

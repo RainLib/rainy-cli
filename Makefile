@@ -111,7 +111,7 @@ conformance: build
 	$(RAINY_BIN) conformance check --path community-packs --json
 
 .PHONY: mcp-check
-mcp-check:
+mcp-check: build
 	$(PYTHON) -m py_compile integrations/mcp/rainy_mcp.py
 	RAINY_BIN=$(RAINY_BIN) sh scripts/test-mcp.sh
 

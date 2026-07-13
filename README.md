@@ -89,13 +89,13 @@ powershell -ExecutionPolicy Bypass -c "iwr https://github.com/RainLib/rainy-cli/
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
-RAINY_REPO=owner/repo RAINY_VERSION=v0.1.1 sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.1.2 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.1.1 -InstallDir "$HOME\.rainy\bin" -AddToPath
+.\scripts\install.ps1 -Repo owner/repo -Version v0.1.2 -InstallDir "$HOME\.rainy\bin" -AddToPath
 ```
 
 安装器必须下载并验证对应 `.sha256` 文件，校验文件缺失或摘要不匹配时会停止。替换失败会恢复原有二进制，成功后会自动验证 `rainy --version`。
@@ -265,7 +265,7 @@ rainy self check
 rainy self check --json
 rainy self check --repo owner/repo
 rainy self update
-rainy self update --repo owner/repo --version v0.1.1
+rainy self update --repo owner/repo --version v0.1.2
 rainy self skip 0.2.0
 rainy self skip --repo owner/repo 0.2.0
 ```
@@ -297,8 +297,8 @@ make release-check
 创建并推送版本标签后会触发 release workflow：
 
 ```bash
-git tag -a v0.1.1 -m "Rainy CLI v0.1.1"
-git push origin v0.1.1
+git tag -a v0.1.2 -m "Rainy CLI v0.1.2"
+git push origin v0.1.2
 ```
 
 release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和安装脚本检查，然后分别构建并上传：

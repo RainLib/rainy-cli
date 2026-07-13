@@ -2,7 +2,14 @@
 
 All notable changes are documented here. Rainy follows Semantic Versioning.
 
-## [0.1.1] - Unreleased
+## [0.1.2] - 2026-07-13
+
+### Fixed
+
+- Increased release archive download timeouts on Unix and Windows installers
+  so installations remain reliable on slow GitHub Release connections.
+
+## [0.1.1] - 2026-07-13
 
 ### Added
 

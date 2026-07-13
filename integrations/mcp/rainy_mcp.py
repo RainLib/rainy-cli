@@ -131,7 +131,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "rainy-mcp", "version": "0.1.1"},
+            "serverInfo": {"name": "rainy-mcp", "version": rainy_version()},
             "capabilities": {"tools": {}},
         }
     elif method == "tools/list":
@@ -177,6 +177,19 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "get_agent_context":
         return rainy(workspace, ["agent", "context", "--json"])
     raise ValueError(f"unknown tool: {name}")
+
+
+def rainy_version() -> str:
+    output = subprocess.run(
+        [RAINY_BIN, "--version"], text=True, capture_output=True, check=False
+    )
+    if output.returncode != 0:
+        raise RuntimeError(output.stderr or output.stdout or "rainy --version failed")
+    prefix = "rainy "
+    version = output.stdout.strip()
+    if not version.startswith(prefix):
+        raise RuntimeError(f"unexpected rainy version output: {version}")
+    return version.removeprefix(prefix)
 
 
 def rainy(workspace: str | None, args: list[str]) -> dict[str, Any]:

@@ -3,9 +3,9 @@ set -eu
 
 SCRIPT="scripts/check-release-version.sh"
 
-[ "$(sh "$SCRIPT" v0.1.1)" = "v0.1.1" ]
+[ "$(sh "$SCRIPT" v0.1.2)" = "v0.1.2" ]
 
-if sh "$SCRIPT" v0.1.2 >/dev/null 2>&1; then
+if sh "$SCRIPT" v0.1.1 >/dev/null 2>&1; then
   echo "release test: mismatched Cargo version was accepted" >&2
   exit 1
 fi
