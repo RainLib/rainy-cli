@@ -32,11 +32,11 @@ jobs:
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cargo/bin
-          key: security-tools-cargo-audit-0.21-cargo-deny-0.18
+          key: security-tools-cargo-audit-0.22.2-cargo-deny-0.19.4
       - name: Install security tools
         run: |
-          command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.21.2 --locked
-          command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.18.4 --locked
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
+          command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.19.4 --locked
       - run: cargo audit
       - run: cargo deny check
 

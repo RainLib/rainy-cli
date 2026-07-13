@@ -122,7 +122,7 @@ installer-check:
 	sh -n scripts/check-release-version.sh
 	sh -n scripts/test-release.sh
 	$(PYTHON) -m py_compile scripts/test-installer-server.py
-	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -File scripts/test-install.ps1; else printf '%s\n' 'pwsh not found; skipping PowerShell installer tests'; fi
+	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -Command '$$errors = $$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts/install.ps1"), [ref]$$null, [ref]$$errors); [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts/test-install.ps1"), [ref]$$null, [ref]$$errors); if ($$errors.Count) { $$errors | ForEach-Object { Write-Error $$_ }; exit 1 }'; else printf '%s\n' 'pwsh not found; skipping PowerShell syntax check'; fi
 
 .PHONY: installer-test
 installer-test:
