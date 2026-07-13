@@ -2,10 +2,16 @@ use crate::cli::{SelfCommand, SelfSubcommand};
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
 use chrono::{DateTime, Duration, Utc};
+use semver::Version;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::PathBuf;
+use std::time::Duration as StdDuration;
 
 const DEFAULT_CHECK_INTERVAL_HOURS: i64 = 24;
+const FAILURE_RETRY_HOURS: i64 = 1;
+const MAX_UPDATE_RESPONSE_BYTES: u64 = 1024 * 1024;
 const UPDATE_PROTOCOL: &str = "rainy.update.v1";
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +25,10 @@ pub struct UpdateReport {
     pub update_available: bool,
     pub skipped: bool,
     pub install_command: String,
+    pub checked_at: DateTime<Utc>,
+    pub next_check_after: DateTime<Utc>,
+    pub release_type: String,
+    pub target_asset: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -29,6 +39,8 @@ struct UpdateState {
     latest_version: Option<String>,
     skip_version: Option<String>,
     skip_repository: Option<String>,
+    #[serde(default)]
+    consecutive_failures: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +71,7 @@ pub fn maybe_notify(json: bool, quiet: bool, is_self_command: bool) {
         return;
     }
     let Ok(report) = check_latest_with_state(&mut state, None) else {
+        record_check_failure(&mut state);
         let _ = save_state(&state);
         return;
     };
@@ -76,9 +89,17 @@ pub fn maybe_notify(json: bool, quiet: bool, is_self_command: bool) {
 
 fn check_command(repo: Option<String>) -> RainyResult<CommandOutput> {
     let mut state = load_state().unwrap_or_default();
-    let report = check_latest_with_state(&mut state, repo.as_deref())?;
-    save_state(&state)?;
-    Ok(CommandOutput::Update { report })
+    match check_latest_with_state(&mut state, repo.as_deref()) {
+        Ok(report) => {
+            save_state(&state)?;
+            Ok(CommandOutput::Update { report })
+        }
+        Err(error) => {
+            record_check_failure(&mut state);
+            save_state(&state)?;
+            Err(error)
+        }
+    }
 }
 
 fn update_command(
@@ -86,31 +107,39 @@ fn update_command(
     version: Option<String>,
     repo: Option<String>,
 ) -> RainyResult<CommandOutput> {
-    if !force && version.is_none() {
-        let mut state = load_state().unwrap_or_default();
-        let report = check_latest_with_state(&mut state, repo.as_deref())?;
-        save_state(&state)?;
-        if !report.update_available {
-            return Ok(CommandOutput::Update { report });
+    let mut state = load_state().unwrap_or_default();
+    let target_version = match version {
+        Some(version) => parse_version(&version)?.to_string(),
+        None => {
+            let report = check_latest_with_state(&mut state, repo.as_deref())?;
+            let target = report.latest_version.clone().ok_or_else(|| {
+                RainyError::config("UPDATE_VERSION_INVALID", "latest release has no version")
+            })?;
+            if !report.update_available && !force {
+                save_state(&state)?;
+                return Ok(CommandOutput::Update { report });
+            }
+            target
         }
-    }
+    };
 
-    run_install_script(repo.as_deref(), version.as_deref())?;
+    run_install_script(repo.as_deref(), &target_version)?;
+    verify_installed_version(&target_version)?;
     let mut state = load_state().unwrap_or_default();
     state.skip_version = None;
     state.skip_repository = None;
     state.last_checked = Some(Utc::now());
     save_state(&state)?;
-    Ok(CommandOutput::message(
-        "Rainy update installer completed. Run `rainy --version` to confirm the installed version.",
-    ))
+    Ok(CommandOutput::message(format!(
+        "Rainy CLI {target_version} installed and verified."
+    )))
 }
 
 fn skip_command(version: Option<String>, repo: Option<String>) -> RainyResult<CommandOutput> {
     let mut state = load_state().unwrap_or_default();
     let repository = repository_slug(repo.as_deref())?;
     let version = match version {
-        Some(version) => normalize_version(&version),
+        Some(version) => parse_version(&version)?.to_string(),
         None => {
             let report = check_latest_with_state(&mut state, Some(&repository))?;
             report.latest_version.unwrap_or_else(current_version)
@@ -133,9 +162,11 @@ fn check_latest_with_state(
     state.repository = Some(repository.clone());
     state.last_checked = Some(Utc::now());
     state.latest_version = Some(latest.clone());
+    state.consecutive_failures = 0;
     let current = current_version();
-    let update_available = version_gt(&latest, &current);
+    let update_available = version_gt(&latest, &current)?;
     let skipped = is_skipped(state, &repository, &latest);
+    let checked_at = state.last_checked.unwrap_or_else(Utc::now);
     Ok(UpdateReport {
         protocol_version: UPDATE_PROTOCOL.to_string(),
         repository: repository.clone(),
@@ -144,27 +175,17 @@ fn check_latest_with_state(
         update_available,
         skipped,
         install_command: install_command(&repository),
+        checked_at,
+        next_check_after: checked_at + Duration::hours(check_interval_hours()),
+        release_type: "stable".to_string(),
+        target_asset: target_asset(),
     })
 }
 
 fn latest_release_version(repository: &str) -> RainyResult<String> {
     let url = format!("https://api.github.com/repos/{repository}/releases/latest");
-    let output = std::process::Command::new("curl")
-        .args(["-fsSL", "-H", "User-Agent: rainy-cli", &url])
-        .output()
-        .map_err(|err| {
-            RainyError::config(
-                "UPDATE_CHECK_FAILED",
-                format!("failed to run curl for release check: {err}"),
-            )
-        })?;
-    if !output.status.success() {
-        return Err(RainyError::config(
-            "UPDATE_CHECK_FAILED",
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
-    }
-    parse_latest_release_version(&output.stdout)
+    let body = http_get_limited(&url, "UPDATE_CHECK_FAILED")?;
+    parse_latest_release_version(body.as_bytes())
 }
 
 fn parse_latest_release_version(release_json: &[u8]) -> RainyResult<String> {
@@ -175,40 +196,58 @@ fn parse_latest_release_version(release_json: &[u8]) -> RainyResult<String> {
             "latest GitHub release is a draft or prerelease",
         ));
     }
-    Ok(normalize_version(&release.tag_name))
+    Ok(parse_version(&release.tag_name)?.to_string())
 }
 
-fn run_install_script(repo: Option<&str>, version: Option<&str>) -> RainyResult<()> {
+fn run_install_script(repo: Option<&str>, version: &str) -> RainyResult<()> {
     let repository = repository_slug(repo)?;
-    let version = version.map(normalize_version);
-    let install_url = format!("https://github.com/{repository}/releases/latest/download");
+    let version = parse_version(version)?.to_string();
+    let install_url = format!("https://github.com/{repository}/releases/download/v{version}");
+    let script_name = if cfg!(windows) {
+        "install.ps1"
+    } else {
+        "install.sh"
+    };
+    let script_path = std::env::temp_dir().join(format!(
+        "rainy-install-{}-{script_name}",
+        std::process::id()
+    ));
+    let script = http_get_limited(
+        &format!("{install_url}/{script_name}"),
+        "UPDATE_INSTALL_FAILED",
+    )?;
+    let checksums = http_get_limited(
+        &format!("{install_url}/installers.sha256"),
+        "UPDATE_INSTALL_CHECKSUM_MISSING",
+    )?;
+    verify_installer_checksum(script_name, script.as_bytes(), &checksums)?;
+    std::fs::write(&script_path, script)?;
+    let install_dir = std::env::var_os("INSTALL_DIR")
+        .map(PathBuf::from)
+        .or_else(|| config_home().map(|home| home.join("bin")))
+        .ok_or_else(|| {
+            RainyError::config("UPDATE_INSTALL_FAILED", "cannot resolve install directory")
+        })?;
     let status = if cfg!(windows) {
-        let ps_command = format!(
-            "$ErrorActionPreference='Stop'; $script=Join-Path $env:TEMP 'rainy-install.ps1'; Invoke-WebRequest -UseBasicParsing '{install_url}/install.ps1' -OutFile $script; & $script"
-        );
         let mut command = std::process::Command::new("powershell");
         command
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &ps_command,
-            ])
-            .env("RAINY_REPO", &repository);
-        if let Some(version) = &version {
-            command.env("RAINY_VERSION", version);
-        }
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script_path)
+            .env("RAINY_REPO", &repository)
+            .env("RAINY_VERSION", &version)
+            .env("INSTALL_DIR", &install_dir);
         command.status()
     } else {
-        let command = format!("curl -fsSL {install_url}/install.sh | sh");
         let mut shell = std::process::Command::new("sh");
-        shell.arg("-c").arg(command).env("RAINY_REPO", &repository);
-        if let Some(version) = &version {
-            shell.env("RAINY_VERSION", version);
-        }
+        shell
+            .arg(&script_path)
+            .env("RAINY_REPO", &repository)
+            .env("RAINY_VERSION", &version)
+            .env("INSTALL_DIR", &install_dir);
         shell.status()
-    }?;
+    };
+    let _ = std::fs::remove_file(&script_path);
+    let status = status?;
     if !status.success() {
         return Err(RainyError::config(
             "UPDATE_INSTALL_FAILED",
@@ -226,10 +265,11 @@ fn auto_check_enabled() -> bool {
 }
 
 fn should_check(state: &UpdateState) -> bool {
-    let interval = std::env::var("RAINY_UPDATE_CHECK_INTERVAL_HOURS")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(DEFAULT_CHECK_INTERVAL_HOURS);
+    let interval = if state.consecutive_failures > 0 {
+        failure_retry_hours(state.consecutive_failures)
+    } else {
+        check_interval_hours()
+    };
     if interval <= 0 {
         return true;
     }
@@ -242,7 +282,7 @@ fn is_skipped(state: &UpdateState, repository: &str, latest: &str) -> bool {
     let Some(skip_version) = state.skip_version.as_deref() else {
         return false;
     };
-    if normalize_version(skip_version) != normalize_version(latest) {
+    if parse_version(skip_version).ok() != parse_version(latest).ok() {
         return false;
     }
     state
@@ -305,24 +345,59 @@ fn install_command(repository: &str) -> String {
 }
 
 fn current_version() -> String {
-    normalize_version(env!("CARGO_PKG_VERSION"))
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
-fn normalize_version(version: &str) -> String {
-    version.trim().trim_start_matches('v').to_string()
+fn version_gt(left: &str, right: &str) -> RainyResult<bool> {
+    Ok(parse_version(left)? > parse_version(right)?)
 }
 
-fn version_gt(left: &str, right: &str) -> bool {
-    let left = parse_version(left);
-    let right = parse_version(right);
-    left > right
+fn parse_version(version: &str) -> RainyResult<Version> {
+    let parsed = Version::parse(version.trim().trim_start_matches('v')).map_err(|err| {
+        RainyError::config(
+            "UPDATE_VERSION_INVALID",
+            format!("invalid semantic version {version}: {err}"),
+        )
+    })?;
+    if !parsed.pre.is_empty() {
+        return Err(RainyError::config(
+            "UPDATE_PRERELEASE_UNSUPPORTED",
+            format!("prerelease updates are not supported: {version}"),
+        ));
+    }
+    Ok(parsed)
 }
 
-fn parse_version(version: &str) -> Vec<u64> {
-    normalize_version(version)
-        .split(['.', '-', '+'])
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect()
+fn verify_installer_checksum(name: &str, bytes: &[u8], manifest: &str) -> RainyResult<()> {
+    let expected = manifest
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let digest = fields.next()?;
+            let file = fields.next()?.trim_start_matches('*');
+            (file == name).then_some(digest)
+        })
+        .next()
+        .ok_or_else(|| {
+            RainyError::config(
+                "UPDATE_INSTALL_CHECKSUM_MISSING",
+                format!("installer checksum is missing for {name}"),
+            )
+        })?;
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(RainyError::config(
+            "UPDATE_INSTALL_CHECKSUM_INVALID",
+            format!("installer checksum has an invalid format for {name}"),
+        ));
+    }
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(RainyError::config(
+            "UPDATE_INSTALL_CHECKSUM_INVALID",
+            format!("installer checksum mismatch for {name}"),
+        ));
+    }
+    Ok(())
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -361,7 +436,98 @@ fn save_state(state: &UpdateState) -> RainyResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(state)?))?;
+    let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(
+        &temporary,
+        format!("{}\n", serde_json::to_string_pretty(state)?),
+    )?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn check_interval_hours() -> i64 {
+    std::env::var("RAINY_UPDATE_CHECK_INTERVAL_HOURS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_CHECK_INTERVAL_HOURS)
+}
+
+fn record_check_failure(state: &mut UpdateState) {
+    state.last_checked = Some(Utc::now());
+    state.consecutive_failures = state.consecutive_failures.saturating_add(1).min(6);
+}
+
+fn failure_retry_hours(failures: u32) -> i64 {
+    FAILURE_RETRY_HOURS * (1_i64 << failures.saturating_sub(1).min(5))
+}
+
+fn http_get_limited(url: &str, error_code: &'static str) -> RainyResult<String> {
+    if !url.starts_with("https://") {
+        return Err(RainyError::config(
+            error_code,
+            format!("only HTTPS update URLs are allowed: {url}"),
+        ));
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(StdDuration::from_secs(3))
+        .timeout_read(StdDuration::from_secs(7))
+        .timeout_write(StdDuration::from_secs(7))
+        .build();
+    let response = agent
+        .get(url)
+        .set("User-Agent", "rainy-cli")
+        .call()
+        .map_err(|err| RainyError::config(error_code, format!("request failed: {err}")))?;
+    let mut reader = response.into_reader().take(MAX_UPDATE_RESPONSE_BYTES + 1);
+    let mut body = String::new();
+    reader
+        .read_to_string(&mut body)
+        .map_err(|err| RainyError::config(error_code, format!("response read failed: {err}")))?;
+    if body.len() as u64 > MAX_UPDATE_RESPONSE_BYTES {
+        return Err(RainyError::config(
+            error_code,
+            "response exceeds 1 MiB limit",
+        ));
+    }
+    Ok(body)
+}
+
+fn target_asset() -> Option<String> {
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu.tar.gz",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu.tar.gz",
+        ("macos", "x86_64") => "x86_64-apple-darwin.tar.gz",
+        ("macos", "aarch64") => "aarch64-apple-darwin.tar.gz",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc.zip",
+        _ => return None,
+    };
+    Some(format!("rainy-{target}"))
+}
+
+fn verify_installed_version(expected: &str) -> RainyResult<()> {
+    let binary = std::env::var_os("INSTALL_DIR")
+        .map(PathBuf::from)
+        .or_else(|| config_home().map(|home| home.join("bin")))
+        .map(|dir| dir.join(if cfg!(windows) { "rainy.exe" } else { "rainy" }))
+        .ok_or_else(|| {
+            RainyError::config("UPDATE_VERIFY_FAILED", "cannot resolve install directory")
+        })?;
+    let output = std::process::Command::new(&binary)
+        .arg("--version")
+        .output()
+        .map_err(|err| {
+            RainyError::config(
+                "UPDATE_VERIFY_FAILED",
+                format!("failed to run {}: {err}", binary.display()),
+            )
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() || !stdout.trim_end().ends_with(expected) {
+        return Err(RainyError::config(
+            "UPDATE_VERIFY_FAILED",
+            format!("installed binary did not report version {expected}"),
+        ));
+    }
     Ok(())
 }
 
@@ -371,10 +537,19 @@ mod tests {
 
     #[test]
     fn compares_versions_numerically() {
-        assert!(version_gt("0.10.0", "0.9.9"));
-        assert!(version_gt("v1.0.0", "0.99.0"));
-        assert!(!version_gt("0.1.0", "0.1.0"));
-        assert!(!version_gt("0.1.0", "0.2.0"));
+        assert!(version_gt("0.10.0", "0.9.9").expect("semver"));
+        assert!(version_gt("v1.0.0", "0.99.0").expect("semver"));
+        assert!(!version_gt("0.1.0", "0.1.0").expect("semver"));
+        assert!(!version_gt("0.1.0", "0.2.0").expect("semver"));
+        assert!(version_gt("not-a-version", "0.2.0").is_err());
+    }
+
+    #[test]
+    fn update_failure_backoff_is_bounded() {
+        assert_eq!(failure_retry_hours(1), 1);
+        assert_eq!(failure_retry_hours(2), 2);
+        assert_eq!(failure_retry_hours(6), 32);
+        assert_eq!(failure_retry_hours(100), 32);
     }
 
     #[test]
@@ -412,6 +587,24 @@ mod tests {
         )
         .expect_err("prerelease rejected");
         assert!(prerelease.to_string().contains("draft or prerelease"));
+    }
+
+    #[test]
+    fn rejects_explicit_prerelease_versions() {
+        let error = parse_version("v1.2.3-rc.1").expect_err("prerelease must be rejected");
+        assert_eq!(error.body().code, "UPDATE_PRERELEASE_UNSUPPORTED");
+    }
+
+    #[test]
+    fn verifies_installer_checksums() {
+        let bytes = b"installer";
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        verify_installer_checksum("install.sh", bytes, &format!("{digest}  install.sh\n"))
+            .expect("valid checksum");
+        let error =
+            verify_installer_checksum("install.ps1", bytes, &format!("{digest}  install.sh\n"))
+                .expect_err("missing checksum must fail");
+        assert_eq!(error.body().code, "UPDATE_INSTALL_CHECKSUM_MISSING");
     }
 
     #[test]

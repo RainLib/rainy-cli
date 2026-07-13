@@ -7,9 +7,11 @@ use globset::{Glob, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
+
+const MAX_PLUGIN_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginInfo {
@@ -68,6 +70,7 @@ pub struct PluginManifestAction {
 pub fn handle_plugin_command(
     workspace: &Path,
     command: PluginCommand,
+    allow_native_plugin: bool,
 ) -> RainyResult<CommandOutput> {
     match command.command {
         PluginSubcommand::List => Ok(CommandOutput::Plugins {
@@ -86,12 +89,17 @@ pub fn handle_plugin_command(
             }
             Ok(CommandOutput::Plugins { plugins })
         }
-        PluginSubcommand::Install(args) => install_plugin(workspace, args),
+        PluginSubcommand::Install(args) => install_plugin(workspace, args, allow_native_plugin),
         PluginSubcommand::Call(args) => call_plugin(workspace, args),
     }
 }
 
-pub fn run_external(workspace: &Path, args: Vec<OsString>) -> RainyResult<CommandOutput> {
+pub fn run_external(
+    workspace: &Path,
+    args: Vec<OsString>,
+    allow_native_plugin: bool,
+) -> RainyResult<CommandOutput> {
+    ensure_native_plugin_allowed(workspace, allow_native_plugin)?;
     let Some(command) = args.first() else {
         return Err(RainyError::plugin(
             "PLUGIN_COMMAND_INVALID",
@@ -207,6 +215,7 @@ fn collect_from_dir(dir: &Path, found: &mut BTreeMap<String, DiscoveredPlugin>) 
 fn install_plugin(
     workspace: &Path,
     args: crate::cli::PluginInstallArgs,
+    allow_native_plugin: bool,
 ) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let source = prepare_plugin_source(workspace, &args.source, apply)?;
@@ -217,6 +226,7 @@ fn install_plugin(
             format!("no rainy-* executable found in {}", source.display()),
         ));
     }
+    ensure_native_plugin_allowed(workspace, allow_native_plugin)?;
 
     let target_dir = workspace.join(".rainy/plugins/bin");
     let mut changes = crate::patch::ChangeSet::new();
@@ -375,6 +385,22 @@ fn resolve_apply_flags(dry_run: bool, apply: bool) -> RainyResult<bool> {
         ));
     }
     Ok(apply)
+}
+
+fn ensure_native_plugin_allowed(workspace: &Path, allowed: bool) -> RainyResult<()> {
+    if !allowed {
+        return Err(RainyError::plugin(
+            "PLUGIN_NATIVE_NOT_TRUSTED",
+            "native plugins execute with host process permissions; rerun with --allow-native-plugin only after reviewing and trusting the plugin",
+        ));
+    }
+    if !workspace.join("rainy.yaml").exists() {
+        return Err(RainyError::plugin(
+            "PLUGIN_NATIVE_AUDIT_REQUIRED",
+            "native plugins must run inside a Rainy project so execution can be audited",
+        ));
+    }
+    Ok(())
 }
 
 fn is_wasm_action(action: &PluginManifestAction) -> bool {
@@ -566,42 +592,52 @@ struct PluginRpcResponse {
 }
 
 fn http_post_json(url: &str, body: &serde_json::Value) -> RainyResult<String> {
-    let Some(rest) = url.strip_prefix("http://") else {
+    if !url.starts_with("https://") && !is_loopback_http(url) {
         return Err(RainyError::plugin(
             "PLUGIN_ADAPTER_UNSUPPORTED_URL",
-            format!("only http:// adapters are supported in this runtime: {url}"),
-        ));
-    };
-    let (host_port, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let path = format!("/{path}");
-    let body = serde_json::to_string(body)?;
-    let mut stream = TcpStream::connect(host_port).map_err(|err| {
-        RainyError::plugin(
-            "PLUGIN_ADAPTER_FAILED",
-            format!("connect {host_port} failed: {err}"),
-        )
-    })?;
-    let host = host_port.split(':').next().unwrap_or(host_port);
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\nUser-Agent: rainy-cli\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    stream.write_all(request.as_bytes())?;
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
-    let response = String::from_utf8(response)
-        .map_err(|err| RainyError::plugin("PLUGIN_ADAPTER_FAILED", err.to_string()))?;
-    let (head, body) = response
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| RainyError::plugin("PLUGIN_ADAPTER_FAILED", "invalid HTTP response"))?;
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
-        return Err(RainyError::plugin(
-            "PLUGIN_ADAPTER_FAILED",
-            head.lines().next().unwrap_or("HTTP error").to_string(),
+            format!("only HTTPS or loopback HTTP adapters are allowed: {url}"),
         ));
     }
-    Ok(body.to_string())
+    let body = serde_json::to_string(body)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(10))
+        .timeout_write(Duration::from_secs(10))
+        .redirects(0)
+        .build();
+    let response = agent
+        .post(url)
+        .set("User-Agent", "rainy-cli")
+        .set("Content-Type", "application/json")
+        .send_string(&body)
+        .map_err(|err| RainyError::plugin("PLUGIN_ADAPTER_FAILED", err.to_string()))?;
+    let mut response_body = String::new();
+    response
+        .into_reader()
+        .take(MAX_PLUGIN_RESPONSE_BYTES + 1)
+        .read_to_string(&mut response_body)
+        .map_err(|err| RainyError::plugin("PLUGIN_ADAPTER_FAILED", err.to_string()))?;
+    if response_body.len() as u64 > MAX_PLUGIN_RESPONSE_BYTES {
+        return Err(RainyError::plugin(
+            "PLUGIN_ADAPTER_RESPONSE_TOO_LARGE",
+            "plugin adapter response exceeds 5 MiB limit",
+        ));
+    }
+    Ok(response_body)
+}
+
+fn is_loopback_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest
+        .split_once('/')
+        .map(|(host, _)| host)
+        .unwrap_or(rest)
+        .split(':')
+        .next()
+        .unwrap_or_default();
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 pub(crate) fn validate_plugin_permissions(manifest: &PluginManifest) -> RainyResult<()> {
@@ -888,6 +924,15 @@ pub(crate) fn shadows_builtin_command(plugin_name: &str) -> bool {
 
 fn prepare_plugin_source(workspace: &Path, source: &str, apply: bool) -> RainyResult<PathBuf> {
     if let Some(git_url) = source.strip_prefix("git+") {
+        if !git_url.starts_with("https://")
+            && !git_url.starts_with("ssh://")
+            && !git_url.starts_with("git@")
+        {
+            return Err(RainyError::plugin(
+                "PLUGIN_SOURCE_UNSUPPORTED_URL",
+                format!("git plugin source must use HTTPS or SSH: {git_url}"),
+            ));
+        }
         let target = workspace.join(".rainy/plugins/src").join(slugify(git_url));
         if apply && !target.exists() {
             if let Some(parent) = target.parent() {

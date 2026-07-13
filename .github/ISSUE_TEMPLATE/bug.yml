@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible Rainy CLI problem
+title: "bug: "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Rainy version
+      placeholder: rainy 0.1.1
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Remove secrets and private source code before posting.

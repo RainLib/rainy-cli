@@ -297,9 +297,25 @@ fn append_lock_change(
     changes: &mut ChangeSet,
 ) -> RainyResult<()> {
     let artifacts = changes.changed_files();
+    let source = capability.pack_root.to_string_lossy().to_string();
+    let digest = crate::registry::pack_digest(&capability.pack_root)?;
     let next_capability = if let Some(existing) = lock.capabilities.get(&capability.id) {
         let mut existing = existing.clone();
+        if let Some(locked_digest) = &existing.digest
+            && locked_digest != &digest
+        {
+            return Err(RainyError::registry(
+                "PACK_DIGEST_MISMATCH",
+                format!(
+                    "pack {} changed since it was locked; expected {}, got {}",
+                    capability.pack_name, locked_digest, digest
+                ),
+            ));
+        }
+        existing.version = capability.version.clone();
         existing.provider = Some(provider.to_string());
+        existing.source = Some(source.clone());
+        existing.digest = Some(digest.clone());
         for artifact in artifacts {
             if !existing.artifacts.contains(&artifact) {
                 existing.artifacts.push(artifact);
@@ -311,6 +327,8 @@ fn append_lock_change(
             version: capability.version.clone(),
             provider: Some(provider.to_string()),
             pack: format!("{}@{}", capability.pack_name, capability.version),
+            source: Some(source),
+            digest: Some(digest),
             installed_at: Utc::now(),
             artifacts,
         }

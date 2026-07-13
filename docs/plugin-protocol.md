@@ -9,6 +9,15 @@ Rainy supports three plugin shapes:
 Plugins cannot shadow built-in Rainy commands, cannot bypass policy, and must
 declare permissions in `plugin.json`.
 
+Wasm is the default production runtime. External `rainy-*` executables run with
+the invoking user's full host permissions and are not a sandbox. They are
+blocked unless the caller explicitly passes `--allow-native-plugin` or sets
+`RAINY_ALLOW_NATIVE_PLUGIN=1` after reviewing the executable.
+
+A project may persist the decision with `policy.allowNativePlugins: true`.
+Native execution is only permitted inside a Rainy project so every invocation
+can be appended to `.rainy/audit.log`; an audit write failure fails the command.
+
 ## Manifest
 
 ```json
@@ -43,7 +52,7 @@ declare permissions in `plugin.json`.
 Install:
 
 ```bash
-rainy plugin install path/to/plugin --apply
+rainy --allow-native-plugin plugin install path/to/plugin --apply
 rainy plugin list
 rainy plugin inspect example
 ```
@@ -54,7 +63,7 @@ An installed plugin can expose `rainy-example`. Rainy forwards unknown top-level
 commands to matching external commands:
 
 ```bash
-rainy example hello
+rainy --allow-native-plugin example hello
 ```
 
 The command above forwards to:

@@ -3,23 +3,35 @@ members = ["crates/rainy-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
+rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/rainy-dev/rainy"
+repository = "https://github.com/RainLib/rainy-cli"
+homepage = "https://github.com/RainLib/rainy-cli"
+description = "Deterministic software capability orchestration for developers, agents, and CI"
+readme = "README.md"
+authors = ["RainLib"]
+keywords = ["cli", "scaffolding", "platform-engineering", "automation"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 globset = "0.4"
+fs2 = "0.4"
 handlebars = "6.3"
+include_dir = "0.7"
+jsonschema = { version = "0.33", default-features = false }
 similar = "2.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 sha2 = "0.10"
+semver = "1.0"
 thiserror = "2.0"
 toml = "0.9"
+ureq = { version = "2.12", default-features = true }
 walkdir = "2.5"
 wasmtime = "31.0"

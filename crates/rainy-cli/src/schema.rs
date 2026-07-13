@@ -48,7 +48,7 @@ pub fn handle_schema_command(command: SchemaCommand) -> RainyResult<CommandOutpu
 
 fn list_schemas() -> RainyResult<Vec<SchemaInfo>> {
     let mut schemas = Vec::new();
-    for entry in std::fs::read_dir(schema_root())? {
+    for entry in std::fs::read_dir(schema_root()?)? {
         let entry = entry?;
         if entry.file_type()?.is_file()
             && entry
@@ -70,11 +70,37 @@ fn list_schemas() -> RainyResult<Vec<SchemaInfo>> {
 
 fn validate_file(schema_name: &str, file: &Path) -> RainyResult<SchemaValidationReport> {
     let schema_path = schema_path(schema_name)?;
-    let schema: Value = serde_json::from_str(&std::fs::read_to_string(&schema_path)?)?;
+    let mut schema: Value = serde_json::from_str(&std::fs::read_to_string(&schema_path)?)?;
     let instance = read_value(file)?;
-    let schemas = load_schemas()?;
-    let mut issues = Vec::new();
-    validate_value(&schema, &instance, "$", &schemas, &mut issues);
+    let mut schemas = load_schemas()?;
+    for schema in schemas.values_mut() {
+        rewrite_external_refs(schema);
+    }
+    rewrite_external_refs(&mut schema);
+    schema
+        .as_object_mut()
+        .ok_or_else(|| RainyError::config("SCHEMA_INVALID", "schema root must be an object"))?
+        .insert(
+            "$defs".to_string(),
+            Value::Object(schemas.into_iter().collect()),
+        );
+    let validator = jsonschema::validator_for(&schema).map_err(|err| {
+        RainyError::config(
+            "SCHEMA_INVALID",
+            format!("schema compilation failed: {err}"),
+        )
+    })?;
+    let issues = validator
+        .iter_errors(&instance)
+        .map(|error| SchemaIssue {
+            path: if error.instance_path.as_str().is_empty() {
+                "$".to_string()
+            } else {
+                format!("${}", error.instance_path)
+            },
+            message: error.to_string(),
+        })
+        .collect::<Vec<_>>();
     Ok(SchemaValidationReport {
         protocol_version: "rainy.schema-validation.v1".to_string(),
         status: if issues.is_empty() {
@@ -89,162 +115,27 @@ fn validate_file(schema_name: &str, file: &Path) -> RainyResult<SchemaValidation
     })
 }
 
-fn validate_value(
-    schema: &Value,
-    instance: &Value,
-    path: &str,
-    schemas: &BTreeMap<String, Value>,
-    issues: &mut Vec<SchemaIssue>,
-) {
-    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        if let Some(ref_schema) = schemas.get(reference) {
-            validate_value(ref_schema, instance, path, schemas, issues);
-        } else {
-            issues.push(SchemaIssue {
-                path: path.to_string(),
-                message: format!("schema reference not found: {reference}"),
-            });
-        }
-        return;
-    }
-
-    if let Some(const_value) = schema.get("const")
-        && instance != const_value
-    {
-        issues.push(SchemaIssue {
-            path: path.to_string(),
-            message: format!("expected constant {}", display_value(const_value)),
-        });
-    }
-
-    if let Some(enum_values) = schema.get("enum").and_then(Value::as_array)
-        && !enum_values.iter().any(|value| value == instance)
-    {
-        issues.push(SchemaIssue {
-            path: path.to_string(),
-            message: format!("value {} is not in enum", display_value(instance)),
-        });
-    }
-
-    if let Some(schema_type) = schema.get("type")
-        && !type_matches(schema_type, instance)
-    {
-        issues.push(SchemaIssue {
-            path: path.to_string(),
-            message: format!("type mismatch, expected {}", display_value(schema_type)),
-        });
-        return;
-    }
-
-    if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
-        && let Some(text) = instance.as_str()
-        && !matches_pattern(pattern, text)
-    {
-        issues.push(SchemaIssue {
-            path: path.to_string(),
-            message: format!("value does not match pattern {pattern}"),
-        });
-    }
-
-    if let Some(min_length) = schema.get("minLength").and_then(Value::as_u64)
-        && let Some(text) = instance.as_str()
-        && text.chars().count() < min_length as usize
-    {
-        issues.push(SchemaIssue {
-            path: path.to_string(),
-            message: format!("string length is less than minLength {min_length}"),
-        });
-    }
-
-    if let Some(required) = schema.get("required").and_then(Value::as_array)
-        && let Some(object) = instance.as_object()
-    {
-        for key in required.iter().filter_map(Value::as_str) {
-            if !object.contains_key(key) {
-                issues.push(SchemaIssue {
-                    path: path.to_string(),
-                    message: format!("missing required property {key}"),
-                });
+fn rewrite_external_refs(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(reference) = object.get_mut("$ref")
+                && let Some(raw) = reference.as_str()
+                && !raw.starts_with('#')
+                && !raw.contains("://")
+            {
+                *reference = Value::String(format!("#/$defs/{raw}"));
+            }
+            for nested in object.values_mut() {
+                rewrite_external_refs(nested);
             }
         }
-    }
-
-    if let (Some(properties), Some(object)) = (
-        schema.get("properties").and_then(Value::as_object),
-        instance.as_object(),
-    ) {
-        for (key, property_schema) in properties {
-            if let Some(value) = object.get(key) {
-                validate_value(
-                    property_schema,
-                    value,
-                    &format!("{path}.{key}"),
-                    schemas,
-                    issues,
-                );
+        Value::Array(values) => {
+            for nested in values {
+                rewrite_external_refs(nested);
             }
         }
-        if schema
-            .get("additionalProperties")
-            .and_then(Value::as_bool)
-            .is_some_and(|value| !value)
-        {
-            for key in object.keys() {
-                if !properties.contains_key(key) {
-                    issues.push(SchemaIssue {
-                        path: format!("{path}.{key}"),
-                        message: "additional property is not allowed".to_string(),
-                    });
-                }
-            }
-        }
+        _ => {}
     }
-
-    if let (Some(item_schema), Some(items)) = (schema.get("items"), instance.as_array()) {
-        for (index, item) in items.iter().enumerate() {
-            validate_value(
-                item_schema,
-                item,
-                &format!("{path}[{index}]"),
-                schemas,
-                issues,
-            );
-        }
-    }
-}
-
-fn type_matches(schema_type: &Value, instance: &Value) -> bool {
-    match schema_type {
-        Value::String(kind) => single_type_matches(kind, instance),
-        Value::Array(kinds) => kinds
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|kind| single_type_matches(kind, instance)),
-        _ => true,
-    }
-}
-
-fn single_type_matches(kind: &str, instance: &Value) -> bool {
-    match kind {
-        "object" => instance.is_object(),
-        "array" => instance.is_array(),
-        "string" => instance.is_string(),
-        "number" => instance.is_number(),
-        "integer" => instance.as_i64().is_some() || instance.as_u64().is_some(),
-        "boolean" => instance.is_boolean(),
-        "null" => instance.is_null(),
-        _ => true,
-    }
-}
-
-fn matches_pattern(pattern: &str, text: &str) -> bool {
-    if pattern == "^[a-f0-9]{64}$" {
-        return text.len() == 64
-            && text
-                .chars()
-                .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch));
-    }
-    true
 }
 
 fn read_value(file: &Path) -> RainyResult<Value> {
@@ -263,7 +154,7 @@ fn read_value(file: &Path) -> RainyResult<Value> {
 
 fn load_schemas() -> RainyResult<BTreeMap<String, Value>> {
     let mut schemas = BTreeMap::new();
-    for entry in std::fs::read_dir(schema_root())? {
+    for entry in std::fs::read_dir(schema_root()?)? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -293,7 +184,7 @@ fn schema_path(name: &str) -> RainyResult<PathBuf> {
     } else {
         format!("{name}.schema.json")
     };
-    let path = schema_root().join(&filename);
+    let path = schema_root()?.join(&filename);
     if !path.exists() {
         return Err(RainyError::config(
             "SCHEMA_NOT_FOUND",
@@ -315,14 +206,6 @@ fn schema_name(path: &Path) -> String {
         .to_string()
 }
 
-fn schema_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crate is inside workspace")
-        .join("schemas")
-}
-
-fn display_value(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "<value>".to_string())
+fn schema_root() -> RainyResult<PathBuf> {
+    crate::bundled_assets::schema_path()
 }

@@ -131,7 +131,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
     if method == "initialize":
         result = {
             "protocolVersion": "2024-11-05",
-            "serverInfo": {"name": "rainy-mcp", "version": "0.1.0"},
+            "serverInfo": {"name": "rainy-mcp", "version": "0.1.1"},
             "capabilities": {"tools": {}},
         }
     elif method == "tools/list":

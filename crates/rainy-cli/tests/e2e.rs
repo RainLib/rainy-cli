@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -7,7 +8,9 @@ use std::thread;
 use tempfile::TempDir;
 
 fn rainy() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_rainy"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rainy"));
+    command.env("RAINY_ALLOW_NATIVE_PLUGIN", "1");
+    command
 }
 
 fn run(args: &[&str]) -> Output {
@@ -35,6 +38,57 @@ fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
     output
 }
 
+#[cfg(unix)]
+#[test]
+fn native_plugins_require_explicit_trust() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("tempdir");
+    let plugin = temp.path().join("rainy-untrusted");
+    fs::write(&plugin, "#!/bin/sh\necho should-not-run\n").expect("plugin");
+    let mut permissions = fs::metadata(&plugin).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&plugin, permissions).expect("permissions");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rainy"))
+        .arg("untrusted")
+        .env("PATH", temp.path())
+        .env_remove("RAINY_ALLOW_NATIVE_PLUGIN")
+        .output()
+        .expect("run rainy");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("PLUGIN_NATIVE_NOT_TRUSTED"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rainy"))
+        .args(["--allow-native-plugin", "untrusted"])
+        .env("PATH", temp.path())
+        .output()
+        .expect("run trusted plugin outside project");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("PLUGIN_NATIVE_AUDIT_REQUIRED"));
+
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "demo-saas"]);
+    let app = temp.path().join("demo-saas");
+    let config_path = app.join("rainy.yaml");
+    let config = fs::read_to_string(&config_path).expect("config");
+    fs::write(
+        &config_path,
+        config.replace("allowNativePlugins: false", "allowNativePlugins: true"),
+    )
+    .expect("enable native plugin policy");
+    let output = Command::new(env!("CARGO_BIN_EXE_rainy"))
+        .args(["--workspace", &app.to_string_lossy(), "untrusted"])
+        .env("PATH", temp.path())
+        .env_remove("RAINY_ALLOW_NATIVE_PLUGIN")
+        .output()
+        .expect("run policy-trusted plugin");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("should-not-run"));
+    let audit = fs::read_to_string(app.join(".rainy/audit.log")).expect("native plugin audit");
+    assert!(audit.contains("\"command\":\"external\""));
+}
+
 #[test]
 fn golden_path_add_minio_verify_and_evidence() {
     let temp = TempDir::new().expect("tempdir");
@@ -55,7 +109,8 @@ fn golden_path_add_minio_verify_and_evidence() {
     assert!(generated_ci.contains("actions/checkout@v5"));
     assert!(generated_ci.contains("actions/setup-java@v4"));
     assert!(generated_ci.contains("Install Maven"));
-    assert!(generated_ci.contains("pnpm install --frozen-lockfile=false"));
+    assert!(generated_ci.contains("pnpm install --frozen-lockfile"));
+    assert!(app.join("apps/frontend/pnpm-lock.yaml").exists());
     assert!(generated_ci.contains("Install Rainy CLI"));
     assert!(generated_ci.contains("~/.rainy/bin/rainy verify --profile ci --json"));
 
@@ -177,6 +232,51 @@ fn new_dry_run_json_does_not_create_project() {
             .expect("files array")
             .iter()
             .any(|file| file == "rainy.yaml")
+    );
+}
+
+#[test]
+fn standalone_binary_uses_embedded_packs_and_schemas() {
+    let temp = TempDir::new().expect("tempdir");
+    let cache = temp.path().join("asset-cache");
+    for args in [
+        &["capability", "list", "--json"][..],
+        &["schema", "list", "--json"][..],
+    ] {
+        let output = rainy()
+            .args(args)
+            .current_dir(temp.path())
+            .env("RAINY_FORCE_EMBEDDED_ASSETS", "1")
+            .env("RAINY_ASSET_CACHE", &cache)
+            .output()
+            .expect("run standalone command");
+        assert!(
+            output.status.success(),
+            "standalone command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = rainy()
+        .args(["new", "standalone-app"])
+        .current_dir(temp.path())
+        .env("RAINY_FORCE_EMBEDDED_ASSETS", "1")
+        .env("RAINY_ASSET_CACHE", &cache)
+        .output()
+        .expect("create standalone project");
+    assert!(
+        output.status.success(),
+        "standalone init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config = fs::read_to_string(temp.path().join("standalone-app/rainy.yaml"))
+        .expect("standalone config");
+    assert!(config.contains("sources: []"));
+    assert!(!config.contains(&cache.to_string_lossy().to_string()));
+    assert!(
+        cache
+            .join(format!("rainy-cli-assets-{}", env!("CARGO_PKG_VERSION")))
+            .join(".complete")
+            .is_file()
     );
 }
 
@@ -1616,7 +1716,10 @@ doctor:
 agentRules: []
 "#,
     );
-    let base_url = serve_static(http_root.clone(), 3);
+    let pack_digest = file_sha256(&http_root.join("packs/http-pack/pack.yaml"));
+    let capability_digest =
+        file_sha256(&http_root.join("packs/http-pack/capabilities/http-capability.yaml"));
+    let base_url = serve_static(http_root.clone(), 6);
     write(
         &http_root.join("registry.yaml"),
         &format!(
@@ -1628,6 +1731,9 @@ packs:
     files:
       - pack.yaml
       - capabilities/http-capability.yaml
+    digests:
+      pack.yaml: {pack_digest}
+      capabilities/http-capability.yaml: {capability_digest}
 "#
         ),
     );
@@ -1653,6 +1759,23 @@ packs:
         .path()
         .join("http-pack");
     let cached_pack_path = cached_pack.to_string_lossy().to_string();
+    fs::write(
+        http_root.join("packs/http-pack/capabilities/http-capability.yaml"),
+        "tampered\n",
+    )
+    .expect("tamper remote pack");
+    let output = rainy()
+        .args(["--workspace", &app_path, "pack", "update", "--apply"])
+        .output()
+        .expect("update tampered registry");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP_REGISTRY_CHECKSUM_INVALID"));
+    assert!(
+        fs::read_to_string(cached_pack.join("capabilities/http-capability.yaml"))
+            .expect("cached capability")
+            .contains("id: http-capability")
+    );
+
     run(&["pack", "sign", &cached_pack_path]);
     run(&["pack", "verify", &cached_pack_path]);
     fs::write(cached_pack.join("README.md"), "tampered\n").expect("tamper pack");
@@ -1726,7 +1849,7 @@ package:
         .output()
         .expect("run rainy");
     assert!(!bad_empty.status.success());
-    assert!(String::from_utf8_lossy(&bad_empty.stderr).contains("minLength"));
+    assert!(String::from_utf8_lossy(&bad_empty.stderr).contains("SCHEMA_VALIDATION_FAILED"));
 
     let policy_pack = app.join("policy-packs/policy-pack");
     write(
@@ -1946,7 +2069,11 @@ fn plugin_action_cannot_write_outside_manifest_permissions() {
         .expect("run rainy");
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("PLUGIN_FS_WRITE_DENIED"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("PLUGIN_FS_WRITE_DENIED"),
+        "unexpected stderr: {stderr}"
+    );
     assert!(
         !fs::read_to_string(app.join("apps/backend/pom.xml"))
             .expect("pom")
@@ -2130,16 +2257,7 @@ agentRules: []
         "secret: should-not-write\n",
     );
 
-    let rainy_yaml = app.join("rainy.yaml");
-    let content = fs::read_to_string(&rainy_yaml).expect("rainy.yaml");
-    let injected = content.replace(
-        "capabilityRegistry:\n  sources:\n",
-        &format!(
-            "capabilityRegistry:\n  sources:\n    - type: local\n      path: \"{}\"\n",
-            app.join("malicious-packs").to_string_lossy()
-        ),
-    );
-    fs::write(&rainy_yaml, injected).expect("write rainy.yaml");
+    inject_registry_source(&app, "malicious-packs");
 
     let app_path = app.to_string_lossy().to_string();
     let output = rainy()
@@ -2344,13 +2462,19 @@ fn write_bytes(path: &Path, content: &[u8]) {
 fn inject_registry_source(app: &Path, source: &str) {
     let rainy_yaml = app.join("rainy.yaml");
     let content = fs::read_to_string(&rainy_yaml).expect("rainy.yaml");
-    let injected = content.replace(
-        "capabilityRegistry:\n  sources:\n",
-        &format!(
-            "capabilityRegistry:\n  sources:\n    - type: local\n      path: \"{}\"\n",
-            app.join(source).to_string_lossy()
-        ),
+    let source_block = format!(
+        "capabilityRegistry:\n  sources:\n    - type: local\n      path: \"{}\"",
+        app.join(source).to_string_lossy()
     );
+    let injected = if content.contains("capabilityRegistry:\n  sources: []") {
+        content.replace("capabilityRegistry:\n  sources: []", &source_block)
+    } else {
+        content.replace(
+            "capabilityRegistry:\n  sources:\n",
+            &format!("{source_block}\n"),
+        )
+    };
+    assert_ne!(content, injected, "registry source marker not found");
     fs::write(&rainy_yaml, injected).expect("write rainy.yaml");
 }
 
@@ -2440,4 +2564,11 @@ fn adapter_url_placeholder(content: &str) -> String {
     let rest = &content[start..];
     let end = rest.find('"').expect("adapter url end");
     rest[..end].to_string()
+}
+
+fn file_sha256(path: &Path) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(fs::read(path).expect("hash fixture"))
+    )
 }

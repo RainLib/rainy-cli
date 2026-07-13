@@ -20,7 +20,23 @@
         "version": { "type": "string" }
       }
     },
-    "capabilities": { "type": "object" },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["version", "pack", "installedAt", "artifacts"],
+        "properties": {
+          "version": { "type": "string" },
+          "provider": { "type": ["string", "null"] },
+          "pack": { "type": "string" },
+          "source": { "type": "string" },
+          "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "installedAt": { "type": "string", "format": "date-time" },
+          "artifacts": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    },
     "skills": {
       "type": "array",
       "items": { "type": "string" }

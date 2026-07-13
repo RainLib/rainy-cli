@@ -60,6 +60,10 @@
     "policy": {
       "type": "object",
       "properties": {
+        "allowNativePlugins": {
+          "type": "boolean",
+          "default": false
+        },
         "allowEdit": {
           "type": "array",
           "items": { "type": "string" }

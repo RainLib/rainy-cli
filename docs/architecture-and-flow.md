@@ -30,7 +30,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 `config.rs` 负责 `rainy.yaml` 和 `capability.lock` 的读写。`rainy.yaml` 描述项目、路径、registry source、policy、verify 配置；`capability.lock` 记录已安装能力、provider、版本、artifacts 和 skills。
 
-`registry.rs` 负责加载 capability pack 和 capability definition。当前支持内置 community packs、本地 source、git cache source 和 HTTP registry source，并提供 pack install/update/sign/verify、capability list/explain/graph。
+`registry.rs` 负责加载 capability pack 和 capability definition。当前支持内置 community packs、本地 source、git cache source 和 HTTP registry source，并提供 pack install/update/sign/verify、capability list/explain/graph。内置 community packs 与 JSON schemas 会编译进可执行文件，独立安装后按版本提取到只读运行缓存，不依赖构建机或源码仓库路径。
 
 `actions.rs` 负责把 capability action 转换成 `ExecutionPlan` 和 `ChangeSet`。它处理依赖检查、provider 选择、模板变量、内置 action 执行、plan file 重放、upgrade/remove，并生成 capability lock 更新。
 
@@ -42,7 +42,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 `plugin.rs` 负责外部扩展。当前支持安装插件、列出/查看插件、调用 plugin action、转发 external command、HTTP adapter 和 Wasm action plugin。插件返回的变更仍要经过权限校验和主 CLI policy gate。
 
-`schema.rs` 和 `conformance.rs` 负责 schema list/validate 以及 pack/plugin conformance 检查。当前 validator 是轻量实现，覆盖本仓库现有 schema 使用场景。
+`schema.rs` 和 `conformance.rs` 负责 schema list/validate 以及 pack/plugin conformance 检查。Schema 使用标准 Draft 2020-12 validator，并将仓库内相对引用装配为本地 definitions。
 
 `update.rs` 负责版本检查、自更新和跳过版本。它通过 GitHub latest release 获取版本信息，并调用 release 中的安装脚本完成更新。
 
@@ -128,9 +128,9 @@ print human or JSON output
 
 ### 6. Pack 和 Plugin 扩展
 
-Pack 是能力定义的主要扩展方式。维护者可以通过 `rainy pack install/update/sign/verify` 管理本地、git 或 HTTP source，并用 `rainy conformance check` 检查协议一致性。
+Pack 是能力定义的主要扩展方式。维护者可以通过 `rainy pack install/update/sign/verify` 管理本地、git 或 HTTP source，并用 `rainy conformance check` 检查协议一致性。HTTP registry 必须为每个文件声明 SHA-256；下载先进入临时缓存，完整校验 Pack 身份和内容后再原子替换，失败时保留旧缓存。`capability.lock` 继续固定实际 Pack source、版本和整体摘要。
 
-Plugin 是命令和 action 扩展方式。外部命令、HTTP adapter、Wasm action plugin 都不能绕过主 CLI；插件 manifest 中的权限会先被校验，返回的变更还要走 policy 和 patch。
+Plugin 是命令和 action 扩展方式。外部命令、HTTP adapter、Wasm action plugin 都不能绕过主 CLI；插件 manifest 中的权限会先被校验，返回的变更还要走 policy 和 patch。Wasm 是默认运行时；原生插件必须显式授权且只能在 Rainy 项目内运行，以保证执行记录写入项目审计日志。
 
 ### 7. 发布、安装和自更新
 
@@ -140,7 +140,8 @@ Release workflow 在 tag 或手动触发时运行：
 verify release inputs
 build Linux/macOS/Windows binaries
 package archives and sha256 files
-publish GitHub Release assets and installer scripts
+force embedded-resource smoke, verify all expected assets, and generate SBOM/provenance
+publish GitHub Release assets, checksums, and installer scripts
 ```
 
 安装脚本根据当前系统选择对应 asset：
@@ -151,12 +152,12 @@ publish GitHub Release assets and installer scripts
 - macOS Apple Silicon
 - Windows x64
 
-CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 Cargo package repository，也可以通过 `--repo` 或 `RAINY_UPDATE_REPO` 覆盖。
+CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 Cargo package repository，也可以通过 `--repo` 或 `RAINY_UPDATE_REPO` 覆盖。版本检查使用原生 HTTPS、标准 SemVer、超时和失败退避；指定版本更新固定使用对应 tag 的安装器，并在执行前通过该 Release 的 `installers.sha256` 验证安装脚本。
 
 ## 数据与协议
 
 - `rainy.yaml`: 项目配置入口，包含路径、registry source、policy、verify。
-- `capability.lock`: 已安装能力的事实来源，记录 provider、版本、artifacts、skills。
+- `capability.lock`: 已安装能力的事实来源，记录 provider、版本、Pack source/digest、artifacts、skills。
 - `ExecutionPlan`: 可保存和重放的能力变更计划。
 - `ChangeSet`: 文件级变更集合，包含 before/after、kind、summary、noop。
 - `schemas/*.schema.json`: 对外协议和报告结构的稳定参考。
@@ -164,26 +165,24 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
 - JSON 输出：所有主要命令支持 `--json`，供 Agent、MCP、CI 调用。
 - Release assets: 多平台 CLI 包、对应 sha256 文件和安装脚本。
 
-## 当前不足与建设建议
+## 当前限制与后续建设
 
 ### P0 / 近期
 
 - 架构文档此前缺位。README 有使用说明，最终形态设计稿偏愿景，但缺少当前实现版架构说明；本文档补齐这一层。
-- update 已补仓库维度 skip 状态隔离、GitHub release 响应解析和 draft/prerelease 拒绝测试；installer 已补平台 detection 和 checksum 成功/失败测试。后续仍需要补完整下载安装失败场景测试。
+- Release 与安装链路要求 tag/Cargo/binary 版本一致，并强制 checksum。正式 Release 仍需在 GitHub 上完成五平台资产验收。
 - README 中测试数量和建设进度容易过期；当前已改为描述性说明，并提供 `make production-check` 作为生产可用性本地门禁入口。后续可增加 CI badge 或脚本生成状态。
 
 ### P1 / 中期
 
 - 当前 Rust 实现仍是单 crate 多模块，和最终设计稿的多 crate 分层有差距。建议在接口稳定后拆分 `core/config/registry/plan/actions/policy/plugin/json-protocol`。
 - `verify` 已区分 `local` 和 `ci`：local 适合本地开发，ci 是严格质量门禁。后续可以继续扩展 profile schema，例如显式声明 strict、timeout、required tools。
-- schema validator 是轻量实现，已覆盖当前仓库 schema 使用的核心关键字，但不等同完整 JSON Schema 引擎。若 schema 成为外部稳定协议，应引入标准 validator 或补完整兼容测试。
-- MCP 和 Backstage 集成是示例级，缺少生产部署说明、权限边界、版本兼容策略和打包发布流程。
-- Pack signing 目前是 sha256 初版，不是完整供应链签名。后续可引入 Sigstore/cosign/provenance。
+- MCP 和 Backstage 已补充部署、权限、版本兼容和打包说明，但实现仍是示例级，尚未发布为独立可安装包。
+- Pack 完整性 manifest 可配合 cosign 发布者签名；组织仍需维护受信公钥轮换和撤销流程。
 
 ### P2 / 长期
 
 - 发布渠道仍集中在 GitHub Release。可补 crates.io、Homebrew、npm 或包管理器 tap，并统一安装文档。
-- self-update 依赖外部 `curl` 和脚本。可改为原生 HTTPS 客户端，并增加可测试的下载/校验抽象。
-- audit log 当前是本地文件。企业场景可能需要集中化审计、指标、trace id 贯通和 SIEM/日志平台集成。
-- Capability registry 的远程错误、缓存失效、离线模式、签名验证和 trust policy 还可以继续增强。
+- audit log 具备预检、文件锁和落盘同步，但仍是本地文件；企业场景需要集中化审计、指标、trace id 贯通和 SIEM/日志平台集成。
+- Capability registry 已具备协议限制、超时、大小上限、逐文件摘要和原子缓存替换；后续仍可增加离线镜像治理、公钥轮换和撤销分发。
 - 企业审批系统、密钥系统、权限平台、starter 生态都需要通过私有 pack/plugin 落地，本仓库只提供协议和示例。

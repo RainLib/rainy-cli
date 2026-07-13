@@ -3,6 +3,8 @@
 
 # Rainy local outputs
 **/*.rainy-tmp
+**/.rainy.new.*
+**/.rainy.backup.*
 /.rainy/
 /demo-saas/
 

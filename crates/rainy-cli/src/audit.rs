@@ -1,7 +1,9 @@
-use crate::error::RainyError;
+use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
 use chrono::Utc;
+use fs2::FileExt;
 use serde::Serialize;
+use std::io::Write;
 use std::path::Path;
 
 #[derive(Debug, Serialize)]
@@ -22,7 +24,7 @@ pub fn record_success(
     command: &str,
     trace_id: Option<&str>,
     output: &CommandOutput,
-) -> std::io::Result<()> {
+) -> RainyResult<()> {
     if output.is_dry_run() || !workspace.join("rainy.yaml").exists() {
         return Ok(());
     }
@@ -45,7 +47,7 @@ pub fn record_error(
     command: &str,
     trace_id: Option<&str>,
     error: &RainyError,
-) -> std::io::Result<()> {
+) -> RainyResult<()> {
     if !workspace.join("rainy.yaml").exists() {
         return Ok(());
     }
@@ -64,17 +66,41 @@ pub fn record_error(
     )
 }
 
-fn append(workspace: &Path, record: AuditRecord) -> std::io::Result<()> {
+pub fn preflight(workspace: &Path) -> RainyResult<()> {
+    if !workspace.join("rainy.yaml").exists() {
+        return Ok(());
+    }
     let audit_dir = workspace.join(".rainy");
-    std::fs::create_dir_all(&audit_dir)?;
+    std::fs::create_dir_all(&audit_dir).map_err(audit_error)?;
     let path = audit_dir.join("audit.log");
-    let line = serde_json::to_string(&record).unwrap_or_else(|_| {
-        "{\"protocolVersion\":\"rainy.audit.v1\",\"status\":\"error\",\"summary\":\"audit serialization failed\"}".to_string()
-    });
-    use std::io::Write;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(audit_error)?;
+    file.try_lock_exclusive().map_err(audit_error)?;
+    FileExt::unlock(&file).map_err(audit_error)
+}
+
+fn append(workspace: &Path, record: AuditRecord) -> RainyResult<()> {
+    let audit_dir = workspace.join(".rainy");
+    std::fs::create_dir_all(&audit_dir).map_err(audit_error)?;
+    let path = audit_dir.join("audit.log");
+    let line = serde_json::to_string(&record)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")
+        .open(path)
+        .map_err(audit_error)?;
+    file.lock_exclusive().map_err(audit_error)?;
+    writeln!(file, "{line}").map_err(audit_error)?;
+    file.sync_data().map_err(audit_error)?;
+    FileExt::unlock(&file).map_err(audit_error)
+}
+
+fn audit_error(error: std::io::Error) -> RainyError {
+    RainyError::config(
+        "AUDIT_WRITE_FAILED",
+        format!("audit log is not writable: {error}"),
+    )
 }

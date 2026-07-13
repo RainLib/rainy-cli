@@ -26,7 +26,10 @@ pub struct ConformanceCheck {
 pub fn handle_conformance_command(command: ConformanceCommand) -> RainyResult<CommandOutput> {
     match command.command {
         ConformanceSubcommand::Check(args) => {
-            let path = args.path.unwrap_or_else(config::default_registry_path);
+            let path = match args.path {
+                Some(path) => path,
+                None => config::default_registry_path()?,
+            };
             let report = check_path(&path)?;
             if report.status == "failed" {
                 return Err(RainyError::registry(
