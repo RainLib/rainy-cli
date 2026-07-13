@@ -3,7 +3,7 @@
   "$id": "https://rainy.dev/schemas/update-report.schema.json",
   "title": "Rainy Update Report",
   "type": "object",
-  "required": ["protocolVersion", "repository", "currentVersion", "updateAvailable", "skipped", "installCommand"],
+  "required": ["protocolVersion", "repository", "currentVersion", "updateAvailable", "skipped", "installCommand", "checkedAt", "nextCheckAfter", "releaseType"],
   "properties": {
     "protocolVersion": { "const": "rainy.update.v1" },
     "repository": { "type": "string" },
@@ -11,7 +11,11 @@
     "latestVersion": { "type": ["string", "null"] },
     "updateAvailable": { "type": "boolean" },
     "skipped": { "type": "boolean" },
-    "installCommand": { "type": "string" }
+    "installCommand": { "type": "string" },
+    "checkedAt": { "type": "string", "format": "date-time" },
+    "nextCheckAfter": { "type": "string", "format": "date-time" },
+    "releaseType": { "const": "stable" },
+    "targetAsset": { "type": ["string", "null"] }
   },
   "additionalProperties": true
 }

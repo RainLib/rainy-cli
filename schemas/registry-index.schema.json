@@ -10,7 +10,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "version", "baseUrl", "files"],
+        "required": ["name", "version", "baseUrl", "files", "digests"],
         "properties": {
           "name": { "type": "string" },
           "version": { "type": "string" },
@@ -18,6 +18,13 @@
           "files": {
             "type": "array",
             "items": { "type": "string" }
+          },
+          "digests": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
           }
         },
         "additionalProperties": true

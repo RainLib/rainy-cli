@@ -79,6 +79,8 @@ pub struct PolicySection {
     pub deny_edit: Vec<String>,
     #[serde(rename = "requireApproval", default)]
     pub require_approval: Vec<String>,
+    #[serde(rename = "allowNativePlugins", default)]
+    pub allow_native_plugins: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -115,6 +117,10 @@ pub struct LockedCapability {
     #[serde(default)]
     pub provider: Option<String>,
     pub pack: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     #[serde(rename = "installedAt")]
     pub installed_at: DateTime<Utc>,
     #[serde(default)]
@@ -127,6 +133,8 @@ pub struct InstalledCapability {
     pub version: String,
     pub provider: Option<String>,
     pub pack: String,
+    pub source: Option<String>,
+    pub digest: Option<String>,
     pub artifacts: Vec<String>,
 }
 
@@ -193,6 +201,8 @@ pub fn capability_installed(workspace: &Path) -> RainyResult<CommandOutput> {
             version: cap.version,
             provider: cap.provider,
             pack: cap.pack,
+            source: cap.source,
+            digest: cap.digest,
             artifacts: cap.artifacts,
         })
         .collect();
@@ -203,12 +213,8 @@ pub fn package_path(config: &ProjectConfig) -> String {
     config.package.java.replace('.', "/")
 }
 
-pub fn default_registry_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crate is inside workspace")
-        .join("community-packs")
+pub fn default_registry_path() -> RainyResult<PathBuf> {
+    crate::bundled_assets::registry_path()
 }
 
 fn default_generated() -> String {

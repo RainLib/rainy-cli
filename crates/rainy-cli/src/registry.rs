@@ -7,9 +7,11 @@ use crate::policy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const MAX_REGISTRY_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityPack {
@@ -178,6 +180,8 @@ pub struct HttpRegistryPack {
     pub base_url: String,
     #[serde(default)]
     pub files: Vec<String>,
+    #[serde(default)]
+    pub digests: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,7 +329,7 @@ pub struct RegistryClient {
 impl RegistryClient {
     pub fn load(workspace: &Path) -> RainyResult<Self> {
         let config = config::load_config(workspace).ok();
-        let sources = registry_sources(workspace, config.as_ref());
+        let sources = registry_sources(workspace, config.as_ref())?;
         let mut packs = Vec::new();
         let mut capabilities = BTreeMap::new();
 
@@ -362,7 +366,7 @@ impl RegistryClient {
     }
 }
 
-fn registry_sources(workspace: &Path, config: Option<&ProjectConfig>) -> Vec<PathBuf> {
+fn registry_sources(workspace: &Path, config: Option<&ProjectConfig>) -> RainyResult<Vec<PathBuf>> {
     let mut sources = Vec::new();
     if let Some(config) = config {
         for source in &config.capability_registry.sources {
@@ -380,10 +384,10 @@ fn registry_sources(workspace: &Path, config: Option<&ProjectConfig>) -> Vec<Pat
             }
         }
     }
-    sources.push(config::default_registry_path());
+    sources.push(config::default_registry_path()?);
     sources.sort();
     sources.dedup();
-    sources
+    Ok(sources)
 }
 
 fn load_packs_from_dir(
@@ -415,6 +419,9 @@ fn load_pack_at(
     packs: &mut Vec<CapabilityPack>,
     capabilities: &mut BTreeMap<String, CapabilityDefinition>,
 ) -> RainyResult<()> {
+    if std::env::var_os("RAINY_PACK_TRUSTED_PUBLIC_KEY").is_some() {
+        verify_pack_signature(root)?;
+    }
     let pack_path = root.join("pack.yaml");
     let content = std::fs::read_to_string(&pack_path)?;
     let mut pack: CapabilityPack = serde_yaml::from_str(&content)?;
@@ -569,10 +576,40 @@ fn sign_pack(path: &Path) -> RainyResult<CommandOutput> {
         &signature_path,
         format!("{}\n", serde_json::to_string_pretty(&signature)?),
     )?;
+    let publisher_signed = if let Some(key) = std::env::var_os("RAINY_PACK_SIGNING_KEY") {
+        let detached_signature = path.join(".rainy-pack-signature.sig");
+        let output = std::process::Command::new("cosign")
+            .args(["sign-blob", "--yes", "--key"])
+            .arg(key)
+            .arg("--output-signature")
+            .arg(&detached_signature)
+            .arg(&signature_path)
+            .output()
+            .map_err(|err| {
+                RainyError::registry(
+                    "PACK_PUBLISHER_SIGNING_FAILED",
+                    format!("failed to run cosign: {err}"),
+                )
+            })?;
+        if !output.status.success() {
+            return Err(RainyError::registry(
+                "PACK_PUBLISHER_SIGNING_FAILED",
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+        true
+    } else {
+        false
+    };
     Ok(CommandOutput::message(format!(
-        "Signed pack {} with sha256 {}",
+        "Created pack integrity manifest for {} with sha256 {}{}",
         path.display(),
-        signature.digest
+        signature.digest,
+        if publisher_signed {
+            " and a cosign publisher signature"
+        } else {
+            ""
+        }
     )))
 }
 
@@ -603,9 +640,48 @@ fn verify_pack_signature(path: &Path) -> RainyResult<CommandOutput> {
             ));
         }
     }
+    let publisher_verified = if let Some(key) = std::env::var_os("RAINY_PACK_TRUSTED_PUBLIC_KEY") {
+        let detached_signature = path.join(".rainy-pack-signature.sig");
+        if !detached_signature.exists() {
+            return Err(RainyError::registry(
+                "PACK_PUBLISHER_SIGNATURE_NOT_FOUND",
+                format!(
+                    "publisher signature not found: {}",
+                    detached_signature.display()
+                ),
+            ));
+        }
+        let output = std::process::Command::new("cosign")
+            .args(["verify-blob", "--key"])
+            .arg(key)
+            .arg("--signature")
+            .arg(&detached_signature)
+            .arg(&signature_path)
+            .output()
+            .map_err(|err| {
+                RainyError::registry(
+                    "PACK_PUBLISHER_SIGNATURE_INVALID",
+                    format!("failed to run cosign: {err}"),
+                )
+            })?;
+        if !output.status.success() {
+            return Err(RainyError::registry(
+                "PACK_PUBLISHER_SIGNATURE_INVALID",
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
+        }
+        true
+    } else {
+        false
+    };
     Ok(CommandOutput::message(format!(
-        "Pack signature verified: {}",
-        expected.digest
+        "Pack integrity verified: {}{}",
+        expected.digest,
+        if publisher_verified {
+            " with trusted publisher signature"
+        } else {
+            ""
+        }
     )))
 }
 
@@ -629,6 +705,10 @@ fn calculate_pack_signature(path: &Path) -> RainyResult<PackSignature> {
     })
 }
 
+pub fn pack_digest(path: &Path) -> RainyResult<String> {
+    Ok(calculate_pack_signature(path)?.digest)
+}
+
 fn collect_pack_files(
     root: &Path,
     current: &Path,
@@ -646,7 +726,10 @@ fn collect_pack_files(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        if rel == ".rainy-pack-signature.json" {
+        if matches!(
+            rel.as_str(),
+            ".rainy-pack-signature.json" | ".rainy-pack-signature.sig"
+        ) {
             continue;
         }
         let bytes = std::fs::read(&path)?;
@@ -670,79 +753,142 @@ fn sync_http_registry(workspace: &Path, url: &str) -> RainyResult<()> {
         ));
     }
     let cache_root = http_cache_path(workspace, url);
-    if cache_root.exists() {
-        std::fs::remove_dir_all(&cache_root)?;
+    let temporary = cache_root.with_extension(format!("tmp.{}", std::process::id()));
+    let backup = cache_root.with_extension(format!("backup.{}", std::process::id()));
+    if temporary.exists() {
+        std::fs::remove_dir_all(&temporary)?;
     }
-    std::fs::create_dir_all(&cache_root)?;
-    for pack in index.packs {
-        let pack_root = cache_root.join(&pack.name);
-        std::fs::create_dir_all(&pack_root)?;
-        for file in pack.files {
-            validate_relative_registry_file(&file)?;
-            let file_url = join_url(&pack.base_url, &file);
-            let content = http_get(&file_url)?;
-            let target = pack_root.join(&file);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
+    if let Some(parent) = cache_root.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir_all(&temporary)?;
+    let download_result = (|| -> RainyResult<()> {
+        for pack in index.packs {
+            let pack_root = temporary.join(&pack.name);
+            std::fs::create_dir_all(&pack_root)?;
+            for file in &pack.files {
+                validate_relative_registry_file(file)?;
+                let expected = pack.digests.get(file).ok_or_else(|| {
+                    RainyError::registry(
+                        "HTTP_REGISTRY_CHECKSUM_MISSING",
+                        format!("registry pack {} has no checksum for {file}", pack.name),
+                    )
+                })?;
+                validate_sha256(expected)?;
+                let file_url = join_url(&pack.base_url, file);
+                let content = http_get(&file_url)?;
+                let actual = hex(&Sha256::digest(content.as_bytes()));
+                if !actual.eq_ignore_ascii_case(expected) {
+                    return Err(RainyError::registry(
+                        "HTTP_REGISTRY_CHECKSUM_INVALID",
+                        format!("registry checksum mismatch for {}/{file}", pack.name),
+                    ));
+                }
+                let target = pack_root.join(file);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(target, content)?;
             }
-            std::fs::write(target, content)?;
+            validate_pack_source(&pack_root)?;
+            let manifest: CapabilityPack =
+                serde_yaml::from_str(&std::fs::read_to_string(pack_root.join("pack.yaml"))?)?;
+            if manifest.metadata.name != pack.name || manifest.metadata.version != pack.version {
+                return Err(RainyError::registry(
+                    "HTTP_REGISTRY_IDENTITY_MISMATCH",
+                    format!(
+                        "registry identity does not match downloaded pack {}",
+                        pack.name
+                    ),
+                ));
+            }
         }
+        Ok(())
+    })();
+    if let Err(error) = download_result {
+        let _ = std::fs::remove_dir_all(&temporary);
+        return Err(error);
     }
+
+    if backup.exists() {
+        std::fs::remove_dir_all(&backup)?;
+    }
+    if cache_root.exists() {
+        std::fs::rename(&cache_root, &backup)?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, &cache_root) {
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, &cache_root);
+        }
+        return Err(error.into());
+    }
+    let _ = std::fs::remove_dir_all(backup);
     Ok(())
 }
 
-fn http_get(url: &str) -> RainyResult<String> {
-    if let Some(rest) = url.strip_prefix("http://") {
-        return http_get_plain(rest);
-    }
-    if url.starts_with("https://") {
-        let output = std::process::Command::new("curl")
-            .arg("-fsSL")
-            .arg(url)
-            .output()?;
-        if !output.status.success() {
-            return Err(RainyError::registry(
-                "HTTP_REGISTRY_FETCH_FAILED",
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
-        }
-        return String::from_utf8(output.stdout)
-            .map_err(|err| RainyError::registry("HTTP_REGISTRY_FETCH_FAILED", err.to_string()));
+fn validate_sha256(digest: &str) -> RainyResult<()> {
+    if digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(());
     }
     Err(RainyError::registry(
-        "HTTP_REGISTRY_UNSUPPORTED_URL",
-        format!("unsupported URL: {url}"),
+        "HTTP_REGISTRY_CHECKSUM_INVALID",
+        "registry checksum must be a 64-character SHA-256 digest",
     ))
 }
 
-fn http_get_plain(rest: &str) -> RainyResult<String> {
-    let (host_port, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let path = format!("/{path}");
-    let mut stream = TcpStream::connect(host_port).map_err(|err| {
-        RainyError::registry(
-            "HTTP_REGISTRY_FETCH_FAILED",
-            format!("connect {host_port} failed: {err}"),
-        )
-    })?;
-    let host = host_port.split(':').next().unwrap_or(host_port);
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: rainy-cli\r\n\r\n"
-    );
-    stream.write_all(request.as_bytes())?;
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
-    let response = String::from_utf8(response)
+fn http_get(url: &str) -> RainyResult<String> {
+    validate_network_url(url, "HTTP_REGISTRY_UNSUPPORTED_URL")?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(10))
+        .timeout_write(Duration::from_secs(10))
+        .redirects(3)
+        .build();
+    let response = agent
+        .get(url)
+        .set("User-Agent", "rainy-cli")
+        .call()
+        .map_err(|err| {
+            RainyError::registry(
+                "HTTP_REGISTRY_FETCH_FAILED",
+                format!("request failed: {err}"),
+            )
+        })?;
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(MAX_REGISTRY_RESPONSE_BYTES + 1)
+        .read_to_string(&mut body)
         .map_err(|err| RainyError::registry("HTTP_REGISTRY_FETCH_FAILED", err.to_string()))?;
-    let (head, body) = response.split_once("\r\n\r\n").ok_or_else(|| {
-        RainyError::registry("HTTP_REGISTRY_FETCH_FAILED", "invalid HTTP response")
-    })?;
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
+    if body.len() as u64 > MAX_REGISTRY_RESPONSE_BYTES {
         return Err(RainyError::registry(
-            "HTTP_REGISTRY_FETCH_FAILED",
-            head.lines().next().unwrap_or("HTTP error").to_string(),
+            "HTTP_REGISTRY_RESPONSE_TOO_LARGE",
+            "registry response exceeds 5 MiB limit",
         ));
     }
-    Ok(body.to_string())
+    Ok(body)
+}
+
+fn validate_network_url(url: &str, code: &'static str) -> RainyResult<()> {
+    if url.starts_with("https://") {
+        return Ok(());
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = rest
+            .split_once('/')
+            .map(|(host, _)| host)
+            .unwrap_or(rest)
+            .split(':')
+            .next()
+            .unwrap_or_default();
+        if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+            return Ok(());
+        }
+    }
+    Err(RainyError::registry(
+        code,
+        format!("only HTTPS or loopback HTTP URLs are allowed: {url}"),
+    ))
 }
 
 fn http_cache_path(workspace: &Path, url: &str) -> PathBuf {
@@ -780,6 +926,7 @@ fn hex(bytes: &[u8]) -> String {
 
 fn prepare_pack_source(workspace: &Path, source: &str, apply: bool) -> RainyResult<PathBuf> {
     if let Some(git_url) = source.strip_prefix("git+") {
+        validate_git_url(git_url)?;
         let target = workspace.join(".rainy/packs").join(slugify(git_url));
         if apply && !target.exists() {
             if let Some(parent) = target.parent() {
@@ -812,6 +959,16 @@ fn prepare_pack_source(workspace: &Path, source: &str, apply: bool) -> RainyResu
             format!("pack source not found: {} ({err})", path.display()),
         )
     })
+}
+
+fn validate_git_url(url: &str) -> RainyResult<()> {
+    if url.starts_with("https://") || url.starts_with("ssh://") || url.starts_with("git@") {
+        return Ok(());
+    }
+    Err(RainyError::registry(
+        "PACK_SOURCE_UNSUPPORTED_URL",
+        format!("git source must use HTTPS or SSH: {url}"),
+    ))
 }
 
 fn validate_pack_source(source: &Path) -> RainyResult<()> {

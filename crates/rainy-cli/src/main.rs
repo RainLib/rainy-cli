@@ -1,6 +1,7 @@
 mod actions;
 mod agent;
 mod audit;
+mod bundled_assets;
 mod cli;
 mod config;
 mod conformance;
@@ -36,17 +37,27 @@ fn main() {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let audit_command = command_label(&cli.command).to_string();
 
+    if command_requires_audit(&cli.command)
+        && let Err(err) = audit::preflight(&audit_workspace)
+    {
+        output::print_error(&err, json);
+        std::process::exit(err.exit_code());
+    }
+
     let is_self_command = matches!(cli.command, Commands::SelfCommand(_));
     update::maybe_notify(json, cli.quiet, is_self_command);
 
     match run(cli) {
         Ok(output) => {
-            let _ = audit::record_success(
+            if let Err(err) = audit::record_success(
                 &audit_workspace,
                 &audit_command,
                 trace_id.as_deref(),
                 &output,
-            );
+            ) {
+                output::print_error(&err, json);
+                std::process::exit(err.exit_code());
+            }
             output.print(json);
         }
         Err(err) => {
@@ -55,6 +66,34 @@ fn main() {
             output::print_error(&err, json);
             std::process::exit(err.exit_code());
         }
+    }
+}
+
+fn command_requires_audit(command: &Commands) -> bool {
+    match command {
+        Commands::Add(command) => match &command.command {
+            AddSubcommand::Capability(args) => args.apply,
+        },
+        Commands::Apply(args) => args.apply,
+        Commands::Capability(command) => match &command.command {
+            CapabilitySubcommand::Upgrade(args) | CapabilitySubcommand::Remove(args) => args.apply,
+            _ => false,
+        },
+        Commands::Pack(command) => match &command.command {
+            cli::PackSubcommand::Install(args) => args.apply,
+            cli::PackSubcommand::Update(args) => args.apply,
+            cli::PackSubcommand::Sign(_) => true,
+            _ => false,
+        },
+        Commands::Plugin(command) => match &command.command {
+            cli::PluginSubcommand::Install(args) => args.apply,
+            cli::PluginSubcommand::Call(args) => args.apply,
+            _ => false,
+        },
+        Commands::Evidence(_) | Commands::Agent(_) | Commands::Skill(_) | Commands::External(_) => {
+            true
+        }
+        _ => false,
     }
 }
 
@@ -81,6 +120,10 @@ fn command_label(command: &Commands) -> &'static str {
 
 fn run(cli: Cli) -> RainyResult<CommandOutput> {
     let workspace = cli.workspace.unwrap_or(std::env::current_dir()?);
+    let allow_native_plugin = cli.allow_native_plugin
+        || config::load_config(&workspace)
+            .map(|config| config.policy.allow_native_plugins)
+            .unwrap_or(false);
 
     match cli.command {
         Commands::Init(command) => match command.command {
@@ -128,7 +171,9 @@ fn run(cli: Cli) -> RainyResult<CommandOutput> {
             .unwrap_or(EvidenceFormat::All);
             evidence::generate_command(&workspace, format)
         }
-        Commands::Plugin(command) => plugin::handle_plugin_command(&workspace, command),
+        Commands::Plugin(command) => {
+            plugin::handle_plugin_command(&workspace, command, allow_native_plugin)
+        }
         Commands::Agent(command) => agent::handle_agent_command(&workspace, command),
         Commands::Skill(command) => match command.command {
             SkillSubcommand::Sync => agent::sync_skills_command(&workspace),
@@ -136,7 +181,7 @@ fn run(cli: Cli) -> RainyResult<CommandOutput> {
         Commands::Conformance(command) => conformance::handle_conformance_command(command),
         Commands::Schema(command) => schema::handle_schema_command(command),
         Commands::SelfCommand(command) => update::handle_self_command(command),
-        Commands::External(args) => plugin::run_external(&workspace, args),
+        Commands::External(args) => plugin::run_external(&workspace, args, allow_native_plugin),
     }
 }
 

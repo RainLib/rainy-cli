@@ -34,6 +34,8 @@ help:
 	@printf '%s\n' '  make ci                 Full local CI smoke'
 	@printf '%s\n' '  make release-check      Local checks before tagging a GitHub Release'
 	@printf '%s\n' '  make production-check   Alias for release-check'
+	@printf '%s\n' '  make repo-check         Check repository metadata and stale release URLs'
+	@printf '%s\n' '  make security-check     Run cargo audit/deny when installed'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Protocol / integration checks:'
 	@printf '%s\n' '  make schema-check       Parse all schema JSON files'
@@ -41,6 +43,7 @@ help:
 	@printf '%s\n' '  make mcp-check          Python compile-check MCP wrapper'
 	@printf '%s\n' '  make installer-check    Syntax-check installer scripts where possible'
 	@printf '%s\n' '  make installer-test     Run installer platform/checksum tests'
+	@printf '%s\n' '  make release-input-test Validate release tag/version gates'
 	@printf '%s\n' '  make smoke              JSON smoke commands'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Demo project:'
@@ -110,16 +113,24 @@ conformance: build
 .PHONY: mcp-check
 mcp-check:
 	$(PYTHON) -m py_compile integrations/mcp/rainy_mcp.py
+	RAINY_BIN=$(RAINY_BIN) sh scripts/test-mcp.sh
 
 .PHONY: installer-check
 installer-check:
 	sh -n scripts/install.sh
 	sh -n scripts/test-install.sh
-	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -Command '$$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$$null)'; else printf '%s\n' 'pwsh not found; skipping install.ps1 syntax check'; fi
+	sh -n scripts/check-release-version.sh
+	sh -n scripts/test-release.sh
+	$(PYTHON) -m py_compile scripts/test-installer-server.py
+	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -Command '$$errors = $$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts/install.ps1"), [ref]$$null, [ref]$$errors); [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts/test-install.ps1"), [ref]$$null, [ref]$$errors); if ($$errors.Count) { $$errors | ForEach-Object { Write-Error $$_ }; exit 1 }'; else printf '%s\n' 'pwsh not found; skipping PowerShell syntax check'; fi
 
 .PHONY: installer-test
 installer-test:
 	sh scripts/test-install.sh
+
+.PHONY: release-input-test
+release-input-test:
+	sh scripts/test-release.sh
 
 .PHONY: smoke
 smoke: build
@@ -127,8 +138,18 @@ smoke: build
 	$(RAINY_BIN) new $(PROJECT) --golden-path spring-nextjs-saas --package $(PACKAGE) --dry-run --json
 	$(RAINY_BIN) conformance check --path community-packs --json
 
+.PHONY: repo-check
+repo-check:
+	@! git grep -n 'rainy-dev/rainy' -- Cargo.toml README.md docs scripts crates integrations .github
+	@git grep -n 'RainLib/rainy-cli' -- Cargo.toml README.md scripts/install.sh scripts/install.ps1 >/dev/null
+
+.PHONY: security-check
+security-check:
+	@if command -v cargo-audit >/dev/null 2>&1; then cargo audit; else printf '%s\n' 'cargo-audit not found; security workflow installs and runs it'; fi
+	@if command -v cargo-deny >/dev/null 2>&1; then cargo deny check; else printf '%s\n' 'cargo-deny not found; security workflow installs and runs it'; fi
+
 .PHONY: ci
-ci: fmt-check test clippy schema-check mcp-check installer-check installer-test smoke
+ci: fmt-check test clippy schema-check mcp-check installer-check installer-test release-input-test smoke repo-check
 
 .PHONY: release-check
 release-check: ci

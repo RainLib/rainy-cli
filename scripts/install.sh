@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${RAINY_REPO:-rainy-dev/rainy}"
+REPO="${RAINY_REPO:-RainLib/rainy-cli}"
 VERSION="${RAINY_VERSION:-${1:-latest}}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.rainy/bin}"
 
@@ -36,7 +36,7 @@ detect_target() {
 }
 
 latest_version() {
-  curl -fsSL -H "User-Agent: rainy-installer" "https://api.github.com/repos/$REPO/releases/latest" \
+  curl -fsSL --connect-timeout 10 --max-time 30 -H "User-Agent: rainy-installer" "https://api.github.com/repos/$REPO/releases/latest" \
     | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     | head -n 1
 }
@@ -49,7 +49,8 @@ checksum_verify() {
   elif command -v shasum >/dev/null 2>&1; then
     (cd "$(dirname "$archive")" && shasum -a 256 -c "$(basename "$checksum_file")")
   else
-    echo "rainy installer: sha256 tool not found; skipping checksum verification" >&2
+    echo "rainy installer: sha256sum or shasum is required" >&2
+    return 1
   fi
 }
 
@@ -70,6 +71,11 @@ fi
 need curl
 need tar
 
+if ! printf '%s\n' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+  echo "RAINY_INSTALL_INVALID_REPOSITORY: expected owner/repo, got $REPO" >&2
+  exit 1
+fi
+
 TARGET="$(detect_target)"
 ASSET="rainy-$TARGET.tar.gz"
 
@@ -86,23 +92,58 @@ case "$VERSION" in
   v*) ;;
   *) VERSION="v$VERSION" ;;
 esac
+if ! printf '%s\n' "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+  echo "RAINY_INSTALL_INVALID_VERSION: expected vX.Y.Z, got $VERSION" >&2
+  exit 1
+fi
 
-BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
+BASE_URL="${RAINY_INSTALLER_BASE_URL:-https://github.com/$REPO/releases/download/$VERSION}"
+case "$BASE_URL" in
+  https://* | http://127.0.0.1:* | http://localhost:*) ;;
+  *)
+    echo "rainy installer: release URL must use HTTPS or loopback HTTP: $BASE_URL" >&2
+    exit 1
+    ;;
+esac
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
 echo "Installing rainy $VERSION for $TARGET"
-curl -fL "$BASE_URL/$ASSET" -o "$TMP_DIR/$ASSET"
+curl -fL --connect-timeout 10 --max-time 120 "$BASE_URL/$ASSET" -o "$TMP_DIR/$ASSET"
 
-if curl -fsSL "$BASE_URL/$ASSET.sha256" -o "$TMP_DIR/$ASSET.sha256"; then
-  checksum_verify "$TMP_DIR/$ASSET" "$TMP_DIR/$ASSET.sha256"
-else
-  echo "rainy installer: checksum file not found; continuing without checksum" >&2
-fi
+curl -fsSL --connect-timeout 10 --max-time 30 "$BASE_URL/$ASSET.sha256" -o "$TMP_DIR/$ASSET.sha256" || {
+  echo "rainy installer: checksum file is required: $ASSET.sha256" >&2
+  exit 1
+}
+checksum_verify "$TMP_DIR/$ASSET" "$TMP_DIR/$ASSET.sha256"
 
 mkdir -p "$INSTALL_DIR"
+if tar -tzf "$TMP_DIR/$ASSET" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+  echo "rainy installer: archive contains an unsafe path" >&2
+  exit 1
+fi
 tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
-install -m 0755 "$TMP_DIR/rainy" "$INSTALL_DIR/rainy"
+NEW_BIN="$INSTALL_DIR/.rainy.new.$$"
+BACKUP_BIN="$INSTALL_DIR/.rainy.backup.$$"
+install -m 0755 "$TMP_DIR/rainy" "$NEW_BIN"
+if [ "$("$NEW_BIN" --version)" != "rainy ${VERSION#v}" ]; then
+  rm -f "$NEW_BIN"
+  echo "rainy installer: downloaded binary version does not match $VERSION" >&2
+  exit 1
+fi
+if [ -f "$INSTALL_DIR/rainy" ]; then
+  mv "$INSTALL_DIR/rainy" "$BACKUP_BIN"
+fi
+if mv "$NEW_BIN" "$INSTALL_DIR/rainy" && [ "$("$INSTALL_DIR/rainy" --version)" = "rainy ${VERSION#v}" ]; then
+  rm -f "$BACKUP_BIN"
+else
+  rm -f "$INSTALL_DIR/rainy" "$NEW_BIN"
+  if [ -f "$BACKUP_BIN" ]; then
+    mv "$BACKUP_BIN" "$INSTALL_DIR/rainy"
+  fi
+  echo "rainy installer: installation verification failed; previous binary restored" >&2
+  exit 1
+fi
 
 echo "rainy installed to $INSTALL_DIR/rainy"
 case ":$PATH:" in

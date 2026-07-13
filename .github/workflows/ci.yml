@@ -3,43 +3,84 @@ name: ci
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: stable
 
 jobs:
-  test:
+  quality:
+    name: quality and e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
-      - name: Format
-        run: cargo fmt --check
-      - name: Test
-        run: cargo test --workspace
-      - name: E2E
-        run: cargo test --workspace --test e2e
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Schema parse
-        run: python3 -c "import json, pathlib; [json.loads(path.read_text()) for path in sorted(pathlib.Path('schemas').glob('*.schema.json'))]"
-      - name: MCP wrapper syntax
-        run: python3 -m py_compile integrations/mcp/rainy_mcp.py
-      - name: Installer syntax
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - run: make production-check
+
+  native:
+    name: native ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: native-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Native unit tests
+        run: cargo test --workspace --bins --locked
+      - name: Native CLI smoke
+        shell: bash
         run: |
-          sh -n scripts/install.sh
-          sh -n scripts/test-install.sh
-          if command -v pwsh >/dev/null 2>&1; then
-            pwsh -NoProfile -Command '$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$null)'
-          else
-            echo 'pwsh not found; skipping install.ps1 syntax check'
-          fi
-      - name: Installer tests
-        run: sh scripts/test-install.sh
-      - name: Capability JSON smoke
-        run: cargo run -q --bin rainy -- capability list --json
-      - name: Golden Path dry-run JSON smoke
-        run: cargo run -q --bin rainy -- new demo-saas --golden-path spring-nextjs-saas --dry-run --json
-      - name: Pack conformance
-        run: cargo run -q --bin rainy -- conformance check --path community-packs --json
+          cargo build --locked --bin rainy
+          target/debug/rainy --version
+          target/debug/rainy capability list --json >/dev/null
+      - name: PowerShell installer test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-install.ps1
+
+  msrv:
+    name: rust 1.88 MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: 1.88.0
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.88.0
+      - run: cargo check --workspace --all-targets --locked

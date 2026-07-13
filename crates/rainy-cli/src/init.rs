@@ -45,24 +45,20 @@ pub fn init_app(options: InitOptions) -> RainyResult<CommandOutput> {
         ));
     }
     let package_path = options.package.replace('.', "/");
-    let registry_path = config::default_registry_path();
+    let registry_path = config::default_registry_path()?;
     let mut files = Vec::new();
 
     write(
         &project_dir,
         "rainy.yaml",
-        rainy_yaml(
-            &options.name,
-            &options.package,
-            &registry_path.to_string_lossy(),
-        ),
+        rainy_yaml(&options.name, &options.package),
         &mut files,
         options.dry_run,
     )?;
     write(
         &project_dir,
         "capability.lock",
-        lock_yaml(&options.name)?,
+        lock_yaml(&options.name, &registry_path)?,
         &mut files,
         options.dry_run,
     )?;
@@ -110,6 +106,13 @@ pub fn init_app(options: InitOptions) -> RainyResult<CommandOutput> {
     )?;
     write(
         &project_dir,
+        "apps/frontend/pnpm-lock.yaml",
+        include_str!("../assets/frontend-pnpm-lock.yaml"),
+        &mut files,
+        options.dry_run,
+    )?;
+    write(
+        &project_dir,
         "apps/frontend/app/page.tsx",
         "export default function Page() {\n  return <main>Rainy demo</main>;\n}\n",
         &mut files,
@@ -132,7 +135,7 @@ pub fn init_app(options: InitOptions) -> RainyResult<CommandOutput> {
     write(
         &project_dir,
         ".github/workflows/ci.yml",
-        "name: ci\non:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  rainy:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v5\n      - uses: actions/setup-java@v4\n        with:\n          distribution: temurin\n          java-version: \"21\"\n      - name: Install Maven\n        run: sudo apt-get update && sudo apt-get install -y maven\n      - uses: actions/setup-node@v4\n        with:\n          node-version: \"22\"\n      - uses: pnpm/action-setup@v4\n        with:\n          version: \"10\"\n      - name: Install frontend dependencies\n        working-directory: apps/frontend\n        run: pnpm install --frozen-lockfile=false\n      - name: Install Rainy CLI\n        run: curl -fsSL https://github.com/rainy-dev/rainy/releases/latest/download/install.sh | sh\n      - name: Verify Rainy project\n        run: ~/.rainy/bin/rainy verify --profile ci --json\n",
+        "name: ci\non:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  rainy:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n      - uses: actions/checkout@v5\n      - uses: actions/setup-java@v4\n        with:\n          distribution: temurin\n          java-version: \"21\"\n      - name: Install Maven\n        run: sudo apt-get update && sudo apt-get install -y maven\n      - uses: pnpm/action-setup@v4\n        with:\n          version: \"10\"\n      - uses: actions/setup-node@v4\n        with:\n          node-version: \"22\"\n          cache: pnpm\n          cache-dependency-path: apps/frontend/pnpm-lock.yaml\n      - name: Install frontend dependencies\n        working-directory: apps/frontend\n        run: pnpm install --frozen-lockfile\n      - name: Install Rainy CLI\n        env:\n          RAINY_VERSION: v0.1.1\n        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.1.1/install.sh | sh\n      - name: Verify Rainy project\n        run: ~/.rainy/bin/rainy verify --profile ci --json\n",
         &mut files,
         options.dry_run,
     )?;
@@ -189,7 +192,7 @@ fn write(
     Ok(())
 }
 
-fn rainy_yaml(name: &str, package: &str, registry_path: &str) -> String {
+fn rainy_yaml(name: &str, package: &str) -> String {
     format!(
         r#"apiVersion: rainy.dev/v1
 kind: Project
@@ -218,11 +221,10 @@ package:
   npmScope: "@demo"
 
 capabilityRegistry:
-  sources:
-    - type: local
-      path: "{registry_path}"
+  sources: []
 
 policy:
+  allowNativePlugins: false
   allowEdit:
     - rainy.yaml
     - capability.lock
@@ -269,7 +271,7 @@ verify:
     )
 }
 
-fn lock_yaml(project_name: &str) -> RainyResult<String> {
+fn lock_yaml(project_name: &str, registry_path: &std::path::Path) -> RainyResult<String> {
     let mut lock = config::empty_lock(project_name);
     let now = Utc::now();
     let capabilities = [
@@ -282,7 +284,11 @@ fn lock_yaml(project_name: &str) -> RainyResult<String> {
         ),
         (
             "nextjs-admin",
-            vec!["apps/frontend/package.json", "apps/frontend/app"],
+            vec![
+                "apps/frontend/package.json",
+                "apps/frontend/pnpm-lock.yaml",
+                "apps/frontend/app",
+            ],
         ),
         ("docker-compose-local", vec!["compose.yaml"]),
         ("github-actions-ci", vec![".github/workflows/ci.yml"]),
@@ -295,6 +301,8 @@ fn lock_yaml(project_name: &str) -> RainyResult<String> {
                 version: "0.1.0".to_string(),
                 provider: None,
                 pack: format!("{id}@0.1.0"),
+                source: Some(format!("builtin:{id}")),
+                digest: crate::registry::pack_digest(&registry_path.join(id)).ok(),
                 installed_at: now,
                 artifacts: artifacts.into_iter().map(str::to_string).collect(),
             },
@@ -392,7 +400,7 @@ fn frontend_package_json(name: &str) -> String {
     "react-dom": "18.3.1"
   }},
   "devDependencies": {{
-    "typescript": "5.5.0"
+    "typescript": "5.5.4"
   }}
 }}
 "#

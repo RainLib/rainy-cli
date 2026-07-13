@@ -25,6 +25,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub quiet: bool,
 
+    /// Allow plugins that execute as unrestricted host processes.
+    #[arg(
+        long,
+        global = true,
+        env = "RAINY_ALLOW_NATIVE_PLUGIN",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub allow_native_plugin: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

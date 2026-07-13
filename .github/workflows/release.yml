@@ -5,19 +5,53 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag in vX.Y.Z form
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: stable
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   verify:
     name: verify release inputs
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-verify-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/check-release-version.sh "$RELEASE_TAG"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - name: Format
         run: cargo fmt --check
       - name: Test
@@ -28,22 +62,17 @@ jobs:
         run: python3 -c "import json, pathlib; [json.loads(path.read_text()) for path in sorted(pathlib.Path('schemas').glob('*.schema.json'))]"
       - name: MCP wrapper syntax
         run: python3 -m py_compile integrations/mcp/rainy_mcp.py
-      - name: Installer syntax
-        run: |
-          sh -n scripts/install.sh
-          sh -n scripts/test-install.sh
-          if command -v pwsh >/dev/null 2>&1; then
-            pwsh -NoProfile -Command '$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$null)'
-          else
-            echo 'pwsh not found; skipping install.ps1 syntax check'
-          fi
       - name: Installer tests
-        run: sh scripts/test-install.sh
+        shell: bash
+        run: make installer-check installer-test
+      - name: Release input tests
+        run: sh scripts/test-release.sh
 
   build:
     name: build ${{ matrix.target }}
     needs: verify
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -68,14 +97,34 @@ jobs:
             target: x86_64-pc-windows-msvc
             archive: zip
             binary: rainy.exe
-
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ needs.verify.outputs.release_tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: ${{ matrix.target }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin rainy
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin rainy
+      - name: Smoke release binary
+        shell: bash
+        env:
+          RAINY_FORCE_EMBEDDED_ASSETS: "1"
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          "$binary" --version | grep -F " ${RELEASE_TAG#v}"
+          "$binary" capability list --json >/dev/null
+          "$binary" schema list --json >/dev/null
+          "$binary" --workspace "$RUNNER_TEMP" new release-smoke --dry-run --json >/dev/null
       - name: Package Unix binary
         if: matrix.archive == 'tar.gz'
         shell: bash
@@ -98,26 +147,60 @@ jobs:
           Compress-Archive -Path rainy.exe -DestinationPath "dist/rainy-${{ matrix.target }}.zip"
           $hash = (Get-FileHash -Algorithm SHA256 "dist/rainy-${{ matrix.target }}.zip").Hash.ToLowerInvariant()
           "$hash  rainy-${{ matrix.target }}.zip" | Out-File -NoNewline -Encoding ascii "dist/rainy-${{ matrix.target }}.zip.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rainy-${{ matrix.target }}
           path: dist/*
+          if-no-files-found: error
 
   publish:
     name: publish release
-    needs: build
+    needs: [verify, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ needs.verify.outputs.release_tag }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
-      - name: Add installer scripts
+      - name: Add and verify installer assets
+        shell: bash
         run: |
-          cp scripts/install.sh dist/install.sh
-          cp scripts/install.ps1 dist/install.ps1
-      - uses: softprops/action-gh-release@v2
+          set -euo pipefail
+          cp scripts/install.sh scripts/install.ps1 dist/
+          (cd dist && sha256sum install.sh install.ps1 > installers.sha256)
+          expected_assets=(
+            rainy-x86_64-unknown-linux-gnu.tar.gz
+            rainy-aarch64-unknown-linux-gnu.tar.gz
+            rainy-x86_64-apple-darwin.tar.gz
+            rainy-aarch64-apple-darwin.tar.gz
+            rainy-x86_64-pc-windows-msvc.zip
+          )
+          for asset in "${expected_assets[@]}"; do
+            test -s "dist/$asset"
+            test -s "dist/$asset.sha256"
+            (cd dist && sha256sum -c "$asset.sha256")
+          done
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
+          path: .
+          format: spdx-json
+          output-file: dist/rainy-cli.spdx.json
+          upload-artifact: false
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: dist/*
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.verify.outputs.release_tag }}
           files: dist/*
           generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -68,13 +68,13 @@ rainy --help
 从 GitHub Release 安装预编译包：
 
 ```bash
-curl -fsSL https://github.com/rainy-dev/rainy/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/RainLib/rainy-cli/releases/latest/download/install.sh | sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "iwr https://github.com/rainy-dev/rainy/releases/latest/download/install.ps1 -UseB | iex"
+powershell -ExecutionPolicy Bypass -c "iwr https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 -UseB | iex"
 ```
 
 安装脚本会根据当前系统下载对应的 release asset：
@@ -89,14 +89,17 @@ powershell -ExecutionPolicy Bypass -c "iwr https://github.com/rainy-dev/rainy/re
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
-RAINY_REPO=owner/repo RAINY_VERSION=v0.1.0 sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.1.1 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.1.0 -InstallDir "$HOME\.rainy\bin" -AddToPath
+.\scripts\install.ps1 -Repo owner/repo -Version v0.1.1 -InstallDir "$HOME\.rainy\bin" -AddToPath
 ```
+
+安装器必须下载并验证对应 `.sha256` 文件，校验文件缺失或摘要不匹配时会停止。替换失败会恢复原有二进制，成功后会自动验证 `rainy --version`。
+预编译 CLI 已内嵌 community packs 和 JSON schemas，安装后不依赖源码仓库；首次使用时会把只读运行资源提取到系统临时缓存。
 
 从空目录创建 Golden Path 项目：
 
@@ -262,7 +265,7 @@ rainy self check
 rainy self check --json
 rainy self check --repo owner/repo
 rainy self update
-rainy self update --repo owner/repo --version v0.1.0
+rainy self update --repo owner/repo --version v0.1.1
 rainy self skip 0.2.0
 rainy self skip --repo owner/repo 0.2.0
 ```
@@ -270,7 +273,7 @@ rainy self skip --repo owner/repo 0.2.0
 release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
 
 ```text
-Rainy CLI update available: 0.1.0 -> 0.2.0.
+Rainy CLI update available: 0.1.1 -> 0.2.0.
 Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this version.
 ```
 
@@ -278,6 +281,7 @@ Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this versi
 
 - debug 构建、CI、`--json`、`--quiet` 不会自动输出更新提示。
 - 默认 24 小时检查一次。
+- 网络检查使用短超时；失败后指数退避，避免阻塞后续命令。
 - `RAINY_NO_UPDATE_CHECK=1` 或 `RAINY_SKIP_UPDATE_CHECK=1` 可以关闭自动检查。
 - `RAINY_UPDATE_CHECK_INTERVAL_HOURS=0` 可以让每次运行都检查。
 - `RAINY_UPDATE_REPO=owner/repo` 可以覆盖 GitHub release 仓库。
@@ -293,8 +297,8 @@ make release-check
 创建并推送版本标签后会触发 release workflow：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag -a v0.1.1 -m "Rainy CLI v0.1.1"
+git push origin v0.1.1
 ```
 
 release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和安装脚本检查，然后分别构建并上传：
@@ -307,6 +311,7 @@ release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和
 - 对应的 `.sha256` 文件
 - `install.sh`
 - `install.ps1`
+- SPDX JSON SBOM 和 GitHub build provenance
 
 用户安装或更新时，脚本会按当前操作系统和 CPU 架构拉取对应 release asset。fork 或私有发布仓库可以通过 `RAINY_REPO=owner/repo`、`RAINY_UPDATE_REPO=owner/repo` 或 `--repo owner/repo` 指定。
 
@@ -330,6 +335,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - 所有命令支持全局 `--json`，方便 Agent、MCP、CI 调用。
 - `verify --profile local` 适合开发机，缺少本地工具链时可给 warning；`verify --profile ci` 是严格门禁，未知步骤或缺失验证工具会失败。
 - 策略会阻止敏感路径、危险命令、需要审批的操作和插件越权写入。
+- Wasm 是默认插件运行时；原生 `rainy-*` 插件必须在 Rainy 项目内通过 `--allow-native-plugin`、`RAINY_ALLOW_NATIVE_PLUGIN=1` 或 `policy.allowNativePlugins: true` 显式授权，并写入审计日志。
 
 ## 当前建设进度
 
@@ -343,22 +349,21 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - Capability 依赖和 provider 解析：依赖缺失失败、被依赖能力禁止删除、provider 默认/显式/非法场景有稳定错误。
 - Policy Gate：内置敏感路径、项目 policy、org policy、capability policy、审批动作、危险命令、插件写权限。
 - Doctor / Verify / Evidence：健康检查、能力验证、证据报告、secret 脱敏、默认开发 secret warning。
-- Audit log：成功和失败命令会写 `.rainy/audit.log`。
-- Plugin：外部 `rainy-*` 命令、HTTP adapter、Wasm action plugin、manifest 权限、重名 warning、禁止覆盖内置命令。
-- Release 安装和自更新：GitHub Actions 多平台 release 构建、`install.sh` / `install.ps1` 安装脚本、`rainy self check/update/skip`。
+- Audit log：修改命令执行前检查审计可写性，成功和失败命令通过文件锁写入 `.rainy/audit.log`。
+- Plugin：Wasm action plugin 默认可用；原生 `rainy-*` 需要显式信任；HTTP adapter 受权限、HTTPS/loopback 和响应大小限制。
+- Release 安装和自更新：五平台构建与 smoke、强制 checksum、回滚安装、SBOM、provenance、原生 HTTPS 版本检查和 `self check/update/skip`。
 - MCP 示例：stdio JSON-RPC wrapper 调用 Rainy CLI，默认 dry-run 计划能力接入。
 - Backstage 示例：scaffolder actions 和模板示例。
-- Schema / conformance：schema list/validate、pack/plugin conformance 检查。
+- Schema / conformance：标准 Draft 2020-12 validator、schema list/validate、pack/plugin conformance 检查。
 - 测试：包含 unit 和 E2E tests，覆盖 Golden Path、policy、plugin、schema、conformance、事务回滚、自更新状态等主流程。
-- CI / release 门禁：格式、测试、E2E、clippy、schema、MCP wrapper、安装脚本语法、安装器平台/checksum 测试、JSON smoke、conformance、多平台 release 构建；Golden Path 生成的项目 CI 会准备 Java/Maven/Node/pnpm、安装前端依赖、安装 Rainy CLI，再运行严格 `verify --profile ci`。
+- CI / release 门禁：三系统测试、MSRV、audit/deny、CodeQL、格式、E2E、clippy、schema、安装器测试、JSON smoke、conformance 和五平台 release 构建。
 
 部分完成 / 示例级：
 
 - Backstage 集成目前是示例代码，未打包成可直接发布的 Backstage npm 包。
 - MCP wrapper 是最小可运行示例，生产环境还需要接入具体 MCP host 配置、权限边界和部署方式。
 - `verify --profile local` 会在本地工具链缺失时对部分外部命令给 warning；生产门禁应使用严格的 `verify --profile ci`。
-- pack signing 是 sha256 签名/校验初版，不是完整供应链签名体系。
-- schema validator 是内置轻量实现，覆盖当前仓库 schema 使用的核心规则，不等同完整 JSON Schema 规范实现。
+- Pack 默认生成完整性 manifest；配置 `RAINY_PACK_SIGNING_KEY` / `RAINY_PACK_TRUSTED_PUBLIC_KEY` 后使用 cosign 验证发布者身份。
 
 未包含在当前开源仓库：
 
