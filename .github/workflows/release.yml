@@ -50,14 +50,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scripts/check-release-version.sh "$RELEASE_TAG"
+          sh scripts/check-release-version.sh "$RELEASE_TAG"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - name: Format
         run: cargo fmt --check
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Schema parse
         run: python3 -c "import json, pathlib; [json.loads(path.read_text()) for path in sorted(pathlib.Path('schemas').glob('*.schema.json'))]"
       - name: MCP wrapper syntax
