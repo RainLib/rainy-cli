@@ -109,7 +109,7 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
 echo "Installing rainy $VERSION for $TARGET"
-curl -fL --connect-timeout 10 --max-time 120 "$BASE_URL/$ASSET" -o "$TMP_DIR/$ASSET"
+curl -fL --connect-timeout 10 --max-time 600 "$BASE_URL/$ASSET" -o "$TMP_DIR/$ASSET"
 
 curl -fsSL --connect-timeout 10 --max-time 30 "$BASE_URL/$ASSET.sha256" -o "$TMP_DIR/$ASSET.sha256" || {
   echo "rainy installer: checksum file is required: $ASSET.sha256" >&2

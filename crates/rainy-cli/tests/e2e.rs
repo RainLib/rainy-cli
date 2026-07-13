@@ -2517,7 +2517,7 @@ fn serve_static(root: std::path::PathBuf, expected_requests: usize) -> String {
             }
         }
     });
-    format!("http://{}", address)
+    format!("http://{address}")
 }
 
 fn serve_plugin_adapter_once(path: &str, content: &str) -> String {
@@ -2555,7 +2555,7 @@ fn serve_plugin_adapter_once(path: &str, content: &str) -> String {
             .write_all(response.as_bytes())
             .expect("write adapter response");
     });
-    format!("http://{}", address)
+    format!("http://{address}")
 }
 
 fn adapter_url_placeholder(content: &str) -> String {
