@@ -12,6 +12,19 @@ need() {
   fi
 }
 
+download_file() {
+  url="$1"
+  output="$2"
+  max_time="$3"
+  curl -fL \
+    --connect-timeout 20 \
+    --max-time "$max_time" \
+    --retry 3 \
+    --retry-delay 2 \
+    --retry-all-errors \
+    "$url" -o "$output"
+}
+
 detect_target() {
   os="${RAINY_INSTALLER_OS:-$(uname -s)}"
   arch="${RAINY_INSTALLER_ARCH:-$(uname -m)}"
@@ -36,7 +49,14 @@ detect_target() {
 }
 
 latest_version() {
-  curl -fsSL --connect-timeout 10 --max-time 30 -H "User-Agent: rainy-installer" "https://api.github.com/repos/$REPO/releases/latest" \
+  curl -fsSL \
+    --connect-timeout 20 \
+    --max-time 90 \
+    --retry 3 \
+    --retry-delay 2 \
+    --retry-all-errors \
+    -H "User-Agent: rainy-installer" \
+    "https://api.github.com/repos/$REPO/releases/latest" \
     | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     | head -n 1
 }
@@ -109,9 +129,9 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
 echo "Installing rainy $VERSION for $TARGET"
-curl -fL --connect-timeout 10 --max-time 600 "$BASE_URL/$ASSET" -o "$TMP_DIR/$ASSET"
+download_file "$BASE_URL/$ASSET" "$TMP_DIR/$ASSET" 900
 
-curl -fsSL --connect-timeout 10 --max-time 30 "$BASE_URL/$ASSET.sha256" -o "$TMP_DIR/$ASSET.sha256" || {
+download_file "$BASE_URL/$ASSET.sha256" "$TMP_DIR/$ASSET.sha256" 90 || {
   echo "rainy installer: checksum file is required: $ASSET.sha256" >&2
   exit 1
 }

@@ -73,7 +73,8 @@ try {
   $Server = Start-Process -FilePath $Python.Source -ArgumentList @(
     (Join-Path $Root "scripts/test-installer-server.py"),
     $ServerRoot,
-    $PortFile
+    $PortFile,
+    "2"
   ) -PassThru -WindowStyle Hidden
   for ($Attempt = 0; $Attempt -lt 100 -and -not (Test-Path $PortFile); $Attempt++) {
     Start-Sleep -Milliseconds 50

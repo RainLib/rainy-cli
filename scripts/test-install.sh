@@ -81,7 +81,7 @@ check_download_install_and_rollback() {
   }
 
   write_fake_binary 0.1.1
-  python3 "$ROOT_DIR/scripts/test-installer-server.py" "$server_root" "$port_file" &
+  python3 "$ROOT_DIR/scripts/test-installer-server.py" "$server_root" "$port_file" 2 &
   server_pid=$!
   while [ ! -s "$port_file" ]; do sleep 0.05; done
   base_url="http://127.0.0.1:$(cat "$port_file")/v0.1.1"

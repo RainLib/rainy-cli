@@ -41,6 +41,7 @@ help:
 	@printf '%s\n' '  make schema-check       Parse all schema JSON files'
 	@printf '%s\n' '  make conformance        Check community packs conformance'
 	@printf '%s\n' '  make mcp-check          Python compile-check MCP wrapper'
+	@printf '%s\n' '  make skill-check        Validate model Skill and bootstrap installers'
 	@printf '%s\n' '  make installer-check    Syntax-check installer scripts where possible'
 	@printf '%s\n' '  make installer-test     Run installer platform/checksum tests'
 	@printf '%s\n' '  make release-input-test Validate release tag/version gates'
@@ -115,6 +116,11 @@ mcp-check: build
 	$(PYTHON) -m py_compile integrations/mcp/rainy_mcp.py
 	RAINY_BIN=$(RAINY_BIN) sh scripts/test-mcp.sh
 
+.PHONY: skill-check
+skill-check:
+	sh scripts/test-skill.sh
+	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -File scripts/test-skill.ps1; else printf '%s\n' 'pwsh not found; skipping PowerShell skill E2E'; fi
+
 .PHONY: installer-check
 installer-check:
 	sh -n scripts/install.sh
@@ -149,7 +155,7 @@ security-check:
 	@if command -v cargo-deny >/dev/null 2>&1; then cargo deny check; else printf '%s\n' 'cargo-deny not found; security workflow installs and runs it'; fi
 
 .PHONY: ci
-ci: fmt-check test clippy schema-check mcp-check installer-check installer-test release-input-test smoke repo-check
+ci: fmt-check test clippy schema-check mcp-check skill-check installer-check installer-test release-input-test smoke repo-check
 
 .PHONY: release-check
 release-check: ci

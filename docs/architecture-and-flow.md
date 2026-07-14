@@ -17,10 +17,11 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - `crates/rainy-cli`: 当前唯一 Rust crate，包含 CLI 命令树、配置、registry、plan、action、policy、patch、doctor、verify、evidence、plugin、schema、conformance、audit、self-update 等模块。
 - `community-packs`: 内置开源能力包，覆盖 Spring Boot、Next.js、Docker Compose、PostgreSQL、Redis、MinIO、OIDC/Keycloak、OpenAPI、Dev Container、GitHub Actions、OpenTelemetry、Helm draft。
 - `schemas`: Rainy 项目、能力包、计划、变更集、报告、插件、审计、自更新等 JSON Schema。
+- `integrations/skills/rainy-cli`: 模型可发现的 Rainy Skill，定义 plan/apply/verify 安全工作流，并在 CLI 缺失时校验和安装官方 Release。
 - `integrations/mcp`: MCP stdio wrapper 示例，供 Agent 以 JSON-RPC 方式调用 Rainy CLI。
 - `integrations/backstage`: Backstage scaffolder action 和 template 示例。
 - `scripts`: GitHub Release 安装脚本，按操作系统和 CPU 架构下载对应 CLI 包。
-- `.github/workflows`: CI 和 release workflow。CI 负责格式、测试、clippy、schema、MCP wrapper、安装脚本和 smoke；release 负责发版前验证、多平台构建和发布 assets。
+- `.github/workflows`: CI 和 release workflow。CI 负责格式、测试、clippy、schema、MCP wrapper、Skill、安装脚本和 smoke；release 负责发版前验证、多平台构建，并发布 CLI 与平台无关的 Skill assets。
 
 ## 核心模块职责
 
@@ -154,6 +155,14 @@ publish GitHub Release assets, checksums, and installer scripts
 
 CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 Cargo package repository，也可以通过 `--repo` 或 `RAINY_UPDATE_REPO` 覆盖。版本检查使用原生 HTTPS、标准 SemVer、超时和失败退避；指定版本更新固定使用对应 tag 的安装器，并在执行前通过该 Release 的 `installers.sha256` 验证安装脚本。
 
+## 模型接入
+
+模型接入分为三层：Skill 提供触发条件、操作顺序和安全规则；MCP 将允许的操作暴露为结构化工具；CLI 继续作为 plan、policy、apply、rollback、verify 和 audit 的唯一执行边界。
+
+`integrations/skills/rainy-cli/SKILL.md` 是正式模型 Skill。每次工作流先运行平台对应的 `ensure-rainy`：已有 CLI 时验证并复用；缺失时下载最新 Release 的安装器与 `installers.sha256`，校验安装器后执行，最后返回可立即使用的绝对路径。校验或安装失败会终止工作流。
+
+项目内的 `rainy agent init` 和 `rainy skill sync` 负责同步 `AGENTS.md` 与已安装能力上下文，不等同于安装模型宿主中的 Skill。模型宿主应安装 release 中的 `rainy-cli-skill` 包或直接安装仓库的 `integrations/skills/rainy-cli` 目录。
+
 ## 数据与协议
 
 - `rainy.yaml`: 项目配置入口，包含路径、registry source、policy、verify。
@@ -164,20 +173,21 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
 - `.rainy/audit.log`: 命令成功或失败的本地审计记录。
 - JSON 输出：所有主要命令支持 `--json`，供 Agent、MCP、CI 调用。
 - Release assets: 多平台 CLI 包、对应 sha256 文件和安装脚本。
+- Model Skill assets: 平台无关的 `rainy-cli-skill` 压缩包及对应 sha256。
 
 ## 当前限制与后续建设
 
 ### P0 / 近期
 
-- 架构文档此前缺位。README 有使用说明，最终形态设计稿偏愿景，但缺少当前实现版架构说明；本文档补齐这一层。
-- Release 与安装链路要求 tag/Cargo/binary 版本一致，并强制 checksum。正式 Release 仍需在 GitHub 上完成五平台资产验收。
-- README 中测试数量和建设进度容易过期；当前已改为描述性说明，并提供 `make production-check` 作为生产可用性本地门禁入口。后续可增加 CI badge 或脚本生成状态。
+- Model Skill 源码、双平台 bootstrap、CI 和 release 打包已完成；公开 Skill asset 需要从包含本次变更的下一版本 Release 开始提供。
+- 当前 MCP wrapper 仍是示例级 Python 进程，尚未具备生产 MCP host 的 workspace allowlist、审批交互和独立安装包。
+- `rainy skill sync` 当前同步的是项目 Agent 上下文，不负责把 Skill 安装到具体模型宿主；后续需要按宿主提供 install/doctor/uninstall adapter。
 
 ### P1 / 中期
 
 - 当前 Rust 实现仍是单 crate 多模块，和最终设计稿的多 crate 分层有差距。建议在接口稳定后拆分 `core/config/registry/plan/actions/policy/plugin/json-protocol`。
 - `verify` 已区分 `local` 和 `ci`：local 适合本地开发，ci 是严格质量门禁。后续可以继续扩展 profile schema，例如显式声明 strict、timeout、required tools。
-- MCP 和 Backstage 已补充部署、权限、版本兼容和打包说明，但实现仍是示例级，尚未发布为独立可安装包。
+- MCP 和 Backstage 已补充部署、权限、版本兼容和打包说明，但实现仍是示例级；模型 Skill 已可独立安装，MCP 尚未发布为独立生产包。
 - Pack 完整性 manifest 可配合 cosign 发布者签名；组织仍需维护受信公钥轮换和撤销流程。
 
 ### P2 / 长期

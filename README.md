@@ -15,6 +15,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - `crates/rainy-cli`: CLI 主程序，当前以单 crate 形式实现核心能力。
 - `community-packs`: 开源 Golden Path 能力包。
 - `schemas`: Rainy 项目、能力包、计划、变更、报告、插件等 JSON Schema。
+- `integrations/skills/rainy-cli`: 可被模型宿主安装的正式 Rainy Skill，包含跨平台 CLI 检测和可信安装引导。
 - `integrations/mcp`: MCP stdio wrapper 示例，供 Agent 调用 Rainy CLI。
 - `integrations/backstage`: Backstage scaffolder action/template 示例。
 - `docs`: 外部作者编写 capability pack 和 plugin 的说明。
@@ -40,6 +41,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - 平台研发：沉淀公司内外通用能力，避免每个项目重复接入。
 - 后端/前端研发：从标准 Golden Path 起项目，并按能力增量接入中间件、认证、文件上传、可观测等。
 - Agent 平台：通过 `--json`、`--dry-run`、稳定错误码和 MCP wrapper 安全调用 CLI。
+- 模型用户：安装 Rainy Skill 后，可以让模型发现 Rainy 工作流；本地缺少 `rainy` 时 Skill 会校验并安装官方 Release 后继续。
 - DevOps/CI：运行 `doctor`、`verify`、`evidence`，把能力接入结果变成可检查报告。
 - Backstage 门户：用 scaffolder action 调用同一套 CLI 流程。
 
@@ -163,6 +165,7 @@ make production-check # 生产可用性本地检查，等同 release-check
 make schema-check  # 检查 schemas/*.schema.json 可解析
 make conformance   # 检查 community-packs conformance
 make mcp-check     # 编译检查 MCP Python wrapper
+make skill-check   # 检查模型 Skill 和跨平台 CLI 引导
 make installer-check # 检查安装脚本语法
 make installer-test # 检查安装器平台识别和 checksum 失败路径
 make smoke         # JSON smoke commands
@@ -311,11 +314,33 @@ release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和
 - 对应的 `.sha256` 文件
 - `install.sh`
 - `install.ps1`
+- `rainy-cli-skill.tar.gz` / `rainy-cli-skill.zip`
+- Skill 包对应的 `.sha256` 文件
 - SPDX JSON SBOM 和 GitHub build provenance
 
 用户安装或更新时，脚本会按当前操作系统和 CPU 架构拉取对应 release asset。fork 或私有发布仓库可以通过 `RAINY_REPO=owner/repo`、`RAINY_UPDATE_REPO=owner/repo` 或 `--repo owner/repo` 指定。
 
 ## 使用模型
+
+正式模型 Skill 位于 [`integrations/skills/rainy-cli`](integrations/skills/rainy-cli)。将该目录安装到支持 Agent Skills 的模型宿主后，模型会先执行强制 bootstrap：
+
+- 优先使用 `RAINY_BIN`、当前 `PATH` 或 `$HOME/.rainy/bin` 中已有的 Rainy。
+- 如果本地没有 `rainy`，从 `RainLib/rainy-cli` 最新 GitHub Release 下载安装器和 `installers.sha256`。
+- 校验安装器摘要后才执行安装，并再次运行 `rainy --version`。
+- 返回安装后二进制的绝对路径，因此当前模型会话不需要重启 shell 就能继续。
+- 安装或校验失败时停止后续工程操作，不会绕过 Rainy 的 policy gate。
+
+可以独立验证 bootstrap：
+
+```bash
+sh integrations/skills/rainy-cli/scripts/ensure-rainy.sh
+```
+
+Windows PowerShell：
+
+```powershell
+& integrations/skills/rainy-cli/scripts/ensure-rainy.ps1
+```
 
 Rainy 的核心使用方式是“先计划，再应用”：
 
@@ -352,6 +377,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - Audit log：修改命令执行前检查审计可写性，成功和失败命令通过文件锁写入 `.rainy/audit.log`。
 - Plugin：Wasm action plugin 默认可用；原生 `rainy-*` 需要显式信任；HTTP adapter 受权限、HTTPS/loopback 和响应大小限制。
 - Release 安装和自更新：五平台构建与 smoke、强制 checksum、回滚安装、SBOM、provenance、原生 HTTPS 版本检查和 `self check/update/skip`。
+- 模型 Skill：正式 `SKILL.md`、安全工作流、Unix/Windows CLI 自动发现、安装器摘要校验、缺失时安装并在当前会话继续执行。
 - MCP 示例：stdio JSON-RPC wrapper 调用 Rainy CLI，默认 dry-run 计划能力接入。
 - Backstage 示例：scaffolder actions 和模板示例。
 - Schema / conformance：标准 Draft 2020-12 validator、schema list/validate、pack/plugin conformance 检查。
@@ -396,5 +422,6 @@ make installer-test
 - Capability Pack authoring: [docs/capability-pack-authoring.md](docs/capability-pack-authoring.md)
 - Plugin protocol: [docs/plugin-protocol.md](docs/plugin-protocol.md)
 - MCP wrapper: [integrations/mcp](integrations/mcp)
+- Model Skill: [integrations/skills/rainy-cli](integrations/skills/rainy-cli)
 - Backstage example: [integrations/backstage](integrations/backstage)
 - Full design document: [Rainy_CLI_最终形态程序设计与详细开发文档.md](Rainy_CLI_最终形态程序设计与详细开发文档.md)

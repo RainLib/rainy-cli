@@ -62,9 +62,9 @@ jobs:
         run: python3 -c "import json, pathlib; [json.loads(path.read_text()) for path in sorted(pathlib.Path('schemas').glob('*.schema.json'))]"
       - name: MCP wrapper syntax
         run: python3 -m py_compile integrations/mcp/rainy_mcp.py
-      - name: Installer tests
+      - name: Skill and installer tests
         shell: bash
-        run: make installer-check installer-test
+        run: make skill-check installer-check installer-test
       - name: Release input tests
         run: sh scripts/test-release.sh
 
@@ -177,12 +177,27 @@ jobs:
           set -euo pipefail
           cp scripts/install.sh scripts/install.ps1 dist/
           (cd dist && sha256sum install.sh install.ps1 > installers.sha256)
+          tar -czf dist/rainy-cli-skill.tar.gz -C integrations/skills rainy-cli
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+
+          source = Path("integrations/skills/rainy-cli")
+          with ZipFile("dist/rainy-cli-skill.zip", "w", ZIP_DEFLATED) as archive:
+              for path in sorted(source.rglob("*")):
+                  if path.is_file():
+                      archive.write(path, Path("rainy-cli") / path.relative_to(source))
+          PY
+          (cd dist && sha256sum rainy-cli-skill.tar.gz > rainy-cli-skill.tar.gz.sha256)
+          (cd dist && sha256sum rainy-cli-skill.zip > rainy-cli-skill.zip.sha256)
           expected_assets=(
             rainy-x86_64-unknown-linux-gnu.tar.gz
             rainy-aarch64-unknown-linux-gnu.tar.gz
             rainy-x86_64-apple-darwin.tar.gz
             rainy-aarch64-apple-darwin.tar.gz
             rainy-x86_64-pc-windows-msvc.zip
+            rainy-cli-skill.tar.gz
+            rainy-cli-skill.zip
           )
           for asset in "${expected_assets[@]}"; do
             test -s "dist/$asset"

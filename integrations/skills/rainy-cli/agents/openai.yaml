@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rainy CLI"
+  short_description: "Manage Rainy projects through safe CLI workflows"
+  default_prompt: "Use $rainy-cli to inspect and safely manage this project with Rainy CLI."

@@ -69,6 +69,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-install.ps1
+      - name: PowerShell model Skill test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-skill.ps1
 
   msrv:
     name: rust 1.88 MSRV

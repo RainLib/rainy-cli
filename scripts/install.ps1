@@ -9,6 +9,31 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-RainyDownload {
+  param([string]$Uri, [string]$OutFile, [int]$TimeoutSec)
+  for ($Attempt = 1; $Attempt -le 4; $Attempt++) {
+    try {
+      Invoke-WebRequest -UseBasicParsing -TimeoutSec $TimeoutSec $Uri -OutFile $OutFile
+      return
+    } catch {
+      if ($Attempt -eq 4) { throw }
+      Start-Sleep -Seconds (2 * $Attempt)
+    }
+  }
+}
+
+function Get-RainyLatestRelease {
+  param([string]$Repo)
+  for ($Attempt = 1; $Attempt -le 4; $Attempt++) {
+    try {
+      return Invoke-RestMethod -TimeoutSec 90 -Headers @{ "User-Agent" = "rainy-installer" } -Uri "https://api.github.com/repos/$Repo/releases/latest"
+    } catch {
+      if ($Attempt -eq 4) { throw }
+      Start-Sleep -Seconds (2 * $Attempt)
+    }
+  }
+}
+
 if ($Repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
   throw "RAINY_INSTALL_INVALID_REPOSITORY: expected owner/repo, got $Repo"
 }
@@ -16,7 +41,7 @@ if ($Repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
 function Resolve-RainyVersion {
   param([string]$Repo, [string]$Version)
   if ($Version -eq "latest") {
-    $release = Invoke-RestMethod -TimeoutSec 15 -Headers @{ "User-Agent" = "rainy-installer" } -Uri "https://api.github.com/repos/$Repo/releases/latest"
+    $release = Get-RainyLatestRelease -Repo $Repo
     return $release.tag_name
   }
   if ($Version.StartsWith("v")) {
@@ -52,9 +77,9 @@ try {
   $Archive = Join-Path $TempDir $Asset
   $Checksum = "$Archive.sha256"
   Write-Host "Installing rainy $ResolvedVersion for $Target"
-  Invoke-WebRequest -UseBasicParsing -TimeoutSec 600 "$BaseUrl/$Asset" -OutFile $Archive
+  Invoke-RainyDownload -Uri "$BaseUrl/$Asset" -OutFile $Archive -TimeoutSec 900
 
-  Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "$BaseUrl/$Asset.sha256" -OutFile $Checksum
+  Invoke-RainyDownload -Uri "$BaseUrl/$Asset.sha256" -OutFile $Checksum -TimeoutSec 90
   $Expected = (Get-Content $Checksum | Select-Object -First 1).Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)[0].ToLowerInvariant()
   if ($Expected -notmatch '^[a-f0-9]{64}$') {
     throw "rainy installer: invalid checksum format"
