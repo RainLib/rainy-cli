@@ -4,6 +4,13 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-22
+
+### Fixed
+
+- Updated apply-command construction for the Rust 1.97 Clippy lint set used by
+  GitHub release runners while retaining the Rust 1.88 MSRV.
+
 ## [0.3.2] - 2026-07-22
 
 ### Changed

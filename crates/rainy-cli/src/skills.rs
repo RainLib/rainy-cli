@@ -1435,11 +1435,11 @@ fn init_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> 
         "--target".to_string(),
         profile.targets.join(","),
     ];
-    if let Some(package) = &profile.packages.comet {
-        if let Some(version) = package.strip_prefix(&format!("{COMET_PACKAGE}@")) {
-            command.push("--comet-version".to_string());
-            command.push(version.to_string());
-        }
+    if let Some(package) = &profile.packages.comet
+        && let Some(version) = package.strip_prefix(&format!("{COMET_PACKAGE}@"))
+    {
+        command.push("--comet-version".to_string());
+        command.push(version.to_string());
     }
     append_apply_flags(&mut command, force);
     command
@@ -1451,11 +1451,11 @@ fn update_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String
         "skill".to_string(),
         "update".to_string(),
     ];
-    if let Some(package) = &profile.packages.comet {
-        if let Some(version) = package.strip_prefix(&format!("{COMET_PACKAGE}@")) {
-            command.push("--comet-version".to_string());
-            command.push(version.to_string());
-        }
+    if let Some(package) = &profile.packages.comet
+        && let Some(version) = package.strip_prefix(&format!("{COMET_PACKAGE}@"))
+    {
+        command.push("--comet-version".to_string());
+        command.push(version.to_string());
     }
     append_apply_flags(&mut command, force);
     command
