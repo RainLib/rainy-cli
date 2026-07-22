@@ -2,9 +2,16 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path $PSScriptRoot -Parent
 $Bootstrap = Join-Path $Root "integrations/skills/rainy-cli/scripts/ensure-rainy.ps1"
+$CometSkill = Join-Path $Root "integrations/skills/rainy-comet/SKILL.md"
 $Binary = Join-Path $Root "target/debug/rainy.exe"
 if (-not (Test-Path $Binary)) {
   throw "build rainy.exe before running the PowerShell skill test"
+}
+if (-not (Test-Path $CometSkill)) {
+  throw "Rainy Comet Skill is missing"
+}
+if ((Get-Content -Raw $CometSkill) -match "TODO") {
+  throw "Rainy Comet Skill contains unfinished TODO markers"
 }
 
 $tokens = $null

@@ -610,13 +610,23 @@ fn http_post_json(url: &str, body: &serde_json::Value) -> RainyResult<String> {
         .set("User-Agent", "rainy-cli")
         .set("Content-Type", "application/json")
         .send_string(&body)
-        .map_err(|err| RainyError::plugin("PLUGIN_ADAPTER_FAILED", err.to_string()))?;
+        .map_err(|err| {
+            RainyError::plugin(
+                "PLUGIN_ADAPTER_FAILED",
+                format!("adapter request failed: {err}"),
+            )
+        })?;
     let mut response_body = String::new();
     response
         .into_reader()
         .take(MAX_PLUGIN_RESPONSE_BYTES + 1)
         .read_to_string(&mut response_body)
-        .map_err(|err| RainyError::plugin("PLUGIN_ADAPTER_FAILED", err.to_string()))?;
+        .map_err(|err| {
+            RainyError::plugin(
+                "PLUGIN_ADAPTER_FAILED",
+                format!("adapter response read failed: {err}"),
+            )
+        })?;
     if response_body.len() as u64 > MAX_PLUGIN_RESPONSE_BYTES {
         return Err(RainyError::plugin(
             "PLUGIN_ADAPTER_RESPONSE_TOO_LARGE",

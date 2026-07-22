@@ -15,13 +15,14 @@ mod plugin;
 mod policy;
 mod registry;
 mod schema;
+mod skills;
 mod update;
 mod verify;
 
 use clap::Parser;
 use cli::{
     AddSubcommand, CapabilitySubcommand, Cli, Commands, EvidenceFormat, EvidenceSubcommand,
-    InitSubcommand, SkillSubcommand,
+    InitSubcommand,
 };
 use error::{RainyError, RainyResult};
 use output::CommandOutput;
@@ -175,9 +176,7 @@ fn run(cli: Cli) -> RainyResult<CommandOutput> {
             plugin::handle_plugin_command(&workspace, command, allow_native_plugin)
         }
         Commands::Agent(command) => agent::handle_agent_command(&workspace, command),
-        Commands::Skill(command) => match command.command {
-            SkillSubcommand::Sync => agent::sync_skills_command(&workspace),
-        },
+        Commands::Skill(command) => skills::handle_skill_command(&workspace, command),
         Commands::Conformance(command) => conformance::handle_conformance_command(command),
         Commands::Schema(command) => schema::handle_schema_command(command),
         Commands::SelfCommand(command) => update::handle_self_command(command),

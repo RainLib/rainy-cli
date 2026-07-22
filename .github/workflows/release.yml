@@ -178,18 +178,22 @@ jobs:
           cp scripts/install.sh scripts/install.ps1 dist/
           (cd dist && sha256sum install.sh install.ps1 > installers.sha256)
           tar -czf dist/rainy-cli-skill.tar.gz -C integrations/skills rainy-cli
+          tar -czf dist/rainy-comet-skill.tar.gz -C integrations/skills rainy-comet
           python3 - <<'PY'
           from pathlib import Path
           from zipfile import ZIP_DEFLATED, ZipFile
 
-          source = Path("integrations/skills/rainy-cli")
-          with ZipFile("dist/rainy-cli-skill.zip", "w", ZIP_DEFLATED) as archive:
-              for path in sorted(source.rglob("*")):
-                  if path.is_file():
-                      archive.write(path, Path("rainy-cli") / path.relative_to(source))
+          for name in ("rainy-cli", "rainy-comet"):
+              source = Path("integrations/skills") / name
+              with ZipFile(f"dist/{name}-skill.zip", "w", ZIP_DEFLATED) as archive:
+                  for path in sorted(source.rglob("*")):
+                      if path.is_file():
+                          archive.write(path, Path(name) / path.relative_to(source))
           PY
           (cd dist && sha256sum rainy-cli-skill.tar.gz > rainy-cli-skill.tar.gz.sha256)
           (cd dist && sha256sum rainy-cli-skill.zip > rainy-cli-skill.zip.sha256)
+          (cd dist && sha256sum rainy-comet-skill.tar.gz > rainy-comet-skill.tar.gz.sha256)
+          (cd dist && sha256sum rainy-comet-skill.zip > rainy-comet-skill.zip.sha256)
           expected_assets=(
             rainy-x86_64-unknown-linux-gnu.tar.gz
             rainy-aarch64-unknown-linux-gnu.tar.gz
@@ -198,6 +202,8 @@ jobs:
             rainy-x86_64-pc-windows-msvc.zip
             rainy-cli-skill.tar.gz
             rainy-cli-skill.zip
+            rainy-comet-skill.tar.gz
+            rainy-comet-skill.zip
           )
           for asset in "${expected_assets[@]}"; do
             test -s "dist/$asset"

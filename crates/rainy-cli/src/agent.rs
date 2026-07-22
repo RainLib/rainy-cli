@@ -4,11 +4,14 @@ use crate::error::RainyResult;
 use crate::output::CommandOutput;
 use std::path::Path;
 
+const RAINY_CONTEXT_START: &str = "<!-- rainy:context:start -->";
+const RAINY_CONTEXT_END: &str = "<!-- rainy:context:end -->";
+
 pub fn handle_agent_command(workspace: &Path, command: AgentCommand) -> RainyResult<CommandOutput> {
     match command.command {
         AgentSubcommand::Init => {
             let context = build_context(workspace)?;
-            std::fs::write(workspace.join("AGENTS.md"), &context)?;
+            write_agent_context(workspace, &context)?;
             write_enterprise_agent_files(workspace, &context)?;
             Ok(CommandOutput::message(
                 "Generated AGENTS.md and .enterprise-agent context",
@@ -22,7 +25,7 @@ pub fn handle_agent_command(workspace: &Path, command: AgentCommand) -> RainyRes
 
 pub fn sync_skills_command(workspace: &Path) -> RainyResult<CommandOutput> {
     let context = build_context(workspace)?;
-    std::fs::write(workspace.join("AGENTS.md"), &context)?;
+    write_agent_context(workspace, &context)?;
     write_enterprise_agent_files(workspace, &context)?;
     Ok(CommandOutput::message(
         "Synced Rainy agent skills and context",
@@ -48,12 +51,46 @@ fn build_context(workspace: &Path) -> RainyResult<String> {
     out.push_str("- `rainy verify --profile local`\n");
     out.push_str("- `rainy verify --profile ci`\n");
     out.push_str("- `rainy evidence generate`\n\n");
+    if let Some(summary) = crate::skills::context_summary(workspace)? {
+        out.push_str("## Skill Workflow\n");
+        out.push_str(&summary);
+        out.push('\n');
+    }
     out.push_str("## Capability Usage\n");
     out.push_str(&format!(
         "Use Rainy packs before manually wiring common infrastructure in {}.\n",
         config.project.name
     ));
     Ok(out)
+}
+
+fn write_agent_context(workspace: &Path, context: &str) -> RainyResult<()> {
+    let path = workspace.join("AGENTS.md");
+    let managed = format!(
+        "{RAINY_CONTEXT_START}\n{}\n{RAINY_CONTEXT_END}",
+        context.trim()
+    );
+    let existing = if path.is_file() {
+        std::fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let merged = merge_managed_context(&existing, &managed);
+    std::fs::write(path, merged)?;
+    Ok(())
+}
+
+fn merge_managed_context(existing: &str, managed: &str) -> String {
+    if let Some(start) = existing.find(RAINY_CONTEXT_START)
+        && let Some(relative_end) = existing[start..].find(RAINY_CONTEXT_END)
+    {
+        let end = start + relative_end + RAINY_CONTEXT_END.len();
+        return format!("{}{}{}", &existing[..start], managed, &existing[end..]);
+    }
+    if existing.trim().is_empty() {
+        return format!("{managed}\n");
+    }
+    format!("{}\n\n{managed}\n", existing.trim_end())
 }
 
 fn write_enterprise_agent_files(workspace: &Path, context: &str) -> RainyResult<()> {

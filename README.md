@@ -15,7 +15,8 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - `crates/rainy-cli`: CLI 主程序，当前以单 crate 形式实现核心能力。
 - `community-packs`: 开源 Golden Path 能力包。
 - `schemas`: Rainy 项目、能力包、计划、变更、报告、插件等 JSON Schema。
-- `integrations/skills/rainy-cli`: 可被模型宿主安装的正式 Rainy Skill，包含跨平台 CLI 检测和可信安装引导。
+- `integrations/skills/rainy-cli`: Rainy CLI 执行、安全审批和跨平台 bootstrap Skill。
+- `integrations/skills/rainy-comet`: OpenSpec + Superpowers + Comet 与 Rainy 的职责交接 Skill。
 - `integrations/mcp`: MCP stdio wrapper 示例，供 Agent 调用 Rainy CLI。
 - `integrations/backstage`: Backstage scaffolder action/template 示例。
 - `docs`: 外部作者编写 capability pack 和 plugin 的说明。
@@ -132,6 +133,21 @@ rainy doctor
 rainy verify --profile local
 rainy verify --profile ci
 rainy evidence generate
+```
+
+为项目启用组合式模型工作流（需要 Node.js 20+、npm/npx 和 Git）：
+
+```bash
+rainy skill init --profile comet --target codex --language zh --dry-run
+rainy skill init --profile comet --target codex --language zh --apply
+rainy skill status
+rainy skill doctor
+```
+
+默认 `comet` profile 由 OpenSpec 管理需求与验收标准、Superpowers 管理工程方法、Comet 管理阶段和恢复状态，Rainy 继续负责可执行计划、policy、显式 `--apply`、verify、evidence 和 audit。核心 CLI 不强制依赖这些 Node 工具；只需要 Rainy Skill 时可使用：
+
+```bash
+rainy skill init --profile rainy --target codex --apply
 ```
 
 Agent 或 CI 使用 JSON 输出：
@@ -261,6 +277,23 @@ rainy agent context
 rainy skill sync
 ```
 
+Skill profile 管理：
+
+```bash
+rainy skill init --profile comet --target codex --language zh --dry-run
+rainy skill init --profile comet --target codex --language zh --apply
+rainy skill install --dry-run
+rainy skill install --apply
+rainy skill status
+rainy skill doctor
+rainy skill update --dry-run
+rainy skill update --comet-version 0.4.0-beta.6 --apply
+rainy skill uninstall --dry-run
+rainy skill uninstall --apply
+```
+
+目前项目 scope 支持 `codex`、`claude`、`cursor`、`github-copilot`、`gemini`、`opencode`。Comet 包使用精确版本，`skills.lock` 记录 Rainy 及上游 Skill 内容摘要；检测到已锁定 Rainy Skill 被手工修改时会拒绝覆盖，审阅后才能使用 `--force`。全局宿主安装暂不由 Rainy 管理。
+
 版本检查和更新：
 
 ```bash
@@ -291,6 +324,8 @@ Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this versi
 
 ## 发布流程
 
+面向 `main` 的 pull request 会运行 CI，依赖相关变更还会运行安全检查；合并后的普通 `main` push 不重复运行。安全检查另有每周定时扫描和手动触发。仓库应启用 `main` 分支保护并将 PR 检查设为 required checks。
+
 GitHub Release 由 `.github/workflows/release.yml` 负责。发版前建议本地先跑：
 
 ```bash
@@ -315,6 +350,7 @@ release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和
 - `install.sh`
 - `install.ps1`
 - `rainy-cli-skill.tar.gz` / `rainy-cli-skill.zip`
+- `rainy-comet-skill.tar.gz` / `rainy-comet-skill.zip`
 - Skill 包对应的 `.sha256` 文件
 - SPDX JSON SBOM 和 GitHub build provenance
 
@@ -322,13 +358,17 @@ release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和
 
 ## 使用模型
 
-正式模型 Skill 位于 [`integrations/skills/rainy-cli`](integrations/skills/rainy-cli)。将该目录安装到支持 Agent Skills 的模型宿主后，模型会先执行强制 bootstrap：
+正式模型 Skill 包括 [`integrations/skills/rainy-cli`](integrations/skills/rainy-cli) 和 [`integrations/skills/rainy-comet`](integrations/skills/rainy-comet)。前者负责 CLI bootstrap 和安全执行；后者只负责 OpenSpec、Superpowers、Comet 与 Rainy 的流程交接，不复制上游 Skill 内容。
+
+将 `rainy-cli` 安装到支持 Agent Skills 的模型宿主后，模型会先执行强制 bootstrap：
 
 - 优先使用 `RAINY_BIN`、当前 `PATH` 或 `$HOME/.rainy/bin` 中已有的 Rainy。
 - 如果本地没有 `rainy`，从 `RainLib/rainy-cli` 最新 GitHub Release 下载安装器和 `installers.sha256`。
 - 校验安装器摘要后才执行安装，并再次运行 `rainy --version`。
 - 返回安装后二进制的绝对路径，因此当前模型会话不需要重启 shell 就能继续。
 - 安装或校验失败时停止后续工程操作，不会绕过 Rainy 的 policy gate。
+
+也可以由 Rainy 以项目 scope 安装两个 Skill 和上游组合：`rainy skill init --profile comet --target codex --apply`。该命令生成可提交的 `rainy-skills.yaml` 和 `skills.lock`，调用固定版本 Comet 的官方初始化入口，并强制 `.comet/config.yaml` 中 `auto_transition: false`。Comet 阶段前进不等于批准 Rainy `--apply`。
 
 可以独立验证 bootstrap：
 
@@ -366,7 +406,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 
 已完成：
 
-- Rust CLI 命令树：`new/init/add/apply/capability/pack/doctor/verify/evidence/plugin/agent/schema/conformance`。
+- Rust CLI 命令树：`new/init/add/apply/capability/pack/doctor/verify/evidence/plugin/agent/skill/schema/conformance`。
 - Golden Path 初始化：生成 Spring Boot + Next.js 基础项目、`rainy.yaml`、`capability.lock`、AGENTS.md、CI、compose、evidence 目录。
 - Capability Pack 解析：本地、git cache、HTTP registry source。
 - 内置 action：Maven、YAML/JSON/JSONC/TOML merge、模板渲染、文件创建/追加、Docker Compose、package.json、devcontainer、Helm draft 等。
@@ -377,7 +417,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - Audit log：修改命令执行前检查审计可写性，成功和失败命令通过文件锁写入 `.rainy/audit.log`。
 - Plugin：Wasm action plugin 默认可用；原生 `rainy-*` 需要显式信任；HTTP adapter 受权限、HTTPS/loopback 和响应大小限制。
 - Release 安装和自更新：五平台构建与 smoke、强制 checksum、回滚安装、SBOM、provenance、原生 HTTPS 版本检查和 `self check/update/skip`。
-- 模型 Skill：正式 `SKILL.md`、安全工作流、Unix/Windows CLI 自动发现、安装器摘要校验、缺失时安装并在当前会话继续执行。
+- 模型 Skill：Rainy CLI bootstrap Skill、Rainy-Comet bridge Skill、项目级 profile/lock、六类宿主目标、Comet 固定版本安装、内容摘要漂移检查、doctor/update/uninstall。
 - MCP 示例：stdio JSON-RPC wrapper 调用 Rainy CLI，默认 dry-run 计划能力接入。
 - Backstage 示例：scaffolder actions 和模板示例。
 - Schema / conformance：标准 Draft 2020-12 validator、schema list/validate、pack/plugin conformance 检查。
@@ -423,5 +463,7 @@ make installer-test
 - Plugin protocol: [docs/plugin-protocol.md](docs/plugin-protocol.md)
 - MCP wrapper: [integrations/mcp](integrations/mcp)
 - Model Skill: [integrations/skills/rainy-cli](integrations/skills/rainy-cli)
+- Composed workflow Skill: [integrations/skills/rainy-comet](integrations/skills/rainy-comet)
+- Skill profile management: [docs/skills-management.md](docs/skills-management.md)
 - Backstage example: [integrations/backstage](integrations/backstage)
 - Full design document: [Rainy_CLI_最终形态程序设计与详细开发文档.md](Rainy_CLI_最终形态程序设计与详细开发文档.md)

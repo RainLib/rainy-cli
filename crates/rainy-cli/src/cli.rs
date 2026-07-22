@@ -330,7 +330,86 @@ pub struct SkillCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SkillSubcommand {
+    Init(SkillInitArgs),
+    Install(SkillChangeArgs),
     Sync,
+    Status,
+    Doctor,
+    Update(SkillUpdateArgs),
+    Uninstall(SkillChangeArgs),
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum SkillProfile {
+    Rainy,
+    Comet,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum SkillLanguage {
+    En,
+    Zh,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum SkillTarget {
+    Codex,
+    Claude,
+    Cursor,
+    GithubCopilot,
+    Gemini,
+    Opencode,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillInitArgs {
+    #[arg(long, value_enum, default_value = "comet")]
+    pub profile: SkillProfile,
+
+    #[arg(long, value_enum, default_value = "zh")]
+    pub language: SkillLanguage,
+
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "codex")]
+    pub target: Vec<SkillTarget>,
+
+    #[arg(long, default_value = "0.4.0-beta.6")]
+    pub comet_version: String,
+
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub apply: bool,
+
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillChangeArgs {
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub apply: bool,
+
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillUpdateArgs {
+    #[arg(long)]
+    pub comet_version: Option<String>,
+
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub apply: bool,
+
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]

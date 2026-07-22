@@ -14,6 +14,14 @@
 - Do not scan unrelated home or system directories for Rainy projects.
 - Do not initialize a missing project implicitly.
 - Preserve `capability.lock` and `.rainy/audit.log` as managed records.
+- Preserve `rainy-skills.yaml` as desired state and `skills.lock` as installed state.
+
+## Composed Skills
+
+- Keep Comet `auto_transition` disabled in Rainy-managed profiles.
+- Treat OpenSpec as intent, Superpowers as engineering method, Comet as phase state, and Rainy as the execution boundary.
+- Do not edit locked Rainy Skill copies or Comet-managed upstream Skills in place.
+- Do not treat Comet phase advancement as approval for Rainy apply, native plugins, deployment, migration, or secret writes.
 
 ## Plugins
 

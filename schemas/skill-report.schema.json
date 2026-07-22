@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/skill-report.schema.json",
+  "title": "Rainy Skill Report",
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "status",
+    "operation",
+    "profile",
+    "scope",
+    "language",
+    "targets",
+    "changedFiles",
+    "command",
+    "checks"
+  ],
+  "properties": {
+    "protocolVersion": { "const": "rainy.skill-report.v1" },
+    "status": { "enum": ["dry-run", "applied", "ok", "degraded", "passed", "failed"] },
+    "operation": { "enum": ["init", "install", "sync", "status", "doctor", "update", "uninstall"] },
+    "profile": { "enum": ["rainy", "comet"] },
+    "scope": { "const": "project" },
+    "language": { "enum": ["en", "zh"] },
+    "targets": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "changedFiles": { "type": "array", "items": { "type": "string" } },
+    "command": { "type": "array", "items": { "type": "string" } },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "message"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "enum": ["pass", "fail"] },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

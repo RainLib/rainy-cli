@@ -84,6 +84,9 @@ pub enum CommandOutput {
     AgentContext {
         context: String,
     },
+    Skill {
+        report: crate::skills::SkillReport,
+    },
     Update {
         report: crate::update::UpdateReport,
     },
@@ -160,6 +163,7 @@ impl CommandOutput {
             Self::Schemas { .. } => "schemas",
             Self::SchemaValidation { .. } => "schema-validation",
             Self::AgentContext { .. } => "agent-context",
+            Self::Skill { .. } => "skill",
             Self::Update { .. } => "update",
         }
     }
@@ -177,21 +181,22 @@ impl CommandOutput {
             Self::Verify { report } => &report.status,
             Self::Conformance { report } => &report.status,
             Self::SchemaValidation { report } => &report.status,
+            Self::Skill { report } => &report.status,
             Self::Update { .. } => "ok",
             _ => "ok",
         }
     }
 
     pub fn is_dry_run(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::DryRun { .. }
-                | Self::ChangeDryRun { .. }
-                | Self::Init {
-                    status: "dry-run",
-                    ..
-                }
-        )
+            | Self::ChangeDryRun { .. }
+            | Self::Init {
+                status: "dry-run", ..
+            } => true,
+            Self::Skill { report } => report.status == "dry-run",
+            _ => false,
+        }
     }
 
     pub fn audit_summary(&self) -> String {
@@ -233,6 +238,9 @@ impl CommandOutput {
             Self::Schemas { schemas } => format!("listed {} schemas", schemas.len()),
             Self::SchemaValidation { report } => format!("schema validation {}", report.status),
             Self::AgentContext { .. } => "rendered agent context".to_string(),
+            Self::Skill { report } => {
+                format!("skill {} {}", report.operation, report.status)
+            }
             Self::Update { report } => {
                 if report.update_available {
                     format!(
@@ -432,6 +440,24 @@ impl CommandOutput {
                 }
             }
             Self::AgentContext { context } => println!("{context}"),
+            Self::Skill { report } => {
+                println!(
+                    "Skill {}: {} ({}; {})",
+                    report.operation,
+                    report.status,
+                    report.profile,
+                    report.targets.join(", ")
+                );
+                if !report.command.is_empty() {
+                    println!("Command: {}", report.command.join(" "));
+                }
+                for file in &report.changed_files {
+                    println!("  {file}");
+                }
+                for check in &report.checks {
+                    println!("  {} {} - {}", check.status, check.id, check.message);
+                }
+            }
             Self::Update { report } => {
                 if report.update_available {
                     println!(

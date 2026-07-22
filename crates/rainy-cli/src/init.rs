@@ -315,7 +315,8 @@ fn lock_yaml(project_name: &str, registry_path: &std::path::Path) -> RainyResult
 
 fn agents_md(project: &str) -> String {
     format!(
-        r#"# AGENTS.md
+        r#"<!-- rainy:context:start -->
+# AGENTS.md
 
 ## Project Rules
 - Use Rainy CLI for capability changes.
@@ -337,6 +338,7 @@ fn agents_md(project: &str) -> String {
 
 ## Capability Usage
 Prefer Rainy packs before manually wiring common infrastructure in {project}.
+<!-- rainy:context:end -->
 "#
     )
 }

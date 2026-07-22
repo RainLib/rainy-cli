@@ -41,7 +41,7 @@ help:
 	@printf '%s\n' '  make schema-check       Parse all schema JSON files'
 	@printf '%s\n' '  make conformance        Check community packs conformance'
 	@printf '%s\n' '  make mcp-check          Python compile-check MCP wrapper'
-	@printf '%s\n' '  make skill-check        Validate model Skill and bootstrap installers'
+	@printf '%s\n' '  make skill-check        Validate Rainy/Comet Skills and bootstrap installers'
 	@printf '%s\n' '  make installer-check    Syntax-check installer scripts where possible'
 	@printf '%s\n' '  make installer-test     Run installer platform/checksum tests'
 	@printf '%s\n' '  make release-input-test Validate release tag/version gates'

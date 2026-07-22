@@ -2,11 +2,13 @@
 
 1. Update `CHANGELOG.md` and the workspace version.
 2. Run `make production-check` with a clean worktree.
-3. Merge the release commit to `main` and confirm CI/security checks pass.
+3. Confirm the release pull request's required CI/security checks pass, then
+   merge it to `main`. Pushes to `main` do not rerun these workflows.
 4. Create an annotated `vX.Y.Z` tag whose version matches Cargo exactly.
 5. Push the tag. Do not move or reuse an existing release tag.
-6. Confirm all five archives, their checksums, both installers, SBOM, and build
-   provenance are attached to the GitHub Release.
+6. Confirm all five CLI archives, both Skill archives in tar/zip form, their
+   checksums, both installers, SBOM, and build provenance are attached to the
+   GitHub Release.
 7. Run the Unix and Windows installation acceptance tests against the published
    version and verify `rainy --version`.
 

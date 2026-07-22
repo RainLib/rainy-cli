@@ -3,6 +3,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 SKILL_DIR="$ROOT_DIR/integrations/skills/rainy-cli"
+COMET_SKILL_DIR="$ROOT_DIR/integrations/skills/rainy-comet"
 BOOTSTRAP="$SKILL_DIR/scripts/ensure-rainy.sh"
 tmp_dir=""
 server_pid=""
@@ -38,27 +39,31 @@ sh -n "$BOOTSTRAP"
 [ -f "$SKILL_DIR/references/commands.md" ] || fail "commands reference is missing"
 [ -f "$SKILL_DIR/references/safety.md" ] || fail "safety reference is missing"
 [ -f "$SKILL_DIR/agents/openai.yaml" ] || fail "OpenAI skill metadata is missing"
-if grep -R "TODO" "$SKILL_DIR" >/dev/null; then
+[ -f "$COMET_SKILL_DIR/references/ownership.md" ] || fail "Rainy Comet ownership reference is missing"
+[ -f "$COMET_SKILL_DIR/agents/openai.yaml" ] || fail "Rainy Comet OpenAI metadata is missing"
+if grep -R "TODO" "$SKILL_DIR" "$COMET_SKILL_DIR" >/dev/null; then
   fail "skill contains unfinished TODO markers"
 fi
 
-python3 - "$SKILL_DIR/SKILL.md" <<'PY'
+python3 - "$SKILL_DIR/SKILL.md" "$COMET_SKILL_DIR/SKILL.md" <<'PY'
 from pathlib import Path
 import sys
 
-path = Path(sys.argv[1])
-lines = path.read_text(encoding="utf-8").splitlines()
-if not lines or lines[0] != "---":
-    raise SystemExit("SKILL.md frontmatter is missing")
-try:
-    end = lines.index("---", 1)
-except ValueError as exc:
-    raise SystemExit("SKILL.md frontmatter is not closed") from exc
-keys = [line.split(":", 1)[0] for line in lines[1:end] if ":" in line]
-if keys != ["name", "description"]:
-    raise SystemExit(f"SKILL.md frontmatter keys are invalid: {keys}")
-if lines[1] != "name: rainy-cli" or not lines[2].removeprefix("description: ").strip():
-    raise SystemExit("SKILL.md metadata is incomplete")
+for raw in sys.argv[1:]:
+    path = Path(raw)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != "---":
+        raise SystemExit(f"{path}: SKILL.md frontmatter is missing")
+    try:
+        end = lines.index("---", 1)
+    except ValueError as exc:
+        raise SystemExit(f"{path}: SKILL.md frontmatter is not closed") from exc
+    keys = [line.split(":", 1)[0] for line in lines[1:end] if ":" in line]
+    if keys != ["name", "description"]:
+        raise SystemExit(f"{path}: SKILL.md frontmatter keys are invalid: {keys}")
+    expected = f"name: {path.parent.name}"
+    if lines[1] != expected or not lines[2].removeprefix("description: ").strip():
+        raise SystemExit(f"{path}: SKILL.md metadata is incomplete")
 PY
 
 tmp_dir="$(mktemp -d)"
@@ -89,7 +94,14 @@ printf '%s  %s\n' "$digest" install.sh >"$release_dir/installers.sha256"
 
 python3 "$ROOT_DIR/scripts/test-installer-server.py" "$server_root" "$port_file" 2 &
 server_pid=$!
-while [ ! -s "$port_file" ]; do sleep 0.05; done
+attempt=0
+while [ ! -s "$port_file" ]; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 200 ]; then
+    fail "installer test server did not start"
+  fi
+  sleep 0.05
+done
 release_url="http://127.0.0.1:$(cat "$port_file")/release"
 
 resolved="$(

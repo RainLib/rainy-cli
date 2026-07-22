@@ -4,8 +4,12 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 use tempfile::TempDir;
+
+static HTTP_PLUGIN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn rainy() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rainy"));
@@ -36,6 +40,248 @@ fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
         );
     }
     output
+}
+
+#[test]
+fn rainy_skill_profile_has_a_safe_project_lifecycle() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "skill-app"]);
+    let app = temp.path().join("skill-app");
+    let app_path = app.to_string_lossy().to_string();
+
+    let preview = run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "init",
+        "--profile",
+        "rainy",
+        "--target",
+        "codex",
+        "--dry-run",
+        "--json",
+    ]);
+    let preview_json: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("skill preview json");
+    assert_eq!(preview_json["type"], "skill");
+    assert_eq!(preview_json["report"]["status"], "dry-run");
+    assert!(!app.join("rainy-skills.yaml").exists());
+    assert!(!app.join("skills.lock").exists());
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "init",
+        "--profile",
+        "rainy",
+        "--target",
+        "codex",
+        "--apply",
+        "--json",
+    ]);
+    assert!(app.join("rainy-skills.yaml").is_file());
+    assert!(app.join("skills.lock").is_file());
+    assert!(app.join(".codex/skills/rainy-cli/SKILL.md").is_file());
+    assert!(!app.join(".codex/skills/rainy-comet").exists());
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "schema",
+        "validate",
+        "--schema",
+        "skill-profile",
+        "--file",
+        &app.join("rainy-skills.yaml").to_string_lossy(),
+        "--json",
+    ]);
+    run(&[
+        "--workspace",
+        &app_path,
+        "schema",
+        "validate",
+        "--schema",
+        "skill-lock",
+        "--file",
+        &app.join("skills.lock").to_string_lossy(),
+        "--json",
+    ]);
+    let doctor = run(&["--workspace", &app_path, "skill", "doctor", "--json"]);
+    let doctor_json: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("skill doctor json");
+    assert_eq!(doctor_json["report"]["status"], "passed");
+
+    let lock_path = app.join("skills.lock");
+    let valid_lock = fs::read_to_string(&lock_path).expect("valid skills lock");
+    let unsafe_lock = valid_lock.replacen(
+        "path: .codex/skills/rainy-cli",
+        "path: ../outside/rainy-cli",
+        1,
+    );
+    assert_ne!(valid_lock, unsafe_lock, "locked path fixture not found");
+    fs::write(&lock_path, unsafe_lock).expect("unsafe skills lock");
+    let rejected = rainy()
+        .args(["--workspace", &app_path, "skill", "doctor", "--json"])
+        .output()
+        .expect("run unsafe lock doctor");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("SKILL_LOCK_PATH_INVALID"));
+    fs::write(&lock_path, valid_lock).expect("restore skills lock");
+
+    let agents = app.join("AGENTS.md");
+    let existing = fs::read_to_string(&agents).expect("AGENTS.md");
+    fs::write(&agents, format!("{existing}\n<!-- user-content -->\n")).expect("extend AGENTS.md");
+    run(&["--workspace", &app_path, "skill", "sync", "--json"]);
+    let synced = fs::read_to_string(&agents).expect("synced AGENTS.md");
+    assert!(synced.contains("<!-- user-content -->"));
+    assert_eq!(count(&synced, "<!-- rainy:context:start -->"), 1);
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "uninstall",
+        "--apply",
+        "--json",
+    ]);
+    assert!(!app.join("rainy-skills.yaml").exists());
+    assert!(!app.join("skills.lock").exists());
+    assert!(!app.join(".codex/skills/rainy-cli").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn comet_skill_profile_uses_pinned_upstream_and_detects_drift() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "comet-app"]);
+    let app = temp.path().join("comet-app");
+    let app_path = app.to_string_lossy().to_string();
+    let fake_comet = temp.path().join("fake-comet");
+    fs::write(
+        &fake_comet,
+        r##"#!/bin/sh
+set -eu
+action="$1"
+workspace="$2"
+case "$action" in
+  init)
+    for name in comet openspec-propose brainstorming; do
+      mkdir -p "$workspace/.codex/skills/$name"
+      printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$workspace/.codex/skills/$name/SKILL.md"
+    done
+    ;;
+  uninstall)
+    rm -rf "$workspace/.codex/skills/comet" "$workspace/.codex/skills/openspec-propose" "$workspace/.codex/skills/brainstorming"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+printf '%s\n' '{"status":"ok"}'
+"##,
+    )
+    .expect("fake comet");
+    let mut permissions = fs::metadata(&fake_comet).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_comet, permissions).expect("permissions");
+    let fake_path = fake_comet.to_string_lossy().to_string();
+
+    run_with_env(
+        &[
+            "--workspace",
+            &app_path,
+            "skill",
+            "init",
+            "--profile",
+            "comet",
+            "--target",
+            "codex",
+            "--language",
+            "zh",
+            "--apply",
+            "--json",
+        ],
+        &[("RAINY_COMET_BIN", &fake_path)],
+    );
+    for path in [
+        ".codex/skills/rainy-cli/SKILL.md",
+        ".codex/skills/rainy-comet/SKILL.md",
+        ".codex/skills/comet/SKILL.md",
+        ".codex/skills/openspec-propose/SKILL.md",
+        ".codex/skills/brainstorming/SKILL.md",
+        ".comet/config.yaml",
+    ] {
+        assert!(app.join(path).is_file(), "missing {path}");
+    }
+    let comet_config = fs::read_to_string(app.join(".comet/config.yaml")).expect("Comet config");
+    assert!(comet_config.contains("auto_transition: false"));
+    let lock = fs::read_to_string(app.join("skills.lock")).expect("skills lock");
+    assert!(lock.contains("version: 0.4.0-beta.6"));
+    assert!(lock.contains("name: openspec"));
+    assert!(lock.contains("name: superpowers"));
+
+    let doctor = run_with_env(
+        &["--workspace", &app_path, "skill", "doctor", "--json"],
+        &[("RAINY_COMET_BIN", &fake_path)],
+    );
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("\"status\": \"passed\""));
+
+    fs::write(
+        app.join(".codex/skills/rainy-comet/local-edit.txt"),
+        "modified\n",
+    )
+    .expect("modify managed skill");
+    let rejected = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "skill",
+            "update",
+            "--apply",
+            "--json",
+        ])
+        .env("RAINY_COMET_BIN", &fake_path)
+        .output()
+        .expect("run drifted update");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("SKILL_MANAGED_FILES_MODIFIED"));
+
+    run_with_env(
+        &[
+            "--workspace",
+            &app_path,
+            "skill",
+            "update",
+            "--comet-version",
+            "0.4.0-beta.7",
+            "--apply",
+            "--force",
+            "--json",
+        ],
+        &[("RAINY_COMET_BIN", &fake_path)],
+    );
+    let updated_lock = fs::read_to_string(app.join("skills.lock")).expect("updated lock");
+    assert!(updated_lock.contains("version: 0.4.0-beta.7"));
+
+    run_with_env(
+        &[
+            "--workspace",
+            &app_path,
+            "skill",
+            "uninstall",
+            "--apply",
+            "--json",
+        ],
+        &[("RAINY_COMET_BIN", &fake_path)],
+    );
+    assert!(!app.join(".codex/skills/rainy-comet").exists());
+    assert!(!app.join(".codex/skills/comet").exists());
+    assert!(!app.join("rainy-skills.yaml").exists());
 }
 
 #[cfg(unix)]
@@ -272,10 +518,43 @@ fn standalone_binary_uses_embedded_packs_and_schemas() {
         .expect("standalone config");
     assert!(config.contains("sources: []"));
     assert!(!config.contains(&cache.to_string_lossy().to_string()));
+    let output = rainy()
+        .args([
+            "--workspace",
+            &temp.path().join("standalone-app").to_string_lossy(),
+            "skill",
+            "init",
+            "--profile",
+            "rainy",
+            "--target",
+            "codex",
+            "--apply",
+            "--json",
+        ])
+        .env("RAINY_FORCE_EMBEDDED_ASSETS", "1")
+        .env("RAINY_ASSET_CACHE", &cache)
+        .output()
+        .expect("install embedded Rainy skill");
+    assert!(
+        output.status.success(),
+        "embedded skill install failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        temp.path()
+            .join("standalone-app/.codex/skills/rainy-cli/SKILL.md")
+            .is_file()
+    );
     assert!(
         cache
             .join(format!("rainy-cli-assets-{}", env!("CARGO_PKG_VERSION")))
             .join(".complete")
+            .is_file()
+    );
+    assert!(
+        cache
+            .join(format!("rainy-cli-assets-{}", env!("CARGO_PKG_VERSION")))
+            .join("integrations/skills/rainy-comet/SKILL.md")
             .is_file()
     );
 }
@@ -1914,6 +2193,7 @@ agentRules: []
     assert!(String::from_utf8_lossy(&denied.stderr).contains("POLICY_DENY_EDIT"));
     fs::remove_file(app.join(".rainy/org-policy.yaml")).expect("remove org policy");
 
+    let _adapter_guard = HTTP_PLUGIN_TEST_LOCK.lock().expect("plugin adapter lock");
     let adapter_url = serve_plugin_adapter_once("generated/rpc.txt", "rpc-ok");
     let plugin_source = temp.path().join("rpc-plugin");
     write(&plugin_source.join("rainy-rpc"), "#!/bin/sh\necho rpc\n");
@@ -2004,6 +2284,7 @@ fn plugin_action_cannot_write_outside_manifest_permissions() {
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
+    let _adapter_guard = HTTP_PLUGIN_TEST_LOCK.lock().expect("plugin adapter lock");
     let adapter_url = serve_plugin_adapter_once("apps/backend/pom.xml", "owned");
     let plugin_source = temp.path().join("limited-plugin");
     write(
@@ -2547,13 +2828,18 @@ fn serve_plugin_adapter_once(path: &str, content: &str) -> String {
 }}"#
         );
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
             body.len(),
             body
         );
         stream
             .write_all(response.as_bytes())
             .expect("write adapter response");
+        stream.flush().expect("flush adapter response");
+        // Keep the peer alive while ureq applies its response read timeout on macOS.
+        thread::sleep(Duration::from_secs(1));
+        let mut closed = [0_u8; 1];
+        let _ = stream.read(&mut closed);
     });
     format!("http://{address}")
 }

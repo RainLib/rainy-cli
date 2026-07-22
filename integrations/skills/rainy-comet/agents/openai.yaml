@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rainy Comet Workflow"
+  short_description: "Coordinate OpenSpec, Superpowers, Comet, and Rainy"
+  default_prompt: "Use $rainy-comet to manage this Rainy project through the Comet workflow."

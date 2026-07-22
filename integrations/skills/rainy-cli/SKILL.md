@@ -1,6 +1,6 @@
 ---
 name: rainy-cli
-description: Safely inspect, plan, apply, verify, and audit Rainy-managed software projects through Rainy CLI. Use when an agent needs to initialize a Rainy project, manage capability packs, inspect project health, apply a reviewed execution plan, generate evidence, or troubleshoot rainy.yaml and capability.lock. Also use when Rainy CLI may not be installed because this skill bootstraps the verified official release before continuing.
+description: Safely inspect, plan, apply, verify, audit, and manage model Skill profiles for Rainy-managed software projects through Rainy CLI. Use when an agent needs to initialize a Rainy project, manage capability packs or OpenSpec/Superpowers/Comet integration, inspect project or Skill health, apply a reviewed execution plan, generate evidence, or troubleshoot rainy.yaml, capability.lock, rainy-skills.yaml, and skills.lock. Also use when Rainy CLI may not be installed because this skill bootstraps the verified official release before continuing.
 ---
 
 # Rainy CLI
@@ -44,6 +44,15 @@ Start with read-only JSON commands:
 "$RAINY_BIN" --workspace "$WORKSPACE" doctor --json
 "$RAINY_BIN" --workspace "$WORKSPACE" capability installed --json
 ```
+
+When `rainy-skills.yaml` exists, also run:
+
+```sh
+"$RAINY_BIN" --workspace "$WORKSPACE" skill status --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill doctor --json
+```
+
+If it selects the `comet` profile, load the sibling `rainy-comet` Skill and follow its ownership and phase rules.
 
 Read [references/commands.md](references/commands.md) when selecting commands. Read [references/safety.md](references/safety.md) before any mutating workflow or plugin operation.
 
