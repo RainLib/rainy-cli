@@ -69,6 +69,8 @@ Preview and install the default project-scoped OpenSpec + Superpowers + Comet pr
 "$RAINY_BIN" --workspace "$WORKSPACE" skill doctor --json
 ```
 
+`init`, `install`, `update`, and `uninstall` preview by default. In a JSON dry-run report, present `report.applyCommand` for approval and execute that exact Rainy command only after approval. `report.command` is the upstream command Rainy will invoke internally during apply; never execute it as a substitute for `report.applyCommand`. `--yes` is accepted as an explicit alias for `--apply`, but generated automation should prefer the canonical `--apply` spelling.
+
 Manage an existing profile:
 
 ```sh

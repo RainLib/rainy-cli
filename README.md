@@ -138,11 +138,16 @@ rainy evidence generate
 为项目启用组合式模型工作流（需要 Node.js 20+、npm/npx 和 Git）：
 
 ```bash
-rainy skill init --profile comet --target codex --language zh --dry-run
-rainy skill init --profile comet --target codex --language zh --apply
+rainy skill --help
+rainy skill init --help
+rainy skill init # 默认仅预览，不写文件
+# 按预览结果执行终端显示的 Apply this plan 命令：
+rainy skill init --apply
 rainy skill status
 rainy skill doctor
 ```
+
+`rainy skill init` 默认等价于 `--profile comet --target codex --language zh`。所有会修改 Skill 状态的命令默认仅预览；`--apply` 才会执行，`--yes` 是含义相同的兼容别名。预览中的 `Upstream command` 是 Rainy 在 apply 阶段调用的内部命令，不需要手工执行。
 
 默认 `comet` profile 由 OpenSpec 管理需求与验收标准、Superpowers 管理工程方法、Comet 管理阶段和恢复状态，Rainy 继续负责可执行计划、policy、显式 `--apply`、verify、evidence 和 audit。核心 CLI 不强制依赖这些 Node 工具；只需要 Rainy Skill 时可使用：
 
@@ -282,6 +287,7 @@ Skill profile 管理：
 ```bash
 rainy skill init --profile comet --target codex --language zh --dry-run
 rainy skill init --profile comet --target codex --language zh --apply
+rainy skill init --yes # --apply 的兼容别名
 rainy skill install --dry-run
 rainy skill install --apply
 rainy skill status
@@ -292,7 +298,7 @@ rainy skill uninstall --dry-run
 rainy skill uninstall --apply
 ```
 
-目前项目 scope 支持 `codex`、`claude`、`cursor`、`github-copilot`、`gemini`、`opencode`。Comet 包使用精确版本，`skills.lock` 记录 Rainy 及上游 Skill 内容摘要；检测到已锁定 Rainy Skill 被手工修改时会拒绝覆盖，审阅后才能使用 `--force`。全局宿主安装暂不由 Rainy 管理。
+目前项目 scope 支持 `codex`、`claude`、`cursor`、`github-copilot`、`gemini`、`opencode`。Comet 包使用精确版本，`skills.lock` 记录 Rainy 及上游 Skill 内容摘要；检测到已锁定 Rainy Skill 被手工修改时会拒绝覆盖，审阅后才能使用 `--force`。全局宿主安装暂不由 Rainy 管理。每个子命令都提供独立说明和可执行示例，例如 `rainy skill update --help`。
 
 版本检查和更新：
 

@@ -108,6 +108,7 @@ pub struct SkillReport {
     pub language: String,
     pub targets: Vec<String>,
     pub changed_files: Vec<String>,
+    pub apply_command: Vec<String>,
     pub command: Vec<String>,
     pub checks: Vec<SkillCheck>,
 }
@@ -181,6 +182,7 @@ fn init(workspace: &Path, args: SkillInitArgs) -> RainyResult<CommandOutput> {
             report: planned_report(
                 "init",
                 &desired,
+                init_apply_command(&desired, args.force),
                 comet_display(&desired, CometAction::Install),
             ),
         });
@@ -211,6 +213,7 @@ fn install(workspace: &Path, args: SkillChangeArgs) -> RainyResult<CommandOutput
             report: planned_report(
                 "install",
                 &profile,
+                change_apply_command("install", args.force),
                 comet_display(&profile, CometAction::Install),
             ),
         });
@@ -259,7 +262,15 @@ fn status(workspace: &Path) -> RainyResult<CommandOutput> {
         "ok"
     };
     Ok(CommandOutput::Skill {
-        report: report("status", status, &profile, Vec::new(), Vec::new(), checks),
+        report: report(
+            "status",
+            status,
+            &profile,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            checks,
+        ),
     })
 }
 
@@ -274,6 +285,7 @@ fn doctor(workspace: &Path) -> RainyResult<CommandOutput> {
             "passed"
         },
         &profile,
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         checks,
@@ -306,6 +318,7 @@ fn update(workspace: &Path, args: SkillUpdateArgs) -> RainyResult<CommandOutput>
             report: planned_report(
                 "update",
                 &profile,
+                update_apply_command(&profile, args.force),
                 comet_display(&profile, CometAction::Update),
             ),
         });
@@ -336,6 +349,7 @@ fn uninstall(workspace: &Path, args: SkillChangeArgs) -> RainyResult<CommandOutp
             report: planned_report(
                 "uninstall",
                 &profile,
+                change_apply_command("uninstall", args.force),
                 comet_display(&profile, CometAction::Uninstall),
             ),
         });
@@ -1334,7 +1348,7 @@ fn resolve_apply_flags(dry_run: bool, apply: bool) -> RainyResult<bool> {
     if dry_run && apply {
         return Err(RainyError::plan(
             "APPLY_MODE_CONFLICT",
-            "--dry-run and --apply cannot be used together",
+            "--dry-run cannot be combined with --apply or --yes",
         ));
     }
     Ok(apply)
@@ -1343,6 +1357,7 @@ fn resolve_apply_flags(dry_run: bool, apply: bool) -> RainyResult<bool> {
 fn planned_report(
     operation: &str,
     profile: &SkillProfileConfig,
+    apply_command: Vec<String>,
     command: Vec<String>,
 ) -> SkillReport {
     let mut changed_files = vec![PROFILE_PATH.to_string(), LOCK_PATH.to_string()];
@@ -1362,6 +1377,7 @@ fn planned_report(
         "dry-run",
         profile,
         changed_files,
+        apply_command,
         command,
         Vec::new(),
     )
@@ -1379,6 +1395,7 @@ fn completed_report(
         changed_files,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     )
 }
 
@@ -1387,6 +1404,7 @@ fn report(
     status: &str,
     profile: &SkillProfileConfig,
     changed_files: Vec<String>,
+    apply_command: Vec<String>,
     command: Vec<String>,
     checks: Vec<SkillCheck>,
 ) -> SkillReport {
@@ -1399,9 +1417,65 @@ fn report(
         language: profile.language.clone(),
         targets: profile.targets.clone(),
         changed_files,
+        apply_command,
         command,
         checks,
     }
+}
+
+fn init_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> {
+    let mut command = vec![
+        "rainy".to_string(),
+        "skill".to_string(),
+        "init".to_string(),
+        "--profile".to_string(),
+        profile.profile.clone(),
+        "--language".to_string(),
+        profile.language.clone(),
+        "--target".to_string(),
+        profile.targets.join(","),
+    ];
+    if let Some(package) = &profile.packages.comet {
+        if let Some(version) = package.strip_prefix(&format!("{COMET_PACKAGE}@")) {
+            command.push("--comet-version".to_string());
+            command.push(version.to_string());
+        }
+    }
+    append_apply_flags(&mut command, force);
+    command
+}
+
+fn update_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> {
+    let mut command = vec![
+        "rainy".to_string(),
+        "skill".to_string(),
+        "update".to_string(),
+    ];
+    if let Some(package) = &profile.packages.comet {
+        if let Some(version) = package.strip_prefix(&format!("{COMET_PACKAGE}@")) {
+            command.push("--comet-version".to_string());
+            command.push(version.to_string());
+        }
+    }
+    append_apply_flags(&mut command, force);
+    command
+}
+
+fn change_apply_command(operation: &str, force: bool) -> Vec<String> {
+    let mut command = vec![
+        "rainy".to_string(),
+        "skill".to_string(),
+        operation.to_string(),
+    ];
+    append_apply_flags(&mut command, force);
+    command
+}
+
+fn append_apply_flags(command: &mut Vec<String>, force: bool) {
+    if force {
+        command.push("--force".to_string());
+    }
+    command.push("--apply".to_string());
 }
 
 fn pass(id: impl Into<String>, message: impl Into<String>) -> SkillCheck {

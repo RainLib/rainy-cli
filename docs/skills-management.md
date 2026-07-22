@@ -30,11 +30,15 @@ Both profiles are project-scoped. Global host installation is intentionally unsu
 The Comet profile requires Node.js 20 or newer, npm/npx, and Git.
 
 ```bash
-rainy skill init --profile comet --target codex --language zh --dry-run --json
-rainy skill init --profile comet --target codex --language zh --apply --json
+rainy skill --help
+rainy skill init --help
+rainy skill init --profile comet --target codex --language zh --dry-run
+rainy skill init --profile comet --target codex --language zh --apply
 rainy skill status --json
 rainy skill doctor --json
 ```
+
+`rainy skill init` uses `comet`, `codex`, and `zh` by default and performs only a preview. Human-readable previews print `Apply this plan` with the exact Rainy command to run next. `--yes` is an explicit compatibility alias for `--apply`. An `Upstream command` shown in the preview is informational: Rainy runs it internally only during apply, so users should not copy its internal `npx --yes` flag into the Rainy command.
 
 Supported targets are `codex`, `claude`, `cursor`, `github-copilot`, `gemini`, and `opencode`. Repeat `--target` or pass comma-separated values for multiple targets.
 
@@ -74,7 +78,7 @@ rainy skill uninstall --dry-run
 rainy skill uninstall --apply
 ```
 
-`install`, `update`, and `uninstall` default to dry-run. `--apply` is mandatory for mutation. Rainy refuses to overwrite or remove a locked Rainy Skill whose digest changed; use `--force` only after reviewing the local edits.
+`init`, `install`, `update`, and `uninstall` default to dry-run. `--apply` or its `--yes` alias is mandatory for mutation. Rainy refuses to overwrite or remove a locked Rainy Skill whose digest changed; use `--force` only after reviewing the local edits. Run `rainy skill <command> --help` for command-specific behavior and runnable examples.
 
 `update` runs the selected pinned Comet package with `init --overwrite`. It does not depend on a mutable global Comet installation.
 

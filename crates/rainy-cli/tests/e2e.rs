@@ -11,6 +11,41 @@ use tempfile::TempDir;
 
 static HTTP_PLUGIN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[test]
+fn skill_help_explains_the_workflow_and_each_subcommand() {
+    let help = String::from_utf8(run(&["skill", "--help"]).stdout).expect("skill help");
+    assert!(help.contains("Manage a project-scoped AI Skill profile"));
+    assert!(help.contains("Mutating commands preview changes by default"));
+    assert!(help.contains("rainy skill init --apply"));
+    assert!(help.contains("Run 'rainy skill <COMMAND> --help'"));
+
+    for command in [
+        "init",
+        "install",
+        "sync",
+        "status",
+        "doctor",
+        "update",
+        "uninstall",
+    ] {
+        let help = String::from_utf8(run(&["skill", command, "--help"]).stdout)
+            .expect("skill subcommand help");
+        assert!(help.contains("EXAMPLES:"), "missing examples for {command}");
+        assert!(
+            help.contains(&format!("rainy skill {command}")),
+            "missing runnable example for {command}"
+        );
+    }
+
+    let init_help =
+        String::from_utf8(run(&["skill", "init", "--help"]).stdout).expect("skill init help");
+    assert!(init_help.contains("--yes"));
+    assert!(init_help.contains("alias for --apply"));
+    assert!(init_help.contains("[default: comet]"));
+    assert!(init_help.contains("[default: zh]"));
+    assert!(init_help.contains("[default: codex]"));
+}
+
 fn rainy() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rainy"));
     command.env("RAINY_ALLOW_NATIVE_PLUGIN", "1");
@@ -66,6 +101,52 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
         serde_json::from_slice(&preview.stdout).expect("skill preview json");
     assert_eq!(preview_json["type"], "skill");
     assert_eq!(preview_json["report"]["status"], "dry-run");
+    assert_eq!(
+        preview_json["report"]["applyCommand"],
+        serde_json::json!([
+            "rainy",
+            "skill",
+            "init",
+            "--profile",
+            "rainy",
+            "--language",
+            "zh",
+            "--target",
+            "codex",
+            "--apply"
+        ])
+    );
+    let report_path = temp.path().join("skill-preview-report.json");
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&preview_json["report"]).expect("serialize skill report"),
+    )
+    .expect("write skill report");
+    run(&[
+        "schema",
+        "validate",
+        "--schema",
+        "skill-report",
+        "--file",
+        &report_path.to_string_lossy(),
+        "--json",
+    ]);
+    let conflict = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "skill",
+            "init",
+            "--profile",
+            "rainy",
+            "--dry-run",
+            "--yes",
+            "--json",
+        ])
+        .output()
+        .expect("run conflicting skill apply modes");
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("APPLY_MODE_CONFLICT"));
     assert!(!app.join("rainy-skills.yaml").exists());
     assert!(!app.join("skills.lock").exists());
 
@@ -78,7 +159,7 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
         "rainy",
         "--target",
         "codex",
-        "--apply",
+        "--yes",
         "--json",
     ]);
     assert!(app.join("rainy-skills.yaml").is_file());
@@ -190,6 +271,25 @@ printf '%s\n' '{"status":"ok"}'
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_comet, permissions).expect("permissions");
     let fake_path = fake_comet.to_string_lossy().to_string();
+
+    let preview = run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "init",
+        "--profile",
+        "comet",
+        "--target",
+        "codex",
+        "--language",
+        "zh",
+    ]);
+    let preview_text = String::from_utf8(preview.stdout).expect("Comet preview output");
+    assert!(preview_text.contains("No files were changed."));
+    assert!(preview_text.contains("Apply this plan:"));
+    assert!(preview_text.contains("rainy skill init --profile comet"));
+    assert!(preview_text.contains("Upstream command (runs only when applying):"));
+    assert!(preview_text.contains("npx --yes --package @rpamis/comet@0.4.0-beta.6"));
 
     run_with_env(
         &[

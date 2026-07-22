@@ -4,6 +4,20 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-22
+
+### Changed
+
+- Added workflow guidance and runnable examples to `rainy skill` and every
+  Skill lifecycle subcommand.
+- Skill dry-run output now distinguishes the next Rainy apply command from the
+  internal upstream installer command.
+
+### Added
+
+- Added `--yes` as a visible compatibility alias for `--apply` on mutating
+  Skill lifecycle commands.
+
 ## [0.3.1] - 2026-07-22
 
 ### Fixed

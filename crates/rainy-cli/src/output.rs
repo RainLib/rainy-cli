@@ -441,21 +441,46 @@ impl CommandOutput {
             }
             Self::AgentContext { context } => println!("{context}"),
             Self::Skill { report } => {
-                println!(
-                    "Skill {}: {} ({}; {})",
-                    report.operation,
-                    report.status,
-                    report.profile,
-                    report.targets.join(", ")
-                );
+                if report.status == "dry-run" {
+                    println!(
+                        "Skill {} preview (profile: {}; targets: {})",
+                        report.operation,
+                        report.profile,
+                        report.targets.join(", ")
+                    );
+                    println!("No files were changed.");
+                } else {
+                    println!(
+                        "Skill {}: {} (profile: {}; targets: {})",
+                        report.operation,
+                        report.status,
+                        report.profile,
+                        report.targets.join(", ")
+                    );
+                }
+                if !report.apply_command.is_empty() {
+                    println!("Apply this plan:");
+                    println!("  {}", report.apply_command.join(" "));
+                }
                 if !report.command.is_empty() {
-                    println!("Command: {}", report.command.join(" "));
+                    println!("Upstream command (runs only when applying):");
+                    println!("  {}", report.command.join(" "));
                 }
-                for file in &report.changed_files {
-                    println!("  {file}");
+                if !report.changed_files.is_empty() {
+                    if report.status == "dry-run" {
+                        println!("Planned paths:");
+                    } else {
+                        println!("Changed paths:");
+                    }
+                    for file in &report.changed_files {
+                        println!("  {file}");
+                    }
                 }
-                for check in &report.checks {
-                    println!("  {} {} - {}", check.status, check.id, check.message);
+                if !report.checks.is_empty() {
+                    println!("Checks:");
+                    for check in &report.checks {
+                        println!("  {} {} - {}", check.status, check.id, check.message);
+                    }
                 }
             }
             Self::Update { report } => {
