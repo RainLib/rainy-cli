@@ -22,10 +22,17 @@ try {
 }
 if (-not $InvalidVersionFailed) { throw "invalid installer version was accepted" }
 
-$Binary = Join-Path $Root "target/debug/rainy.exe"
+$Binary = if ($env:RAINY_TEST_BINARY) { $env:RAINY_TEST_BINARY } else { Join-Path $Root "target/debug/rainy.exe" }
 if (-not (Test-Path $Binary)) {
   throw "build rainy.exe before running the PowerShell installer test"
 }
+$Binary = (Resolve-Path $Binary).Path
+$VersionOutput = & $Binary --version
+if ($LASTEXITCODE -ne 0 -or $VersionOutput -notmatch '^rainy (?<Version>[0-9]+\.[0-9]+\.[0-9]+)$') {
+  throw "PowerShell installer test binary did not report a valid version"
+}
+$CurrentVersion = $Matches.Version
+$CurrentTag = "v$CurrentVersion"
 
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rainy-installer-test-" + [System.Guid]::NewGuid())
 $ServerRoot = Join-Path $TempDir "server"
@@ -67,7 +74,7 @@ function Assert-InstallerFails {
 
 New-Item -ItemType Directory -Force -Path $ServerRoot | Out-Null
 try {
-  $Release012 = Write-TestRelease -Version "v0.1.2"
+  $ReleaseCurrent = Write-TestRelease -Version $CurrentTag
   $Python = (Get-Command python -ErrorAction SilentlyContinue)
   if (-not $Python) { $Python = Get-Command python3 -ErrorAction Stop }
   $Server = Start-Process -FilePath $Python.Source -ArgumentList @(
@@ -82,25 +89,25 @@ try {
   if (-not (Test-Path $PortFile)) { throw "installer test server did not start" }
   $ServerBase = "http://127.0.0.1:$(Get-Content $PortFile)"
 
-  & $Installer -Version "v0.1.2" -InstallDir $InstallDir -BaseUrl "$ServerBase/v0.1.2"
-  Assert-Version -Expected "0.1.2"
+  & $Installer -Version $CurrentTag -InstallDir $InstallDir -BaseUrl "$ServerBase/$CurrentTag"
+  Assert-Version -Expected $CurrentVersion
 
   Write-TestRelease -Version "v9.9.9" | Out-Null
   Assert-InstallerFails -Version "v9.9.9" -BaseUrl "$ServerBase/v9.9.9"
-  Assert-Version -Expected "0.1.2"
+  Assert-Version -Expected $CurrentVersion
 
-  $Archive = Join-Path $Release012 "rainy-x86_64-pc-windows-msvc.zip"
+  $Archive = Join-Path $ReleaseCurrent "rainy-x86_64-pc-windows-msvc.zip"
   ("0" * 64 + "  rainy-x86_64-pc-windows-msvc.zip") | Out-File -NoNewline -Encoding ascii "$Archive.sha256"
-  Assert-InstallerFails -Version "v0.1.2" -BaseUrl "$ServerBase/v0.1.2"
-  Assert-Version -Expected "0.1.2"
+  Assert-InstallerFails -Version $CurrentTag -BaseUrl "$ServerBase/$CurrentTag"
+  Assert-Version -Expected $CurrentVersion
 
   Remove-Item "$Archive.sha256"
-  Assert-InstallerFails -Version "v0.1.2" -BaseUrl "$ServerBase/v0.1.2"
-  Assert-Version -Expected "0.1.2"
+  Assert-InstallerFails -Version $CurrentTag -BaseUrl "$ServerBase/$CurrentTag"
+  Assert-Version -Expected $CurrentVersion
 
   Remove-Item $Archive
-  Assert-InstallerFails -Version "v0.1.2" -BaseUrl "$ServerBase/v0.1.2"
-  Assert-Version -Expected "0.1.2"
+  Assert-InstallerFails -Version $CurrentTag -BaseUrl "$ServerBase/$CurrentTag"
+  Assert-Version -Expected $CurrentVersion
 } finally {
   if ($Server -and -not $Server.HasExited) { Stop-Process -Id $Server.Id -Force }
   Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue

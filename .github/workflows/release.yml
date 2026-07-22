@@ -125,6 +125,14 @@ jobs:
           "$binary" capability list --json >/dev/null
           "$binary" schema list --json >/dev/null
           "$binary" --workspace "$RUNNER_TEMP" new release-smoke --dry-run --json >/dev/null
+      - name: Test Windows installer and Skill bootstrap
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        env:
+          RAINY_TEST_BINARY: target/${{ matrix.target }}/release/${{ matrix.binary }}
+        run: |
+          ./scripts/test-install.ps1
+          ./scripts/test-skill.ps1
       - name: Package Unix binary
         if: matrix.archive == 'tar.gz'
         shell: bash

@@ -4,6 +4,15 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-22
+
+### Fixed
+
+- Restricted PowerShell Skill E2E execution to Windows hosts and made the
+  PowerShell Skill and installer tests derive the expected CLI version from the
+  binary under test.
+- Added Windows installer and Skill acceptance tests to the release build.
+
 ## [0.3.0] - 2026-07-22
 
 ### Added

@@ -3,9 +3,14 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
 $Bootstrap = Join-Path $Root "integrations/skills/rainy-cli/scripts/ensure-rainy.ps1"
 $CometSkill = Join-Path $Root "integrations/skills/rainy-comet/SKILL.md"
-$Binary = Join-Path $Root "target/debug/rainy.exe"
+$Binary = if ($env:RAINY_TEST_BINARY) { $env:RAINY_TEST_BINARY } else { Join-Path $Root "target/debug/rainy.exe" }
 if (-not (Test-Path $Binary)) {
   throw "build rainy.exe before running the PowerShell skill test"
+}
+$Binary = (Resolve-Path $Binary).Path
+$ExpectedVersion = & $Binary --version
+if ($LASTEXITCODE -ne 0 -or $ExpectedVersion -notmatch '^rainy [0-9]+\.[0-9]+\.[0-9]+$') {
+  throw "PowerShell skill test binary did not report a valid version"
 }
 if (-not (Test-Path $CometSkill)) {
   throw "Rainy Comet Skill is missing"
@@ -72,7 +77,7 @@ Copy-Item -LiteralPath $env:RAINY_SKILL_TEST_BINARY -Destination (Join-Path $Ins
     throw "PowerShell bootstrap did not return the installed binary"
   }
   $Version = & $Resolved --version
-  if ($LASTEXITCODE -ne 0 -or $Version -ne "rainy 0.1.2") {
+  if ($LASTEXITCODE -ne 0 -or $Version -ne $ExpectedVersion) {
     throw "PowerShell bootstrap installed an unusable binary"
   }
 

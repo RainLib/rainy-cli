@@ -119,7 +119,7 @@ mcp-check: build
 .PHONY: skill-check
 skill-check:
 	sh scripts/test-skill.sh
-	@if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -File scripts/test-skill.ps1; else printf '%s\n' 'pwsh not found; skipping PowerShell skill E2E'; fi
+	@if [ "$${OS:-}" = "Windows_NT" ]; then if command -v pwsh >/dev/null 2>&1; then pwsh -NoProfile -File scripts/test-skill.ps1; else printf '%s\n' 'pwsh not found; skipping PowerShell skill E2E'; fi; else printf '%s\n' 'non-Windows host; skipping PowerShell skill E2E'; fi
 
 .PHONY: installer-check
 installer-check:
