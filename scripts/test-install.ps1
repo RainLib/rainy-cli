@@ -38,6 +38,8 @@ $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rainy-installer-test-" 
 $ServerRoot = Join-Path $TempDir "server"
 $InstallDir = Join-Path $TempDir "install"
 $PortFile = Join-Path $TempDir "port"
+$ServerOutput = Join-Path $TempDir "server.stdout.log"
+$ServerError = Join-Path $TempDir "server.stderr.log"
 $Server = $null
 
 function Write-TestRelease {
@@ -77,17 +79,47 @@ try {
   $ReleaseCurrent = Write-TestRelease -Version $CurrentTag
   $Python = (Get-Command python -ErrorAction SilentlyContinue)
   if (-not $Python) { $Python = Get-Command python3 -ErrorAction Stop }
-  $Server = Start-Process -FilePath $Python.Source -ArgumentList @(
-    (Join-Path $Root "scripts/test-installer-server.py"),
-    $ServerRoot,
-    $PortFile,
+  $ServerArguments = @(
+    "-u",
+    ('"{0}"' -f (Join-Path $Root "scripts/test-installer-server.py")),
+    ('"{0}"' -f $ServerRoot),
+    ('"{0}"' -f $PortFile),
     "2"
-  ) -PassThru -WindowStyle Hidden
-  for ($Attempt = 0; $Attempt -lt 100 -and -not (Test-Path $PortFile); $Attempt++) {
-    Start-Sleep -Milliseconds 50
+  )
+  $Server = Start-Process -FilePath $Python.Source -ArgumentList $ServerArguments `
+    -RedirectStandardOutput $ServerOutput -RedirectStandardError $ServerError `
+    -PassThru -WindowStyle Hidden
+  $ServerPort = $null
+  for ($Attempt = 0; $Attempt -lt 300; $Attempt++) {
+    if (Test-Path $PortFile) {
+      $PortText = Get-Content $PortFile -Raw
+      if ($PortText) {
+        $CandidatePort = $PortText.Trim()
+        if ($CandidatePort -match '^[0-9]+$') {
+          $ServerPort = $CandidatePort
+          break
+        }
+      }
+    }
+    if ($Server.HasExited) { break }
+    Start-Sleep -Milliseconds 100
   }
-  if (-not (Test-Path $PortFile)) { throw "installer test server did not start" }
-  $ServerBase = "http://127.0.0.1:$(Get-Content $PortFile)"
+  if (-not $ServerPort) {
+    $Diagnostics = @()
+    if ($Server.HasExited) { $Diagnostics += "exit=$($Server.ExitCode)" }
+    if (Test-Path $ServerError) {
+      $ErrorText = Get-Content $ServerError -Raw
+      if ($ErrorText) { $Diagnostics += $ErrorText.Trim() }
+    }
+    if (Test-Path $ServerOutput) {
+      $OutputText = Get-Content $ServerOutput -Raw
+      if ($OutputText) { $Diagnostics += $OutputText.Trim() }
+    }
+    $Detail = ($Diagnostics | Where-Object { $_ }) -join "; "
+    if (-not $Detail) { $Detail = "no child-process diagnostics" }
+    throw "installer test server did not start within 30 seconds: $Detail"
+  }
+  $ServerBase = "http://127.0.0.1:$ServerPort"
 
   & $Installer -Version $CurrentTag -InstallDir $InstallDir -BaseUrl "$ServerBase/$CurrentTag"
   Assert-Version -Expected $CurrentVersion

@@ -4,6 +4,13 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-22
+
+### Fixed
+
+- Hardened the Windows installer acceptance server startup with a bounded
+  30-second wait, early process-exit detection, and captured diagnostics.
+
 ## [0.3.3] - 2026-07-22
 
 ### Fixed
