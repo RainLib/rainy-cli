@@ -104,32 +104,38 @@ impl ProgressReporter {
             let mut state = shared.state.lock().expect("progress state");
             state.current = COMMAND_STEPS;
             state.message = "Completed".to_string();
-            state.started_at.elapsed().as_secs()
+            state.started_at.elapsed()
         };
         self.stop_worker();
         if self.plain {
-            eprintln!("[{COMMAND_STEPS}/{COMMAND_STEPS}] Completed in {elapsed}s");
+            eprintln!(
+                "[{COMMAND_STEPS}/{COMMAND_STEPS}] Completed in {}",
+                format_duration(elapsed)
+            );
         } else {
             clear_terminal_line();
-            eprintln!("[========================] Completed in {elapsed}s");
+            eprintln!("Completed in {}", format_duration(elapsed));
         }
     }
 
-    pub fn finish_error(&mut self, message: &str) {
+    pub fn finish_error(&mut self) {
         let Some(shared) = &self.shared else {
             return;
         };
         let elapsed = {
             let mut state = shared.state.lock().expect("progress state");
-            state.message = format!("Failed: {message}");
-            state.started_at.elapsed().as_secs()
+            state.message = "Failed".to_string();
+            state.started_at.elapsed()
         };
         self.stop_worker();
         if self.plain {
-            eprintln!("[failed after {elapsed}s] {message}");
+            eprintln!(
+                "[{COMMAND_STEPS}/{COMMAND_STEPS}] Failed in {}",
+                format_duration(elapsed)
+            );
         } else {
             clear_terminal_line();
-            eprintln!("[failed after {elapsed}s] {message}");
+            eprintln!("Failed in {}", format_duration(elapsed));
         }
     }
 
@@ -191,4 +197,14 @@ fn truncate(value: &str, max_chars: usize) -> String {
         return value.to_string();
     }
     value.chars().take(max_chars - 3).collect::<String>() + "..."
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_secs() == 0 {
+        "<1s".to_string()
+    } else if duration.as_secs() < 10 {
+        format!("{:.1}s", duration.as_secs_f64())
+    } else {
+        format!("{}s", duration.as_secs())
+    }
 }

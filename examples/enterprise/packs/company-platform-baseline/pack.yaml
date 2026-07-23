@@ -1,0 +1,16 @@
+apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: company-platform-baseline
+  version: 1.0.0
+  owner: platform-engineering
+  description: Minimal enterprise platform baseline example.
+requires:
+  rainy: ">=0.3.9"
+exports:
+  capabilities:
+    - capabilities/company-platform-baseline.yaml
+  validators: []
+  skills:
+    - skills/company-platform
+  plugins: []

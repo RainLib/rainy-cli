@@ -56,6 +56,10 @@ If it selects the `comet` profile, load the sibling `rainy-comet` Skill and foll
 
 Read [references/commands.md](references/commands.md) when selecting commands. Read [references/safety.md](references/safety.md) before any mutating workflow or plugin operation.
 
+Agents must not rely on terminal selectors. Pass `--profile`, `--language`, every `--target`,
+`--workspace`, and `--json` explicitly. Universal `.agents/skills` is always added; request platform
+copies only for hosts the user actually selected.
+
 ## Change Capabilities
 
 Always separate planning from mutation:
@@ -68,6 +72,14 @@ Always separate planning from mutation:
 6. Report changed files, verification status, and audit location.
 
 Use `--trace-id` for a user request that spans multiple Rainy commands. Never add `--allow-native-plugin` or set `RAINY_ALLOW_NATIVE_PLUGIN` unless the user explicitly trusts a reviewed native plugin.
+
+## Route Enterprise Content
+
+Read [references/enterprise.md](references/enterprise.md) when the request involves company packages,
+internal registries, platform policy, approval, IAM, deployment, or enterprise Skills. Route declarative
+project changes to capability packs, distribution to a private registry, mandatory boundaries to layered
+policy, and external systems to Wasm plugins or HTTPS adapters. Never put credentials in Rainy config,
+packs, generated templates, or Skills.
 
 ## Handle Errors
 

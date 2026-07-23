@@ -4,6 +4,31 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-23
+
+### Added
+
+- Added named multi-Registry management with `rainy registry list/add/sync/remove/doctor`.
+- Added GitHub/GitLab Git sources, checksum-verified tar.gz/tgz/zip archives, HTTP indexes,
+  selected-module synchronization, and exact resolved-source locks.
+- Added shared `RAINY_HOME/registries/<registry>/<source-hash>` caches with cross-process locking,
+  atomic replacement, archive traversal and size protections, and project-local registry locks.
+- Added enterprise Skill exports with explicit Codex, Claude, Cursor, Universal, Copilot, Gemini,
+  and OpenCode targets, managed digests, update handling, and local-drift protection.
+- Added interactive Skill target selection, normalized command output and progress presentation,
+  Registry schemas, enterprise examples, command reference, and architecture documentation.
+
+### Changed
+
+- Registry downloads no longer write into the current project. Projects retain only `rainy.yaml`
+  and `.rainy/registry.lock`; removing a project Registry keeps the shared cache available.
+- Expanded command help with purpose descriptions, value placeholders, next actions, and examples.
+
+### Tests
+
+- Added Git commit locking, HTTP index, verified archive, selected-module, global-cache, enterprise
+  Skill installation, drift protection, command help, and output-format E2E coverage.
+
 ## [0.3.9] - 2026-07-23
 
 ### Fixed

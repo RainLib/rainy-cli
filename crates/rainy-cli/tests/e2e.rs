@@ -31,6 +31,22 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
     run(&["--workspace", &root, "new", "progress-demo", "--apply"]);
     let workspace = temp.path().join("progress-demo");
     let workspace = workspace.to_string_lossy().to_string();
+    let default_preview = run(&["--workspace", &workspace, "skill", "init", "--json"]);
+    let default_preview: serde_json::Value =
+        serde_json::from_slice(&default_preview.stdout).expect("default Skill preview");
+    assert_eq!(default_preview["report"]["profile"], "comet");
+    assert_eq!(
+        default_preview["report"]["targets"],
+        serde_json::json!(["codex", "universal"])
+    );
+    assert!(
+        default_preview["report"]["changedFiles"]
+            .as_array()
+            .expect("planned paths")
+            .iter()
+            .any(|path| path == ".agents/skills/rainy-cli")
+    );
+
     let output = run(&[
         "--workspace",
         &workspace,
@@ -44,6 +60,24 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
     let progress = String::from_utf8(output.stderr).expect("skill progress");
     assert!(progress.contains("Validating workspace and requested Skill profile"));
     assert!(progress.contains("Building the Skill installation preview"));
+
+    let failed = rainy()
+        .args([
+            "--workspace",
+            &workspace,
+            "--progress",
+            "always",
+            "skill",
+            "install",
+        ])
+        .output()
+        .expect("run failed Skill install");
+    assert!(!failed.status.success());
+    let failed = String::from_utf8(failed.stderr).expect("structured error output");
+    assert_eq!(failed.matches("SKILL_PROFILE_NOT_FOUND").count(), 1);
+    assert!(failed.contains("[4/4] Failed in"));
+    assert!(failed.contains("Next steps"));
+    assert!(!failed.contains("config error:"));
 
     let help = String::from_utf8(run(&["--help"]).stdout).expect("top-level help");
     assert!(help.contains("--progress <MODE>"));
@@ -64,6 +98,7 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["add"],
         &["capability"],
         &["pack"],
+        &["registry"],
         &["evidence"],
         &["plugin"],
         &["agent"],
@@ -100,6 +135,11 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["pack", "update"],
         &["pack", "sign"],
         &["pack", "verify"],
+        &["registry", "list"],
+        &["registry", "add"],
+        &["registry", "sync"],
+        &["registry", "remove"],
+        &["registry", "doctor"],
         &["doctor"],
         &["verify"],
         &["evidence", "generate"],
@@ -143,10 +183,50 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
 }
 
 #[test]
+fn human_output_uses_stable_sections_and_structured_error_details() {
+    let capabilities =
+        String::from_utf8(run(&["capability", "list"]).stdout).expect("capability output");
+    assert!(capabilities.starts_with("Capabilities\n\nSummary\n"));
+    assert!(capabilities.contains("\nItems\n"));
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    let preview =
+        String::from_utf8(run(&["--workspace", &root, "new", "output-demo", "--dry-run"]).stdout)
+            .expect("init preview");
+    assert!(preview.starts_with("Project initialization\n\nSummary\n"));
+    assert!(preview.contains("\nNext step\n"));
+    assert!(preview.contains("\nPlanned locations\n"));
+
+    let invalid_policy = temp.path().join("invalid-policy.yaml");
+    fs::write(&invalid_policy, "unknownField: true\n").expect("invalid policy fixture");
+    let failed = rainy()
+        .args([
+            "schema",
+            "validate",
+            "--schema",
+            "org-policy",
+            "--file",
+            &invalid_policy.to_string_lossy(),
+        ])
+        .output()
+        .expect("run invalid schema validation");
+    assert!(!failed.status.success());
+    let error = String::from_utf8(failed.stderr).expect("human error output");
+    assert_eq!(error.matches("SCHEMA_VALIDATION_FAILED").count(), 1);
+    assert!(error.contains("Reason  the document does not match the selected schema"));
+    assert!(error.contains("\nChecks\n"));
+    assert!(error.contains("FAIL"));
+    assert!(!error.contains("{\"protocolVersion\""));
+    assert!(error.contains("\nNext steps\n"));
+}
+
+#[test]
 fn skill_help_explains_the_workflow_and_each_subcommand() {
     let help = String::from_utf8(run(&["skill", "--help"]).stdout).expect("skill help");
     assert!(help.contains("Manage a project-scoped AI Skill profile"));
-    assert!(help.contains("Mutating commands preview changes by default"));
+    assert!(help.contains("explicitly confirm installation"));
+    assert!(help.contains("preview unless --apply"));
     assert!(help.contains("rainy skill init --apply"));
     assert!(help.contains("Run 'rainy skill <COMMAND> --help'"));
 
@@ -172,9 +252,9 @@ fn skill_help_explains_the_workflow_and_each_subcommand() {
         String::from_utf8(run(&["skill", "init", "--help"]).stdout).expect("skill init help");
     assert!(init_help.contains("--yes"));
     assert!(init_help.contains("alias for --apply"));
-    assert!(init_help.contains("[default: comet]"));
+    assert!(init_help.contains("scripts default to"));
     assert!(init_help.contains("[default: zh]"));
-    assert!(init_help.contains("[default: codex]"));
+    assert!(init_help.contains("multi-select"));
 }
 
 fn rainy() -> Command {
@@ -274,7 +354,7 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
             "--language",
             "zh",
             "--target",
-            "codex",
+            "codex,universal",
             "--apply"
         ])
     );
@@ -326,8 +406,8 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
     ]);
     assert!(app.join("rainy-skills.yaml").is_file());
     assert!(app.join("skills.lock").is_file());
-    assert!(app.join(".codex/skills/rainy-cli/SKILL.md").is_file());
-    assert!(!app.join(".codex/skills/rainy-comet").exists());
+    assert!(app.join(".agents/skills/rainy-cli/SKILL.md").is_file());
+    assert!(!app.join(".agents/skills/rainy-comet").exists());
 
     run(&[
         "--workspace",
@@ -359,7 +439,7 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
     let lock_path = app.join("skills.lock");
     let valid_lock = fs::read_to_string(&lock_path).expect("valid skills lock");
     let unsafe_lock = valid_lock.replacen(
-        "path: .codex/skills/rainy-cli",
+        "path: .agents/skills/rainy-cli",
         "path: ../outside/rainy-cli",
         1,
     );
@@ -391,7 +471,56 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
     ]);
     assert!(!app.join("rainy-skills.yaml").exists());
     assert!(!app.join("skills.lock").exists());
-    assert!(!app.join(".codex/skills/rainy-cli").exists());
+    assert!(!app.join(".agents/skills/rainy-cli").exists());
+}
+
+#[test]
+fn rainy_skill_profile_installs_supported_hosts_and_universal_target() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "skill-hosts-app"]);
+    let app = temp.path().join("skill-hosts-app");
+    let app_path = app.to_string_lossy().to_string();
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "init",
+        "--profile",
+        "rainy",
+        "--target",
+        "claude,cursor,codex",
+        "--apply",
+        "--json",
+    ]);
+
+    for path in [
+        ".agents/skills/rainy-cli/SKILL.md",
+        ".claude/skills/rainy-cli/SKILL.md",
+        ".cursor/skills/rainy-cli/SKILL.md",
+    ] {
+        assert!(app.join(path).is_file(), "missing {path}");
+    }
+    let profile = fs::read_to_string(app.join("rainy-skills.yaml")).expect("skill profile");
+    for target in ["claude", "codex", "cursor", "universal"] {
+        assert!(
+            profile.contains(&format!("- {target}")),
+            "missing target {target}"
+        );
+    }
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "uninstall",
+        "--apply",
+        "--json",
+    ]);
+    assert!(!app.join(".agents/skills/rainy-cli").exists());
+    assert!(!app.join(".claude/skills/rainy-cli").exists());
+    assert!(!app.join(".cursor/skills/rainy-cli").exists());
 }
 
 #[cfg(unix)]
@@ -418,11 +547,13 @@ case "$action" in
       printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$workspace/.agents/skills/$name/SKILL.md"
     done
     name=openspec-propose
-    mkdir -p "$workspace/.codex/skills/$name"
-    printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$workspace/.codex/skills/$name/SKILL.md"
+    for root in .codex .agent; do
+      mkdir -p "$workspace/$root/skills/$name"
+      printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$workspace/$root/skills/$name/SKILL.md"
+    done
     ;;
   uninstall)
-    rm -rf "$workspace/.agents/skills/comet" "$workspace/.agents/skills/comet-open" "$workspace/.codex/skills/openspec-propose"
+    rm -rf "$workspace/.agents/skills/comet" "$workspace/.agents/skills/comet-open" "$workspace/.codex/skills/openspec-propose" "$workspace/.agent/skills/openspec-propose"
     ;;
   *)
     exit 2
@@ -455,6 +586,10 @@ printf '%s\n' '{"status":"ok"}'
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_skills, permissions).expect("permissions");
     let fake_skills_path = fake_skills.to_string_lossy().to_string();
+    fs::create_dir_all(app.join(".codex/rules")).expect("codex rules directory");
+    fs::write(app.join(".codex/rules/user.rules"), "preserve\n").expect("codex user rules");
+    fs::create_dir_all(app.join(".agent/workflows")).expect("agent workflows directory");
+    fs::write(app.join(".agent/workflows/user.md"), "preserve\n").expect("agent user workflow");
 
     let preview = run(&[
         "--workspace",
@@ -469,11 +604,29 @@ printf '%s\n' '{"status":"ok"}'
         "zh",
     ]);
     let preview_text = String::from_utf8(preview.stdout).expect("Comet preview output");
-    assert!(preview_text.contains("No files were changed."));
-    assert!(preview_text.contains("Apply this plan:"));
+    assert!(preview_text.contains("Preview only; no files changed"));
+    assert!(preview_text.contains("Next step"));
     assert!(preview_text.contains("rainy skill init --profile comet"));
-    assert!(preview_text.contains("Upstream command (runs only when applying):"));
-    assert!(preview_text.contains("npx --yes --package @rpamis/comet@0.4.0-beta.6"));
+    assert!(preview_text.contains("Enabled Skills"));
+    assert!(!preview_text.contains("npx --yes --package @rpamis/comet@0.4.0-beta.6"));
+
+    let verbose_preview = run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "init",
+        "--profile",
+        "comet",
+        "--target",
+        "codex",
+        "--language",
+        "zh",
+        "--verbose",
+    ]);
+    let verbose_preview =
+        String::from_utf8(verbose_preview.stdout).expect("verbose Comet preview output");
+    assert!(verbose_preview.contains("Upstream command"));
+    assert!(verbose_preview.contains("npx --yes --package @rpamis/comet@0.4.0-beta.6"));
 
     run_with_env(
         &[
@@ -496,11 +649,11 @@ printf '%s\n' '{"status":"ok"}'
         ],
     );
     for path in [
-        ".codex/skills/rainy-cli/SKILL.md",
-        ".codex/skills/rainy-comet/SKILL.md",
+        ".agents/skills/rainy-cli/SKILL.md",
+        ".agents/skills/rainy-comet/SKILL.md",
         ".agents/skills/comet/SKILL.md",
         ".agents/skills/comet-open/SKILL.md",
-        ".codex/skills/openspec-propose/SKILL.md",
+        ".agents/skills/openspec-propose/SKILL.md",
         ".agents/skills/using-superpowers/SKILL.md",
         ".agents/skills/brainstorming/SKILL.md",
         ".agents/skills/custom-superpower/SKILL.md",
@@ -508,6 +661,10 @@ printf '%s\n' '{"status":"ok"}'
     ] {
         assert!(app.join(path).is_file(), "missing {path}");
     }
+    assert!(!app.join(".codex/skills").exists());
+    assert!(!app.join(".agent/skills").exists());
+    assert!(app.join(".codex/rules/user.rules").is_file());
+    assert!(app.join(".agent/workflows/user.md").is_file());
     let comet_config = fs::read_to_string(app.join(".comet/config.yaml")).expect("Comet config");
     assert!(comet_config.contains("auto_transition: false"));
     let lock = fs::read_to_string(app.join("skills.lock")).expect("skills lock");
@@ -534,7 +691,7 @@ printf '%s\n' '{"status":"ok"}'
     assert!(doctor.contains("superpowers skills are installed"));
 
     fs::write(
-        app.join(".codex/skills/rainy-comet/local-edit.txt"),
+        app.join(".agents/skills/rainy-comet/local-edit.txt"),
         "modified\n",
     )
     .expect("modify managed skill");
@@ -610,7 +767,7 @@ printf '%s\n' '{"status":"ok"}'
             ("RAINY_SKILLS_BIN", &fake_skills_path),
         ],
     );
-    assert!(!app.join(".codex/skills/rainy-comet").exists());
+    assert!(!app.join(".agents/skills/rainy-comet").exists());
     assert!(!app.join(".agents/skills/comet").exists());
     assert!(!app.join(".agents/skills/using-superpowers").exists());
     assert!(!app.join(".agents/skills/brainstorming").exists());
@@ -1053,7 +1210,7 @@ fn standalone_binary_uses_embedded_packs_and_schemas() {
     );
     assert!(
         temp.path()
-            .join("standalone-app/.codex/skills/rainy-cli/SKILL.md")
+            .join("standalone-app/.agents/skills/rainy-cli/SKILL.md")
             .is_file()
     );
     assert!(
@@ -2467,6 +2624,7 @@ fn http_registry_install_and_pack_signing_work() {
     run(&["--workspace", &root, "new", "demo-saas"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
+    let rainy_home = temp.path().join("rainy-home");
 
     let http_root = temp.path().join("http-registry");
     write(
@@ -2528,26 +2686,34 @@ packs:
         ),
     );
 
-    run(&[
-        "--workspace",
-        &app_path,
-        "pack",
-        "install",
-        &format!("http+{base_url}/registry.yaml"),
-        "--apply",
-    ]);
-    let list = run(&["--workspace", &app_path, "capability", "list", "--json"]);
+    let source = format!("http+{base_url}/registry.yaml");
+    let install = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "pack",
+            "install",
+            &source,
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("install HTTP registry");
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let list = rainy()
+        .args(["--workspace", &app_path, "capability", "list", "--json"])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("list HTTP capability");
     assert!(String::from_utf8_lossy(&list.stdout).contains("http-capability"));
 
-    let cached_pack = app
-        .join(".rainy/packs/http")
-        .read_dir()
-        .expect("http cache")
-        .next()
-        .expect("cache entry")
-        .expect("cache entry")
-        .path()
-        .join("http-pack");
+    assert!(!app.join(".rainy/packs").exists());
+    let registry_cache = first_directory(&rainy_home.join("registries"));
+    let cached_pack = first_directory(&registry_cache).join("http-pack");
     let cached_pack_path = cached_pack.to_string_lossy().to_string();
     fs::write(
         http_root.join("packs/http-pack/capabilities/http-capability.yaml"),
@@ -2556,6 +2722,7 @@ packs:
     .expect("tamper remote pack");
     let output = rainy()
         .args(["--workspace", &app_path, "pack", "update", "--apply"])
+        .env("RAINY_HOME", &rainy_home)
         .output()
         .expect("update tampered registry");
     assert!(!output.status.success());
@@ -2575,6 +2742,310 @@ packs:
         .expect("run rainy");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("PACK_SIGNATURE_INVALID"));
+}
+
+#[test]
+fn registry_uses_global_cache_and_installs_only_selected_enterprise_skills() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "registry-demo"]);
+    let app = temp.path().join("registry-demo");
+    let app_path = app.to_string_lossy().to_string();
+    let rainy_home = temp.path().join("rainy-home");
+    let source = temp.path().join("enterprise-registry");
+
+    write(
+        &source.join("platform/pack.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: platform
+  version: 1.0.0
+  owner: enterprise
+exports:
+  capabilities: []
+  validators: []
+  skills:
+    - skills/company-platform
+  plugins: []
+"#,
+    );
+    write(
+        &source.join("platform/skills/company-platform/SKILL.md"),
+        "---\nname: company-platform\ndescription: Enterprise platform workflow.\n---\n\nUse the approved platform workflow.\n",
+    );
+    write(
+        &source.join("security/pack.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: security
+  version: 1.0.0
+  owner: enterprise
+exports:
+  capabilities: []
+  validators: []
+  skills: []
+  plugins: []
+"#,
+    );
+
+    let source_path = source.to_string_lossy().to_string();
+    let add = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "add",
+            "company",
+            &source_path,
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("add registry");
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let sync = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "sync",
+            "company",
+            "--module",
+            "platform",
+            "--install-skills",
+            "--target",
+            "cursor",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("sync registry");
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(!app.join(".rainy/packs").exists());
+    assert!(
+        app.join(".cursor/skills/company-platform/SKILL.md")
+            .is_file()
+    );
+    assert!(!app.join(".agents/skills/company-platform").exists());
+
+    let cache_name = rainy_home.join("registries/company");
+    let cache = first_directory(&cache_name);
+    assert!(cache.join("platform/pack.yaml").is_file());
+    assert!(!cache.join("security").exists());
+    let lock = fs::read_to_string(app.join(".rainy/registry.lock")).expect("registry lock");
+    assert!(lock.contains(&cache.to_string_lossy().to_string()));
+    assert!(lock.contains("installedSkills:"));
+
+    write(
+        &app.join(".cursor/skills/company-platform/SKILL.md"),
+        "locally modified\n",
+    );
+    let update = rainy()
+        .args(["--workspace", &app_path, "pack", "update", "--apply"])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("update registry");
+    assert!(!update.status.success());
+    assert!(String::from_utf8_lossy(&update.stderr).contains("REGISTRY_SKILL_CONFLICT"));
+
+    let remove = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "remove",
+            "company",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("remove registry");
+    assert!(remove.status.success());
+    assert!(cache.exists(), "shared registry cache was deleted");
+}
+
+#[test]
+fn archive_registry_verifies_sidecar_and_extracts_selected_modules() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "archive-demo"]);
+    let app = temp.path().join("archive-demo");
+    let app_path = app.to_string_lossy().to_string();
+    let rainy_home = temp.path().join("rainy-home");
+    let source = temp.path().join("archive-source");
+    for module in ["platform", "security"] {
+        write(
+            &source.join(module).join("pack.yaml"),
+            &format!(
+                "apiVersion: rainy.dev/v1\nkind: CapabilityPack\nmetadata:\n  name: {module}\n  version: 1.0.0\nexports:\n  capabilities: []\n  validators: []\n  skills: []\n  plugins: []\n"
+            ),
+        );
+    }
+    let server_root = temp.path().join("archive-server");
+    fs::create_dir_all(&server_root).expect("archive server root");
+    let archive_path = server_root.join("enterprise-packs.tar.gz");
+    let archive_file = fs::File::create(&archive_path).expect("archive file");
+    let encoder = flate2::write::GzEncoder::new(archive_file, flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    archive
+        .append_dir_all("enterprise-packs", &source)
+        .expect("append archive tree");
+    archive.finish().expect("finish archive");
+    drop(archive);
+    write(
+        &server_root.join("enterprise-packs.tar.gz.sha256"),
+        &format!("{}  enterprise-packs.tar.gz\n", file_sha256(&archive_path)),
+    );
+    let base_url = serve_static(server_root, 2);
+    let source_url = format!("{base_url}/enterprise-packs.tar.gz");
+
+    let add = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "add",
+            "releases",
+            &source_url,
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("add archive registry");
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let sync = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "sync",
+            "releases",
+            "--module",
+            "security",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("sync archive registry");
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let cache = first_directory(&rainy_home.join("registries/releases"));
+    assert!(cache.join("security/pack.yaml").is_file());
+    assert!(!cache.join("platform").exists());
+    assert!(!app.join(".rainy/packs").exists());
+    let lock = fs::read_to_string(app.join(".rainy/registry.lock")).expect("registry lock");
+    assert!(lock.contains("sha256:"));
+    assert!(lock.contains("security"));
+}
+
+#[test]
+fn git_registry_locks_exact_commit_and_selected_module() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "git-demo"]);
+    let app = temp.path().join("git-demo");
+    let app_path = app.to_string_lossy().to_string();
+    let rainy_home = temp.path().join("rainy-home");
+    let repository = temp.path().join("enterprise-git");
+    for module in ["platform", "observability"] {
+        write(
+            &repository.join(module).join("pack.yaml"),
+            &format!(
+                "apiVersion: rainy.dev/v1\nkind: CapabilityPack\nmetadata:\n  name: {module}\n  version: 1.0.0\nexports:\n  capabilities: []\n  validators: []\n  skills: []\n  plugins: []\n"
+            ),
+        );
+    }
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "rainy-test@example.com"],
+        vec!["config", "user.name", "Rainy Test"],
+        vec!["add", "."],
+        vec!["commit", "--quiet", "-m", "initial registry"],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success());
+    }
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&repository)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("resolve commit");
+    let commit = String::from_utf8(commit.stdout)
+        .expect("commit UTF-8")
+        .trim()
+        .to_string();
+    let source = format!("git+file://{}", repository.display());
+
+    let add = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "add",
+            "gitlab",
+            &source,
+            "--ref",
+            &commit,
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("add Git registry");
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let sync = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "sync",
+            "gitlab",
+            "--module",
+            "observability",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("sync Git registry");
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let lock = fs::read_to_string(app.join(".rainy/registry.lock")).expect("registry lock");
+    assert!(lock.contains(&commit));
+    let cache = first_directory(&rainy_home.join("registries/gitlab"));
+    assert!(cache.join("observability/pack.yaml").is_file());
+    assert!(!cache.join("platform").exists());
+    assert!(!app.join(".rainy/packs").exists());
 }
 
 #[test]
@@ -3242,6 +3713,15 @@ fn write(path: &Path, content: &str) {
         fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, content).expect("write file");
+}
+
+fn first_directory(path: &Path) -> std::path::PathBuf {
+    path.read_dir()
+        .expect("read directory")
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .expect("directory entry")
+        .path()
 }
 
 fn write_bytes(path: &Path, content: &[u8]) {

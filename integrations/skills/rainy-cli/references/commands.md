@@ -63,13 +63,16 @@ These commands synchronize project context and installed capability information.
 Preview and install the default project-scoped OpenSpec + Superpowers + Comet profile:
 
 ```sh
-"$RAINY_BIN" --workspace "$WORKSPACE" skill init --profile comet --target codex --language zh --dry-run --json
-"$RAINY_BIN" --workspace "$WORKSPACE" skill init --profile comet --target codex --language zh --apply --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill init --profile comet --target codex,claude,cursor --language zh --dry-run --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill init --profile comet --target codex,claude,cursor --language zh --apply --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill status --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill doctor --json
 ```
 
 `init`, `install`, `update`, and `uninstall` preview by default. In a JSON dry-run report, present `report.applyCommand` for approval and execute that exact Rainy command only after approval. `report.command` is the upstream command Rainy will invoke internally during apply; never execute it as a substitute for `report.applyCommand`. `--yes` is accepted as an explicit alias for `--apply`, but generated automation should prefer the canonical `--apply` spelling.
+
+The target list above is illustrative. Agents must pass only the hosts selected by the user and must not
+enter interactive selectors. Universal `.agents/skills` is added automatically.
 
 Manage an existing profile:
 
@@ -91,3 +94,19 @@ Never infer `--apply` approval from a Comet transition. Use `--force` only after
 "$RAINY_BIN" self update
 "$RAINY_BIN" self skip <version>
 ```
+
+## Enterprise Capabilities
+
+```sh
+"$RAINY_BIN" schema validate --schema org-policy --file "$WORKSPACE/.rainy/org-policy.yaml" --json
+"$RAINY_BIN" conformance check --path "$PACK_ROOT" --json
+"$RAINY_BIN" --workspace "$WORKSPACE" pack install "$PACK_SOURCE" --dry-run --json
+"$RAINY_BIN" --workspace "$WORKSPACE" pack install "$PACK_SOURCE" --apply --json
+"$RAINY_BIN" --workspace "$WORKSPACE" registry add "$REGISTRY" "$PACK_SOURCE" --apply --json
+"$RAINY_BIN" --workspace "$WORKSPACE" registry sync "$REGISTRY" --module "$MODULES" --dry-run --json
+"$RAINY_BIN" --workspace "$WORKSPACE" registry sync "$REGISTRY" --module "$MODULES" --apply --json
+```
+
+Use `git+https://...` for Git, an HTTPS archive plus `--sha256`, or `http+https://.../index.json`.
+Remote content is stored under `RAINY_HOME/registries`; never copy registry caches into the project.
+Require a reviewed plan, checksums, strict verification, and evidence before reporting completion.

@@ -59,16 +59,41 @@ pub struct CapabilityRegistrySection {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum RegistrySourceConfig {
     Local {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        priority: i32,
         path: String,
     },
     Git {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        priority: i32,
         url: String,
         #[serde(rename = "ref", default)]
         reference: Option<String>,
     },
     Http {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        priority: i32,
         url: String,
     },
+    Archive {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        priority: i32,
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    },
+}
+
+fn is_zero(value: &i32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,6 +163,70 @@ pub struct InstalledCapability {
     pub artifacts: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryLock {
+    #[serde(default = "registry_lock_version")]
+    pub lockfile_version: u32,
+    #[serde(default)]
+    pub registries: BTreeMap<String, LockedRegistry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LockedRegistry {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref: Option<String>,
+    pub digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_path: Option<String>,
+    #[serde(default)]
+    pub all_modules: bool,
+    #[serde(default)]
+    pub modules: Vec<String>,
+    #[serde(default)]
+    pub installed_skills: Vec<InstalledRegistrySkill>,
+    pub synced_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledRegistrySkill {
+    pub id: String,
+    pub target: String,
+    pub path: String,
+    pub digest: String,
+}
+
+fn registry_lock_version() -> u32 {
+    1
+}
+
+impl RegistrySourceConfig {
+    pub fn configured_name(&self) -> Option<&str> {
+        match self {
+            Self::Local { name, .. }
+            | Self::Git { name, .. }
+            | Self::Http { name, .. }
+            | Self::Archive { name, .. } => name.as_deref(),
+        }
+    }
+
+    pub fn priority(&self) -> i32 {
+        match self {
+            Self::Local { priority, .. }
+            | Self::Git { priority, .. }
+            | Self::Http { priority, .. }
+            | Self::Archive { priority, .. } => *priority,
+        }
+    }
+}
+
 pub fn load_config(workspace: &Path) -> RainyResult<ProjectConfig> {
     let path = workspace.join("rainy.yaml");
     if !path.exists() {
@@ -171,6 +260,22 @@ pub fn load_lock(workspace: &Path) -> RainyResult<CapabilityLock> {
     }
     let content = std::fs::read_to_string(&path)?;
     Ok(serde_yaml::from_str(&content)?)
+}
+
+pub fn load_registry_lock(workspace: &Path) -> RainyResult<RegistryLock> {
+    let path = workspace.join(".rainy/registry.lock");
+    if !path.exists() {
+        return Ok(RegistryLock {
+            lockfile_version: registry_lock_version(),
+            registries: BTreeMap::new(),
+        });
+    }
+    let content = std::fs::read_to_string(path)?;
+    Ok(serde_yaml::from_str(&content)?)
+}
+
+pub fn save_registry_lock_content(lock: &RegistryLock) -> RainyResult<String> {
+    Ok(serde_yaml::to_string(lock)?)
 }
 
 pub fn save_lock_content(lock: &CapabilityLock) -> RainyResult<String> {

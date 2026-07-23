@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/registry-lock.schema.json",
+  "title": "Rainy Registry Lock",
+  "type": "object",
+  "required": ["lockfileVersion", "registries"],
+  "properties": {
+    "lockfileVersion": { "const": 1 },
+    "registries": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["type", "source", "digest", "modules", "syncedAt"],
+        "properties": {
+          "type": { "enum": ["local", "git", "http", "archive"] },
+          "source": { "type": "string", "minLength": 1 },
+          "requestedRef": { "type": "string" },
+          "resolvedRef": { "type": "string" },
+          "digest": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+          "cachePath": { "type": "string", "minLength": 1 },
+          "allModules": { "type": "boolean" },
+          "modules": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "installedSkills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "target", "path", "digest"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "target": { "type": "string", "minLength": 1 },
+                "path": { "type": "string", "minLength": 1 },
+                "digest": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "syncedAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

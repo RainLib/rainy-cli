@@ -25,6 +25,7 @@
       "uniqueItems": true,
       "items": {
         "enum": [
+          "universal",
           "codex",
           "claude",
           "cursor",

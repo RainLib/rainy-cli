@@ -38,9 +38,27 @@ rainy skill status --json
 rainy skill doctor --json
 ```
 
-`rainy skill init` uses `comet`, `codex`, and `zh` by default and performs only a preview. Human-readable previews print `Apply this plan` with the exact Rainy command to run next. `--yes` is an explicit compatibility alias for `--apply`. An `Upstream command` shown in the preview is informational: Rainy runs it internally only during apply, so users should not copy its internal `npx --yes` flag into the Rainy command.
+In a terminal, omitted `--profile` and `--target` values open two selectors. The first chooses a complete workflow or Rainy-only bundle. Universal `.agents/skills` is always included. The second uses arrow keys, Space, and Enter to select one or more additional agent hosts; detected hosts are preselected and Codex is selected when no host is detected. Rainy then displays the selected bundle, targets, and effective Skills and asks for explicit installation confirmation. Enter accepts the default `yes`; choosing `no` returns the preview without writing files.
 
-Supported targets are `codex`, `claude`, `cursor`, `github-copilot`, `gemini`, and `opencode`. Repeat `--target` or pass comma-separated values for multiple targets.
+Non-interactive callers never receive a prompt. Scripts, agents, JSON mode, redirected input, and CI use `comet`, `codex`, and `zh` when those options are omitted. Pass all options explicitly when the exact configuration must be visible in automation.
+
+Human-readable previews show the result summary, enabled Skills, exact next Rainy command, and affected locations. Upstream commands and individual paths are available with `--verbose`. `--yes` is an explicit compatibility alias for `--apply`.
+
+Supported targets are `universal`, `codex`, `claude`, `cursor`, `github-copilot`, `gemini`, and `opencode`. Universal is normalized into every profile even when it is omitted from explicit flags. Repeat `--target` or pass comma-separated values for multiple additional targets.
+
+## Platform Directories
+
+| Target | Canonical project Skill directory |
+| --- | --- |
+| Universal | `.agents/skills` |
+| Codex | `.agents/skills` |
+| Claude Code | `.claude/skills` |
+| Cursor | `.cursor/skills` |
+| GitHub Copilot | `.github/skills` |
+| Gemini CLI | `.gemini/skills` |
+| OpenCode | `.opencode/skills` |
+
+Codex and Universal share `.agents/skills`. Cursor keeps its platform-specific Rainy copy in `.cursor/skills`, while upstream components that follow the universal Skills standard may also be discovered in `.agents/skills`. Codex previously used `.codex/skills`, while some OpenSpec integrations also emitted `.agent/skills`. During install and update, Rainy consolidates recognized Rainy, OpenSpec, Superpowers, and Comet Skill directories into `.agents/skills`. Identical duplicates are removed. Different copies produce `SKILL_LAYOUT_CONFLICT`; Rainy keeps both until the user reviews them or explicitly chooses `--force`. Non-Skill files such as `.codex/rules`, hooks, and `.agent/workflows` are preserved.
 
 Rainy invokes Comet without a shell:
 
@@ -91,9 +109,11 @@ rainy skill uninstall --dry-run
 rainy skill uninstall --apply
 ```
 
-`init`, `install`, `update`, and `uninstall` default to dry-run. `--apply` or its `--yes` alias is mandatory for mutation. Rainy refuses to overwrite or remove any locked Rainy-managed or upstream Skill whose digest changed; use `--force` only after reviewing the local edits. Run `rainy skill <command> --help` for command-specific behavior and runnable examples.
+Interactive `init` and `install` may mutate only after the user accepts the terminal confirmation. `--dry-run` always suppresses that confirmation and previews. Non-interactive `init`, `install`, `update`, and `uninstall` require `--apply` or its `--yes` alias for mutation. Rainy refuses to overwrite or remove any locked Rainy-managed or upstream Skill whose digest changed; use `--force` only after reviewing the local edits. Run `rainy skill <command> --help` for command-specific behavior and runnable examples.
 
 If an older Rainy release left `rainy-skills.yaml` without `skills.lock` after an upstream failure, rerun the same `rainy skill init ... --apply` command or use `rainy skill install --apply`. Rainy treats that state as an interrupted installation and rebuilds the lock without requiring `--force`.
+
+Running `rainy skill init` again with the same configuration is idempotent. It reports `Already configured` and points to `rainy skill install --apply` instead of failing. Changing the bundle, language, targets, or package pins still requires an explicit uninstall first.
 
 `update` runs the selected pinned Comet and Superpowers installers. It does not depend on mutable global installations.
 

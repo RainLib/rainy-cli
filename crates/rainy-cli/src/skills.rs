@@ -8,6 +8,10 @@ use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
 use crate::progress::ProgressReporter;
 use chrono::{DateTime, Utc};
+use dialoguer::{
+    Confirm, MultiSelect, Select,
+    theme::{ColorfulTheme, SimpleTheme, Theme},
+};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -137,10 +141,12 @@ pub fn handle_skill_command(
     workspace: &Path,
     command: SkillCommand,
     progress: &ProgressReporter,
+    interactive: bool,
+    no_color: bool,
 ) -> RainyResult<CommandOutput> {
     match command.command {
-        SkillSubcommand::Init(args) => init(workspace, args, progress),
-        SkillSubcommand::Install(args) => install(workspace, args, progress),
+        SkillSubcommand::Init(args) => init(workspace, args, progress, interactive, no_color),
+        SkillSubcommand::Install(args) => install(workspace, args, progress, interactive, no_color),
         SkillSubcommand::Sync => sync(workspace, progress),
         SkillSubcommand::Status => status(workspace, progress),
         SkillSubcommand::Doctor => doctor(workspace, progress),
@@ -176,14 +182,20 @@ fn init(
     workspace: &Path,
     args: SkillInitArgs,
     progress: &ProgressReporter,
+    interactive: bool,
+    no_color: bool,
 ) -> RainyResult<CommandOutput> {
     progress.detail("Validating workspace and requested Skill profile");
     config::load_config(workspace)?;
-    let apply = resolve_apply_flags(args.dry_run, args.apply)?;
-    let desired = profile_from_args(&args)?;
+    let mut apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let profile_path = workspace.join(PROFILE_PATH);
-
     let profile_exists = profile_path.exists();
+    let desired = if profile_exists && args.profile.is_none() && args.target.is_empty() {
+        load_profile(workspace)?
+    } else {
+        profile_from_args(workspace, &args, interactive, no_color)?
+    };
+
     if profile_exists {
         let current = load_profile(workspace)?;
         if current != desired {
@@ -192,13 +204,29 @@ fn init(
                 "a different skill profile is already configured; uninstall it before changing profile, language, target, or pinned package versions",
             ));
         }
-        let resumable_incomplete_init = apply && !workspace.join(LOCK_PATH).is_file();
-        if !args.force && !resumable_incomplete_init {
-            return Err(RainyError::config(
-                "SKILL_PROFILE_EXISTS",
-                "rainy-skills.yaml and skills.lock already exist; use skill install or pass --force to repair managed Rainy skills",
-            ));
-        }
+    }
+
+    if interactive && !args.dry_run && !args.apply {
+        apply = prompt_install_confirmation(&desired, profile_exists, no_color)?;
+    }
+
+    if profile_exists && !apply {
+        return Ok(CommandOutput::Skill {
+            report: report(
+                "init",
+                "configured",
+                &desired,
+                Vec::new(),
+                vec![
+                    "rainy".to_string(),
+                    "skill".to_string(),
+                    "install".to_string(),
+                    "--apply".to_string(),
+                ],
+                Vec::new(),
+                Vec::new(),
+            ),
+        });
     }
 
     if !apply {
@@ -237,11 +265,16 @@ fn install(
     workspace: &Path,
     args: SkillChangeArgs,
     progress: &ProgressReporter,
+    interactive: bool,
+    no_color: bool,
 ) -> RainyResult<CommandOutput> {
     progress.detail("Loading and validating rainy-skills.yaml");
     config::load_config(workspace)?;
-    let apply = resolve_apply_flags(args.dry_run, args.apply)?;
+    let mut apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let profile = load_profile(workspace)?;
+    if interactive && !args.dry_run && !args.apply {
+        apply = prompt_install_confirmation(&profile, true, no_color)?;
+    }
     if !apply {
         progress.detail("Building the Skill installation preview");
         return Ok(CommandOutput::Skill {
@@ -490,16 +523,33 @@ fn uninstall(
     })
 }
 
-fn profile_from_args(args: &SkillInitArgs) -> RainyResult<SkillProfileConfig> {
+fn profile_from_args(
+    workspace: &Path,
+    args: &SkillInitArgs,
+    interactive: bool,
+    no_color: bool,
+) -> RainyResult<SkillProfileConfig> {
     validate_comet_version(&args.comet_version)?;
     validate_exact_version("skills CLI", &args.skills_version)?;
     validate_exact_version("Superpowers", &args.superpowers_version)?;
-    let profile = profile_name(&args.profile).to_string();
-    let mut targets = args
-        .target
+    let selected_profile = match args.profile {
+        Some(profile) => profile,
+        None if interactive => prompt_profile(no_color)?,
+        None => SkillProfile::Comet,
+    };
+    let selected_targets = if !args.target.is_empty() {
+        args.target.clone()
+    } else if interactive {
+        prompt_targets(workspace, no_color)?
+    } else {
+        vec![SkillTarget::Codex]
+    };
+    let profile = profile_name(&selected_profile).to_string();
+    let mut targets = selected_targets
         .iter()
         .map(|target| target_name(target).to_string())
         .collect::<Vec<_>>();
+    targets.push("universal".to_string());
     targets.sort();
     targets.dedup();
     if targets.is_empty() {
@@ -530,6 +580,147 @@ fn profile_from_args(args: &SkillInitArgs) -> RainyResult<SkillProfileConfig> {
     })
 }
 
+fn prompt_profile(no_color: bool) -> RainyResult<SkillProfile> {
+    let colorful = ColorfulTheme::default();
+    let simple = SimpleTheme;
+    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+    let choices = [
+        "Complete workflow  Rainy + OpenSpec + Superpowers + Comet",
+        "Rainy only         Rainy CLI execution and approval Skill",
+    ];
+    eprintln!();
+    eprintln!("Skill setup");
+    eprintln!("  Use arrow keys to move, then press Enter.");
+    let selected = Select::with_theme(theme)
+        .with_prompt("Select the Skill bundle")
+        .items(&choices)
+        .default(0)
+        .interact()
+        .map_err(|error| {
+            RainyError::config(
+                "SKILL_SELECTION_FAILED",
+                format!("could not read the Skill bundle selection: {error}"),
+            )
+        })?;
+    Ok(if selected == 0 {
+        SkillProfile::Comet
+    } else {
+        SkillProfile::Rainy
+    })
+}
+
+fn prompt_targets(workspace: &Path, no_color: bool) -> RainyResult<Vec<SkillTarget>> {
+    let colorful = ColorfulTheme::default();
+    let simple = SimpleTheme;
+    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+    let targets = [
+        SkillTarget::Codex,
+        SkillTarget::Claude,
+        SkillTarget::Cursor,
+        SkillTarget::GithubCopilot,
+        SkillTarget::Gemini,
+        SkillTarget::Opencode,
+    ];
+    let labels = [
+        "Codex            (uses universal .agents/skills)",
+        "Claude Code      (.claude/skills)",
+        "Cursor           (.cursor/skills)",
+        "GitHub Copilot   (.github/skills)",
+        "Gemini CLI       (.gemini/skills)",
+        "OpenCode         (.opencode/skills)",
+    ];
+    let detected = targets
+        .iter()
+        .map(|target| target_detected(workspace, target))
+        .collect::<Vec<_>>();
+    let defaults = if detected.iter().any(|value| *value) {
+        detected
+    } else {
+        targets
+            .iter()
+            .map(|target| matches!(target, SkillTarget::Codex))
+            .collect()
+    };
+    eprintln!();
+    eprintln!("  Always included: Universal (.agents/skills)");
+    eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
+    let selected = MultiSelect::with_theme(theme)
+        .with_prompt("Select target agent hosts")
+        .items(&labels)
+        .defaults(&defaults)
+        .interact()
+        .map_err(|error| {
+            RainyError::config(
+                "SKILL_SELECTION_FAILED",
+                format!("could not read the target platform selection: {error}"),
+            )
+        })?;
+    Ok(selected.into_iter().map(|index| targets[index]).collect())
+}
+
+fn prompt_install_confirmation(
+    profile: &SkillProfileConfig,
+    existing: bool,
+    no_color: bool,
+) -> RainyResult<bool> {
+    let colorful = ColorfulTheme::default();
+    let simple = SimpleTheme;
+    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+    eprintln!();
+    eprintln!("Installation review");
+    eprintln!(
+        "  Bundle   {}",
+        if profile.profile == "comet" {
+            "Complete workflow"
+        } else {
+            "Rainy only"
+        }
+    );
+    eprintln!("  Targets  {}", profile.targets.join(", "));
+    eprintln!(
+        "  Skills   {}",
+        if profile.profile == "comet" {
+            "Rainy CLI, Rainy Comet, OpenSpec, Superpowers, Comet"
+        } else {
+            "Rainy CLI"
+        }
+    );
+    Confirm::with_theme(theme)
+        .with_prompt(if existing {
+            "Install or repair this configured Skill bundle now?"
+        } else {
+            "Install the selected Skill bundle now?"
+        })
+        .default(true)
+        .interact()
+        .map_err(|error| {
+            RainyError::config(
+                "SKILL_SELECTION_FAILED",
+                format!("could not read the installation confirmation: {error}"),
+            )
+        })
+}
+
+fn target_detected(workspace: &Path, target: &SkillTarget) -> bool {
+    match target {
+        SkillTarget::Universal => workspace.join(".agents").exists(),
+        SkillTarget::Codex => {
+            workspace.join(".agents").exists() || workspace.join(".codex").exists()
+        }
+        SkillTarget::Claude => {
+            workspace.join(".claude").exists() || workspace.join("CLAUDE.md").exists()
+        }
+        SkillTarget::Cursor => workspace.join(".cursor").exists(),
+        SkillTarget::GithubCopilot => {
+            workspace.join(".github/copilot-instructions.md").exists()
+                || workspace.join(".github/instructions").exists()
+                || workspace.join(".github/skills").exists()
+        }
+        SkillTarget::Gemini => workspace.join(".gemini").exists(),
+        SkillTarget::Opencode => workspace.join(".opencode").exists(),
+    }
+}
+
 fn load_profile(workspace: &Path) -> RainyResult<SkillProfileConfig> {
     let path = workspace.join(PROFILE_PATH);
     if !path.is_file() {
@@ -539,6 +730,11 @@ fn load_profile(workspace: &Path) -> RainyResult<SkillProfileConfig> {
         ));
     }
     let mut profile: SkillProfileConfig = serde_yaml::from_str(&std::fs::read_to_string(path)?)?;
+    if !profile.targets.iter().any(|target| target == "universal") {
+        profile.targets.push("universal".to_string());
+        profile.targets.sort();
+        profile.targets.dedup();
+    }
     if profile.profile == "comet" {
         profile
             .packages
@@ -783,6 +979,8 @@ fn apply_install(
     } else {
         None
     };
+    progress.detail("Consolidating managed Skills into each platform's canonical directory");
+    changed_files.extend(normalize_skill_layout(workspace, profile, force)?);
 
     Ok((changed_files, output_digest))
 }
@@ -835,6 +1033,75 @@ fn install_rainy_skills(
         }
     }
     Ok(changed_files)
+}
+
+fn normalize_skill_layout(
+    workspace: &Path,
+    profile: &SkillProfileConfig,
+    force: bool,
+) -> RainyResult<Vec<String>> {
+    let mut changed_files = Vec::new();
+    for target in &profile.targets {
+        if target != "codex" {
+            continue;
+        }
+        let canonical = workspace.join(".agents/skills");
+        std::fs::create_dir_all(&canonical)?;
+        let superpowers_names = locked_superpowers_names(workspace)?;
+        for legacy_relative in [".codex/skills", ".agent/skills"] {
+            let legacy = workspace.join(legacy_relative);
+            if !legacy.is_dir() {
+                continue;
+            }
+            let mut managed_names =
+                BTreeSet::from(["rainy-cli".to_string(), "rainy-comet".to_string()]);
+            for (_, paths) in scan_upstream(&legacy, &superpowers_names)? {
+                managed_names.extend(paths.into_iter().filter_map(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                }));
+            }
+            for name in managed_names {
+                let source = legacy.join(&name);
+                if !source.is_dir() || !source.join("SKILL.md").is_file() {
+                    continue;
+                }
+                let destination = canonical.join(&name);
+                if destination.is_dir() {
+                    let same_content =
+                        directory_digest(&source)? == directory_digest(&destination)?;
+                    if !same_content && !force {
+                        return Err(RainyError::config(
+                            "SKILL_LAYOUT_CONFLICT",
+                            format!(
+                                "{} and {} contain different copies of the same managed Skill; review them and rerun with --force to keep the canonical copy",
+                                relative_string(workspace, &source),
+                                relative_string(workspace, &destination)
+                            ),
+                        ));
+                    }
+                    std::fs::remove_dir_all(&source)?;
+                    changed_files.push(relative_string(workspace, &source));
+                } else {
+                    replace_directory(&source, &destination)?;
+                    std::fs::remove_dir_all(&source)?;
+                    changed_files.push(relative_string(workspace, &source));
+                    changed_files.push(relative_string(workspace, &destination));
+                }
+            }
+            remove_empty_directory(&legacy)?;
+        }
+    }
+    changed_files.sort();
+    changed_files.dedup();
+    Ok(changed_files)
+}
+
+fn remove_empty_directory(path: &Path) -> RainyResult<()> {
+    if path.is_dir() && std::fs::read_dir(path)?.next().is_none() {
+        std::fs::remove_dir(path)?;
+    }
+    Ok(())
 }
 
 fn build_lock(
@@ -965,7 +1232,9 @@ fn validate_lock(lock: &SkillLock) -> RainyResult<()> {
     for skill in &lock.managed_skills {
         validate_locked_path(&skill.path)?;
         let expected = Path::new(target_relative_root(&skill.target)?).join(&skill.name);
-        if Path::new(&skill.path) != expected {
+        let legacy_codex = skill.target == "codex"
+            && Path::new(&skill.path) == Path::new(".codex/skills").join(&skill.name);
+        if Path::new(&skill.path) != expected && !legacy_codex {
             return Err(RainyError::config(
                 "SKILL_LOCK_PATH_INVALID",
                 format!(
@@ -1539,6 +1808,7 @@ fn superpowers_args(profile: &SkillProfileConfig) -> RainyResult<Vec<OsString>> 
 
 fn skills_agent_name(target: &str) -> RainyResult<&'static str> {
     match target {
+        "universal" => Ok("universal"),
         "codex" => Ok("codex"),
         "claude" => Ok("claude-code"),
         "cursor" => Ok("cursor"),
@@ -1857,6 +2127,9 @@ fn upstream_relative_roots(target: &str) -> RainyResult<Vec<&'static Path>> {
     let target_root = Path::new(target_relative_root(target)?);
     let mut roots = vec![target_root];
     if target == "codex" {
+        roots.push(Path::new(".codex/skills"));
+        roots.push(Path::new(".agent/skills"));
+    } else if target == "cursor" {
         roots.push(Path::new(".agents/skills"));
     }
     Ok(roots)
@@ -1864,7 +2137,8 @@ fn upstream_relative_roots(target: &str) -> RainyResult<Vec<&'static Path>> {
 
 fn target_relative_root(target: &str) -> RainyResult<&'static str> {
     match target {
-        "codex" => Ok(".codex/skills"),
+        "universal" => Ok(".agents/skills"),
+        "codex" => Ok(".agents/skills"),
         "claude" => Ok(".claude/skills"),
         "cursor" => Ok(".cursor/skills"),
         "github-copilot" => Ok(".github/skills"),
@@ -1893,6 +2167,7 @@ fn language_name(language: &SkillLanguage) -> &'static str {
 
 fn target_name(target: &SkillTarget) -> &'static str {
     match target {
+        SkillTarget::Universal => "universal",
         SkillTarget::Codex => "codex",
         SkillTarget::Claude => "claude",
         SkillTarget::Cursor => "cursor",

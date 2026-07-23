@@ -44,3 +44,11 @@
 - Reuse one trace ID across commands serving the same request.
 - Report plan path, applied files, verification result, and unresolved warnings.
 - Do not claim success when strict verification was skipped or failed.
+
+## Enterprise Boundaries
+
+- Put declarative project changes in capability packs, not ad hoc shell commands.
+- Use `denyEdit` for organization-wide absolute path restrictions; layered `allowEdit` entries are additive.
+- Keep credentials out of registries, packs, Rainy config, generated templates, evidence, and Skills.
+- Preserve one trace ID across Rainy, approval, deployment, and centralized audit systems.
+- Treat the local audit file as a source for collection, not a substitute for enterprise SIEM retention.

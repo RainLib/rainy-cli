@@ -229,7 +229,14 @@ policy:
     - rainy.yaml
     - capability.lock
     - AGENTS.md
+    - .agents/skills/**
+    - .claude/skills/**
+    - .cursor/skills/**
+    - .github/skills/**
+    - .gemini/skills/**
+    - .opencode/skills/**
     - .rainy/plugins/**
+    - .rainy/registry.lock
     - apps/backend/src/**
     - apps/backend/pom.xml
     - apps/backend/src/main/resources/application.yml

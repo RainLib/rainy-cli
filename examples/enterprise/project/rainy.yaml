@@ -1,0 +1,40 @@
+apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: enterprise-example
+  type: service
+  owner: platform-engineering
+paths:
+  backend: apps/backend
+  frontend: apps/frontend
+  generated: generated
+  evidence: evidence
+package:
+  java: com.example.enterprise
+  npmScope: "@example"
+capabilityRegistry:
+  sources:
+    - type: local
+      path: ../packs
+policy:
+  allowNativePlugins: false
+  allowEdit:
+    - capability.lock
+    - generated/**
+    - evidence/**
+  denyEdit:
+    - "**/.env*"
+    - "**/secrets/**"
+    - "**/*.pem"
+    - "**/*.key"
+  requireApproval:
+    - db.migrate
+    - deploy.production
+    - secret.write
+verify:
+  profiles:
+    local:
+      - doctor
+    ci:
+      - doctor
+      - security-basic

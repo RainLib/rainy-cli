@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/registry-report.schema.json",
+  "title": "Rainy Registry Report",
+  "type": "object",
+  "required": ["protocolVersion", "status", "operation", "registries", "checks"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.registry-report.v1" },
+    "status": { "enum": ["dry-run", "applied", "passed", "failed"] },
+    "operation": { "enum": ["list", "add", "install", "sync", "update", "remove", "doctor"] },
+    "registries": { "type": "array" },
+    "checks": { "type": "array" }
+  },
+  "additionalProperties": true
+}

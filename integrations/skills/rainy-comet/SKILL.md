@@ -41,6 +41,10 @@ Read [references/ownership.md](references/ownership.md) before changing files or
 
 Keep Comet `auto_transition` disabled. Phase progression may update Comet state, but it must not authorize Rainy mutation, native plugins, deployment, database migration, or secret writes.
 
+For enterprise capabilities, keep product acceptance criteria in OpenSpec and the company implementation
+in a private Rainy pack or plugin. Preserve the same trace ID in the Rainy plan, enterprise approval, strict
+verification, and evidence handoff. Never copy credentials into Comet state or Skill content.
+
 ## Handle Drift
 
 Treat `rainy-skills.yaml` as desired state and `skills.lock` as installed state. Do not edit generated upstream Skills or locked Rainy Skill copies in place. Use `rainy skill status` to inspect drift and `rainy skill doctor` to enforce it.

@@ -74,6 +74,8 @@ pub enum Commands {
     Capability(CapabilityCommand),
     /// Discover, install, sign, and verify capability packs.
     Pack(PackCommand),
+    /// Manage named local, Git, HTTP, and archive registries.
+    Registry(RegistryCommand),
     /// Diagnose workspace configuration and capability health.
     Doctor(DoctorCommand),
     /// Run workspace and capability verification profiles.
@@ -364,6 +366,44 @@ pub struct PackInstallArgs {
     #[arg(value_name = "PACK_SOURCE")]
     pub source: String,
 
+    /// Stable registry name; generated from the source when omitted.
+    #[arg(long, value_name = "REGISTRY_NAME")]
+    pub name: Option<String>,
+
+    /// Git branch, tag, or commit to resolve and lock.
+    #[arg(long = "ref", value_name = "GIT_REF")]
+    pub reference: Option<String>,
+
+    /// Expected SHA-256 for a .tar.gz, .tgz, or .zip archive.
+    #[arg(long, value_name = "SHA256")]
+    pub sha256: Option<String>,
+
+    /// Pull only named pack modules. Repeat or pass comma-separated names.
+    #[arg(long, value_name = "PACK", value_delimiter = ',')]
+    pub module: Vec<String>,
+
+    /// Pull every pack module exposed by the source.
+    #[arg(long, conflicts_with = "module")]
+    pub all: bool,
+
+    /// Install Skill exports from selected pack modules.
+    #[arg(long, requires = "apply")]
+    pub install_skills: bool,
+
+    /// Agent hosts for exported Skills. Repeat or pass comma-separated values.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "AGENT_HOST",
+        value_delimiter = ',',
+        requires = "install_skills"
+    )]
+    pub target: Vec<SkillTarget>,
+
+    /// Replace only reviewed enterprise Skill drift.
+    #[arg(long)]
+    pub force: bool,
+
     /// Preview installation without changing registry state.
     #[arg(long)]
     pub dry_run: bool,
@@ -389,6 +429,148 @@ pub struct PackPathArgs {
     /// Pack directory to process.
     #[arg(value_name = "PACK_DIR")]
     pub path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    about = "Manage named local, Git, HTTP, and archive registries",
+    long_about = "Configure multiple enterprise registries, synchronize selected pack modules, and lock resolved Git commits or archive digests. Registry changes preview unless --apply is supplied.",
+    after_help = "EXAMPLES:\n  List configured registries:\n    rainy registry list\n\n  Add a GitLab registry:\n    rainy registry add company git+ssh://git@gitlab.example.com/platform/rainy-packs.git --ref main --apply\n\n  Add a verified archive registry:\n    rainy registry add security https://downloads.example.com/security-packs.tar.gz --sha256 <SHA256> --apply\n\n  Pull selected modules:\n    rainy registry sync company --module service-baseline,observability --apply\n\n  Pull all modules from all registries:\n    rainy registry sync --all-registries --all --apply\n\nRun 'rainy registry <COMMAND> --help' for command-specific examples."
+)]
+pub struct RegistryCommand {
+    #[command(subcommand)]
+    pub command: RegistrySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RegistrySubcommand {
+    #[command(
+        about = "List configured registries and synchronization state",
+        after_help = "EXAMPLES:\n  List registries:\n    rainy registry list\n\n  Return structured output:\n    rainy registry list --json"
+    )]
+    List,
+    #[command(
+        about = "Add or replace a named registry",
+        after_help = "EXAMPLES:\n  Add GitHub or GitLab source:\n    rainy registry add company git+https://git.example.com/platform/packs.git --ref v1.2.0 --apply\n\n  Add an archive with explicit checksum:\n    rainy registry add company-release https://downloads.example.com/packs-v1.2.0.zip --sha256 <SHA256> --apply\n\n  Preview local source configuration:\n    rainy registry add local ./enterprise-packs --dry-run"
+    )]
+    Add(RegistryAddArgs),
+    #[command(
+        about = "Synchronize one or all configured registries",
+        after_help = "EXAMPLES:\n  Preview one registry synchronization:\n    rainy registry sync company --all --dry-run\n\n  Pull selected modules:\n    rainy registry sync company --module service-baseline,company-skills --apply\n\n  Install exported Skills for selected agent hosts:\n    rainy registry sync company --module company-skills --install-skills --target codex,cursor --apply\n\n  Pull every configured registry:\n    rainy registry sync --all-registries --all --apply"
+    )]
+    Sync(RegistrySyncArgs),
+    #[command(
+        about = "Remove a registry from the current project",
+        long_about = "Remove a registry configuration and lock entry from the current project. Shared content under RAINY_HOME/registries is retained for other projects.",
+        after_help = "EXAMPLES:\n  Preview removal:\n    rainy registry remove company --dry-run\n\n  Remove the project association:\n    rainy registry remove company --apply"
+    )]
+    Remove(RegistryRemoveArgs),
+    #[command(
+        about = "Validate registry configuration, cache, locks, and modules",
+        after_help = "EXAMPLES:\n  Diagnose all registries:\n    rainy registry doctor\n\n  Diagnose one registry:\n    rainy registry doctor company\n\n  Return structured checks:\n    rainy registry doctor --json"
+    )]
+    Doctor(RegistryDoctorArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RegistryAddArgs {
+    /// Stable registry alias used by sync, locks, and qualified module names.
+    #[arg(value_name = "REGISTRY_NAME")]
+    pub name: String,
+
+    /// Local directory, git+ URL, HTTP index, or archive URL.
+    #[arg(value_name = "SOURCE")]
+    pub source: String,
+
+    /// Git branch, tag, or commit to resolve and lock.
+    #[arg(long = "ref", value_name = "GIT_REF")]
+    pub reference: Option<String>,
+
+    /// Expected archive SHA-256. When omitted, Rainy fetches SOURCE.sha256.
+    #[arg(long, value_name = "SHA256")]
+    pub sha256: Option<String>,
+
+    /// Search order hint; higher values are displayed first but never silently override conflicts.
+    #[arg(long, value_name = "NUMBER", default_value_t = 0)]
+    pub priority: i32,
+
+    /// Preview configuration without writing files.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Persist the registry configuration.
+    #[arg(long)]
+    pub apply: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RegistrySyncArgs {
+    /// Registry alias. Omit only with --all-registries.
+    #[arg(
+        value_name = "REGISTRY_NAME",
+        required_unless_present = "all_registries"
+    )]
+    pub name: Option<String>,
+
+    /// Synchronize every configured registry.
+    #[arg(long, conflicts_with = "name")]
+    pub all_registries: bool,
+
+    /// Pull only named pack modules. Repeat or pass comma-separated names.
+    #[arg(long, value_name = "PACK", value_delimiter = ',')]
+    pub module: Vec<String>,
+
+    /// Pull every module exposed by each selected registry.
+    #[arg(long, conflicts_with = "module")]
+    pub all: bool,
+
+    /// Install Skill exports from synchronized pack modules.
+    #[arg(long, requires = "apply")]
+    pub install_skills: bool,
+
+    /// Agent hosts for exported Skills. Repeat or pass comma-separated values.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "AGENT_HOST",
+        value_delimiter = ',',
+        requires = "install_skills"
+    )]
+    pub target: Vec<SkillTarget>,
+
+    /// Replace only reviewed enterprise Skill drift.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Preview synchronization without changing caches or locks.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Download, verify, and atomically replace registry caches.
+    #[arg(long)]
+    pub apply: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RegistryRemoveArgs {
+    /// Registry alias to remove.
+    #[arg(value_name = "REGISTRY_NAME")]
+    pub name: String,
+
+    /// Preview removal without writing files.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Remove configuration, lock entry, and managed cache.
+    #[arg(long)]
+    pub apply: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RegistryDoctorArgs {
+    /// Optional registry alias to diagnose.
+    #[arg(value_name = "REGISTRY_NAME")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -558,8 +740,8 @@ pub enum AgentSubcommand {
 #[derive(Debug, Args)]
 #[command(
     about = "Manage project-scoped AI agent skills",
-    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts.\n\nThe default profile is comet, which installs and locks Rainy, OpenSpec, Superpowers, and Comet. Mutating commands preview changes by default and write files only when --apply or --yes is supplied.",
-    after_help = "QUICK START:\n  Preview the default Comet profile:\n    rainy skill init\n\n  Apply the previewed profile:\n    rainy skill init --apply\n\n  Install only the Rainy Skill (no Node.js required):\n    rainy skill init --profile rainy --apply\n\n  Check an installed profile:\n    rainy skill status\n    rainy skill doctor\n\nRun 'rainy skill <COMMAND> --help' for command-specific examples."
+    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts.\n\nUniversal .agents/skills is always included. Interactive terminals can select one or more additional target hosts, then explicitly confirm installation. Non-interactive callers default to the comet bundle for Codex plus Universal and preview unless --apply or --yes is supplied.",
+    after_help = "QUICK START:\n  Interactively select a bundle and target hosts:\n    rainy skill init\n\n  Apply the previewed profile:\n    rainy skill init --apply\n\n  Install only the Rainy Skill (no Node.js required):\n    rainy skill init --profile rainy --target codex --apply\n\n  Check an installed profile:\n    rainy skill status\n    rainy skill doctor\n\nRun 'rainy skill <COMMAND> --help' for command-specific examples."
 )]
 pub struct SkillCommand {
     #[command(subcommand)]
@@ -570,13 +752,13 @@ pub struct SkillCommand {
 pub enum SkillSubcommand {
     #[command(
         about = "Create and install a project Skill profile",
-        long_about = "Create rainy-skills.yaml and install the selected project-scoped Skills.\n\nWithout --apply or --yes, this command only previews the managed paths and prints the exact Rainy command that applies the plan. The comet profile requires Node.js 20+, npx, and Git; the rainy profile has no Node.js dependency.",
-        after_help = "EXAMPLES:\n  Preview the default Comet profile for Codex:\n    rainy skill init\n\n  Apply the default profile:\n    rainy skill init --apply\n\n  --yes is an alias for --apply:\n    rainy skill init --yes\n\n  Install only Rainy's Skill for Codex:\n    rainy skill init --profile rainy --target codex --apply\n\n  Install for multiple hosts:\n    rainy skill init --target codex,claude,cursor --language zh --apply\n\n  Inspect the machine-readable preview:\n    rainy skill init --dry-run --json"
+        long_about = "Create rainy-skills.yaml and install the selected project-scoped Skills.\n\nWhen --profile or --target is omitted in a terminal, Rainy opens keyboard-driven selectors and asks whether to install the reviewed selection now. Choosing no, using --dry-run, or running non-interactively without --apply only previews the plan. The comet profile requires Node.js 20+, npx, and Git; the rainy profile has no Node.js dependency.",
+        after_help = "EXAMPLES:\n  Interactively select the Skill bundle and target hosts:\n    rainy skill init\n\n  Apply the interactive selection:\n    rainy skill init --apply\n\n  --yes is an alias for --apply:\n    rainy skill init --yes\n\n  Install only Rainy's Skill for Codex:\n    rainy skill init --profile rainy --target codex --apply\n\n  Install for multiple hosts without prompting:\n    rainy skill init --profile comet --target codex,claude,cursor --language zh --apply\n\n  Inspect the machine-readable non-interactive preview:\n    rainy skill init --dry-run --json"
     )]
     Init(SkillInitArgs),
     #[command(
         about = "Install or repair the configured Skill profile",
-        long_about = "Install the profile already declared in rainy-skills.yaml and refresh skills.lock.\n\nThe command previews changes by default. Use --apply or --yes to write files. Use --force only after reviewing local changes reported as drift.",
+        long_about = "Install the profile already declared in rainy-skills.yaml and refresh skills.lock.\n\nInteractive terminals display the configured bundle and ask for installation confirmation. Non-interactive callers preview unless --apply or --yes is supplied. Use --force only after reviewing local changes reported as drift.",
         after_help = "EXAMPLES:\n  Preview installation:\n    rainy skill install\n\n  Apply installation:\n    rainy skill install --apply\n\n  Repair reviewed managed-file drift:\n    rainy skill install --force --apply"
     )]
     Install(SkillChangeArgs),
@@ -612,20 +794,21 @@ pub enum SkillSubcommand {
     Uninstall(SkillChangeArgs),
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SkillProfile {
     Rainy,
     Comet,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SkillLanguage {
     En,
     Zh,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SkillTarget {
+    Universal,
     Codex,
     Claude,
     Cursor,
@@ -636,23 +819,19 @@ pub enum SkillTarget {
 
 #[derive(Debug, Args)]
 pub struct SkillInitArgs {
-    /// Skill bundle to manage: comet installs and manages Rainy, OpenSpec, Superpowers, and
-    /// Comet; rainy installs only the Rainy Skill.
-    #[arg(long, value_enum, value_name = "PROFILE", default_value = "comet")]
-    pub profile: SkillProfile,
+    /// Skill bundle to manage. Interactive terminals prompt when omitted; scripts default to
+    /// comet, which includes Rainy, OpenSpec, Superpowers, and Comet.
+    #[arg(long, value_enum, value_name = "PROFILE")]
+    pub profile: Option<SkillProfile>,
 
     /// Language used by generated agent instructions.
     #[arg(long, value_enum, value_name = "LANGUAGE", default_value = "zh")]
     pub language: SkillLanguage,
 
-    /// Agent hosts to install into; repeat this option or use comma-separated values.
-    #[arg(
-        long,
-        value_enum,
-        value_name = "AGENT_HOST",
-        value_delimiter = ',',
-        default_value = "codex"
-    )]
+    /// Agent hosts to install into. Universal .agents/skills is always included. Interactive
+    /// terminals show a multi-select when omitted; scripts default to Codex. Repeat this option
+    /// or use comma-separated values.
+    #[arg(long, value_enum, value_name = "AGENT_HOST", value_delimiter = ',')]
     pub target: Vec<SkillTarget>,
 
     /// Exact Comet package version used by the comet profile.

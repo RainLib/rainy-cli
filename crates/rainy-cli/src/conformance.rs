@@ -156,7 +156,66 @@ fn check_pack(
             checks,
         )?;
     }
+    for skill_path in &pack.exports.skills {
+        check_pack_export(
+            root,
+            &pack.metadata.name,
+            "skill",
+            skill_path,
+            "SKILL.md",
+            checks,
+        );
+    }
+    for plugin_path in &pack.exports.plugins {
+        check_pack_export(
+            root,
+            &pack.metadata.name,
+            "plugin",
+            plugin_path,
+            "plugin.json",
+            checks,
+        );
+    }
     Ok(())
+}
+
+fn check_pack_export(
+    root: &Path,
+    pack_name: &str,
+    export_type: &str,
+    export_path: &str,
+    marker: &str,
+    checks: &mut Vec<ConformanceCheck>,
+) {
+    let relative = Path::new(export_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        checks.push(failed(
+            format!("{export_type}:{pack_name}:{export_path}:path"),
+            "export path must stay inside the pack",
+        ));
+        return;
+    }
+    let path = root.join(relative);
+    let valid = if path.is_dir() {
+        path.join(marker).is_file()
+    } else {
+        path.file_name().is_some_and(|name| name == marker) && path.is_file()
+    };
+    checks.push(if valid {
+        passed(
+            format!("{export_type}:{pack_name}:{export_path}:exists"),
+            format!("{export_type} export contains {marker}"),
+        )
+    } else {
+        failed(
+            format!("{export_type}:{pack_name}:{export_path}:exists"),
+            format!("{export_type} export is missing {marker}"),
+        )
+    });
 }
 
 fn check_capability(

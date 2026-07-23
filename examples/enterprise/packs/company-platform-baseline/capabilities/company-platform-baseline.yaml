@@ -1,0 +1,37 @@
+apiVersion: rainy.dev/v1
+kind: Capability
+id: company-platform-baseline
+name: Company Platform Baseline
+version: 1.0.0
+status: stable
+owner: platform-engineering
+description: Adds a governed marker for the enterprise platform baseline.
+dependsOn: []
+providers: []
+inputs: {}
+actions:
+  install:
+    - id: create-platform-baseline
+      uses: file.create
+      with:
+        path: generated/enterprise/platform-baseline.md
+        content: |
+          # Enterprise Platform Baseline
+
+          Managed by Rainy capability company-platform-baseline.
+validations: []
+doctor:
+  checks:
+    - id: platform-baseline-exists
+      uses: file.exists
+      with:
+        path: generated/enterprise/platform-baseline.md
+agentRules:
+  - Use Rainy plans for changes to the enterprise platform baseline.
+policy:
+  allowEdit:
+    - capability.lock
+    - generated/enterprise/**
+  denyEdit:
+    - "**/secrets/**"
+  requireApproval: []

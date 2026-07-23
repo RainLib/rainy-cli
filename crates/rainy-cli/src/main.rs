@@ -27,11 +27,17 @@ use cli::{
 };
 use error::{RainyError, RainyResult};
 use output::CommandOutput;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
 fn main() {
     let cli = Cli::parse();
     let json = cli.json;
+    let verbose = cli.verbose;
+    let no_color = cli.no_color;
+    let interactive =
+        !cli.json && !cli.quiet && io::stdin().is_terminal() && io::stderr().is_terminal();
+    let prompt_before_progress = interactive && skill_command_needs_prompt(&cli.command);
     let trace_id = cli.trace_id.clone();
     let audit_workspace = cli
         .workspace
@@ -40,21 +46,26 @@ fn main() {
     let audit_command = command_label(&cli.command).to_string();
     let is_self_command = matches!(cli.command, Commands::SelfCommand(_));
     update::maybe_notify(json, cli.quiet, is_self_command);
+    let progress_mode = if prompt_before_progress {
+        progress::ProgressMode::Never
+    } else {
+        cli.progress
+    };
     let mut progress =
-        progress::ProgressReporter::new(cli.progress, cli.json, cli.quiet, cli.no_color);
+        progress::ProgressReporter::new(progress_mode, cli.json, cli.quiet, cli.no_color);
     progress.stage(format!("Preparing {audit_command}"));
 
     if command_requires_audit(&cli.command)
         && let Err(err) = audit::preflight(&audit_workspace)
     {
-        progress.finish_error(&err.to_string());
+        progress.finish_error();
         output::print_error(&err, json);
         std::process::exit(err.exit_code());
     }
 
     progress.stage(format!("Running {audit_command}"));
 
-    match run(cli, &progress) {
+    match run(cli, &progress, interactive, no_color) {
         Ok(output) => {
             progress.stage("Recording command result");
             if let Err(err) = audit::record_success(
@@ -63,21 +74,34 @@ fn main() {
                 trace_id.as_deref(),
                 &output,
             ) {
-                progress.finish_error(&err.to_string());
+                progress.finish_error();
                 output::print_error(&err, json);
                 std::process::exit(err.exit_code());
             }
             progress.stage("Rendering output");
             progress.finish_success();
-            output.print(json);
+            output.print(json, verbose);
         }
         Err(err) => {
             let _ =
                 audit::record_error(&audit_workspace, &audit_command, trace_id.as_deref(), &err);
-            progress.finish_error(&err.to_string());
+            progress.finish_error();
             output::print_error(&err, json);
             std::process::exit(err.exit_code());
         }
+    }
+}
+
+fn skill_command_needs_prompt(command: &Commands) -> bool {
+    let Commands::Skill(command) = command else {
+        return false;
+    };
+    match &command.command {
+        cli::SkillSubcommand::Init(args) => {
+            args.profile.is_none() || args.target.is_empty() || (!args.apply && !args.dry_run)
+        }
+        cli::SkillSubcommand::Install(args) => !args.apply && !args.dry_run,
+        _ => false,
     }
 }
 
@@ -95,6 +119,12 @@ fn command_requires_audit(command: &Commands) -> bool {
             cli::PackSubcommand::Install(args) => args.apply,
             cli::PackSubcommand::Update(args) => args.apply,
             cli::PackSubcommand::Sign(_) => true,
+            _ => false,
+        },
+        Commands::Registry(command) => match &command.command {
+            cli::RegistrySubcommand::Add(args) => args.apply,
+            cli::RegistrySubcommand::Sync(args) => args.apply,
+            cli::RegistrySubcommand::Remove(args) => args.apply,
             _ => false,
         },
         Commands::Plugin(command) => match &command.command {
@@ -117,6 +147,7 @@ fn command_label(command: &Commands) -> &'static str {
         Commands::Apply(_) => "apply",
         Commands::Capability(_) => "capability",
         Commands::Pack(_) => "pack",
+        Commands::Registry(_) => "registry",
         Commands::Doctor(_) => "doctor",
         Commands::Verify(_) => "verify",
         Commands::Evidence(_) => "evidence",
@@ -130,7 +161,12 @@ fn command_label(command: &Commands) -> &'static str {
     }
 }
 
-fn run(cli: Cli, progress: &progress::ProgressReporter) -> RainyResult<CommandOutput> {
+fn run(
+    cli: Cli,
+    progress: &progress::ProgressReporter,
+    interactive: bool,
+    no_color: bool,
+) -> RainyResult<CommandOutput> {
     let workspace = cli.workspace.unwrap_or(std::env::current_dir()?);
     let allow_native_plugin = cli.allow_native_plugin
         || config::load_config(&workspace)
@@ -171,6 +207,7 @@ fn run(cli: Cli, progress: &progress::ProgressReporter) -> RainyResult<CommandOu
             CapabilitySubcommand::Remove(args) => remove_capability(&workspace, args),
         },
         Commands::Pack(command) => registry::handle_pack_command(&workspace, command),
+        Commands::Registry(command) => registry::handle_registry_command(&workspace, command),
         Commands::Doctor(args) => {
             doctor::doctor_command(&workspace, args.capability.as_deref(), progress)
         }
@@ -192,7 +229,9 @@ fn run(cli: Cli, progress: &progress::ProgressReporter) -> RainyResult<CommandOu
             plugin::handle_plugin_command(&workspace, command, allow_native_plugin)
         }
         Commands::Agent(command) => agent::handle_agent_command(&workspace, command),
-        Commands::Skill(command) => skills::handle_skill_command(&workspace, command, progress),
+        Commands::Skill(command) => {
+            skills::handle_skill_command(&workspace, command, progress, interactive, no_color)
+        }
         Commands::Conformance(command) => conformance::handle_conformance_command(command),
         Commands::Schema(command) => schema::handle_schema_command(command),
         Commands::SelfCommand(command) => update::handle_self_command(command),

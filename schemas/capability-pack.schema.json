@@ -32,6 +32,10 @@
         "skills": {
           "type": "array",
           "items": { "type": "string" }
+        },
+        "plugins": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       },
       "additionalProperties": true

@@ -6,6 +6,7 @@
 **/.rainy.new.*
 **/.rainy.backup.*
 /.rainy/
+**/.rainy/audit.log
 /demo-saas/
 
 # Python

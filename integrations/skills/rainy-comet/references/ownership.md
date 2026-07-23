@@ -8,6 +8,7 @@
 | Superpowers | Design method, implementation plan, TDD, debugging, review | `docs/superpowers/` |
 | Comet | Phase, resume state, handoff, transition guards | `.comet/`, change `.comet.yaml` |
 | Rainy | Executable capability plan, policy, writes, rollback, verification, audit | plan JSON, `capability.lock`, evidence, `.rainy/audit.log` |
+| Enterprise platform | Private capability implementation, IAM, approval, deployment, secret injection | private packs/plugins, approval record, platform audit |
 
 Do not copy one owner's document into another owner's file. Link artifacts with change names, plan paths, trace IDs, and digests.
 

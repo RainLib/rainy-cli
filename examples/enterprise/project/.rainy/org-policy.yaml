@@ -1,0 +1,11 @@
+denyEdit:
+  - "**/application-prod.yml"
+  - "**/.env.production"
+  - "**/secrets/**"
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/*.p12"
+requireApproval:
+  - db.migrate
+  - deploy.production
+  - secret.write

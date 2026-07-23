@@ -46,10 +46,19 @@
             "type": "object",
             "required": ["type"],
             "properties": {
-              "type": { "enum": ["local", "git", "http"] },
+              "type": { "enum": ["local", "git", "http", "archive"] },
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "priority": { "type": "integer" },
               "path": { "type": "string" },
               "url": { "type": "string" },
-              "ref": { "type": "string" }
+              "ref": { "type": "string" },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[A-Fa-f0-9]{64}$"
+              }
             },
             "additionalProperties": true
           }
