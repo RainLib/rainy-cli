@@ -4,6 +4,40 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-23
+
+### Fixed
+
+- Made Superpowers a required, Rainy-managed component of the default Comet
+  profile instead of treating a failed upstream installation as optional.
+- Install pinned Superpowers before Comet initialization so Comet detects the
+  existing library and avoids its duplicate, failure-tolerant install path.
+
+### Added
+
+- Pin the `skills` CLI and Superpowers release alongside Comet in
+  `rainy-skills.yaml` and `skills.lock`.
+- Discover all installed Superpowers Skills through the upstream
+  `skills-lock.json`, enforce content-drift checks, and remove only
+  Rainy-owned paths and lock entries during uninstall.
+- Added `--skills-version`, `--superpowers-version`, and
+  `RAINY_SKILLS_BIN`, with backward-compatible profile normalization.
+
+### Tests
+
+- Added installation-failure, dynamic discovery, upstream drift, legacy
+  recovery, and selective uninstall E2E coverage.
+- Verified the pinned installers against real Comet, OpenSpec, and all 14
+  Superpowers v5.1.0 Skills.
+
+## [0.3.8] - 2026-07-23
+
+### Fixed
+
+- Aligned Codex Comet and OpenSpec discovery with upstream project-scoped
+  `.agents/skills` and `.codex/skills` output paths.
+- Made interrupted Skill initialization retryable without requiring `--force`.
+
 ## [0.3.7] - 2026-07-23
 
 ### Added

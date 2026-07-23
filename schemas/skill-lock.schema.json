@@ -40,6 +40,26 @@
       },
       "additionalProperties": false
     },
+    "skills": {
+      "type": "object",
+      "required": ["package", "version", "runner"],
+      "properties": {
+        "package": { "const": "skills" },
+        "version": { "type": "string", "minLength": 1 },
+        "runner": { "enum": ["npx", "custom"] }
+      },
+      "additionalProperties": false
+    },
+    "superpowers": {
+      "type": "object",
+      "required": ["package", "version", "runner"],
+      "properties": {
+        "package": { "const": "obra/superpowers" },
+        "version": { "type": "string", "minLength": 1 },
+        "runner": { "const": "skills" }
+      },
+      "additionalProperties": false
+    },
     "managedSkills": {
       "type": "array",
       "items": {
@@ -67,7 +87,7 @@
             "minItems": 1,
             "items": { "type": "string", "minLength": 1 }
           },
-          "managedBy": { "enum": ["comet", "external"] },
+          "managedBy": { "enum": ["comet", "rainy", "external"] },
           "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
         },
         "additionalProperties": false
@@ -79,5 +99,14 @@
     },
     "installedAt": { "type": "string", "format": "date-time" }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "profile": { "const": "comet" } },
+        "required": ["profile"]
+      },
+      "then": { "required": ["comet", "skills", "superpowers"] }
+    }
+  ],
   "additionalProperties": false
 }

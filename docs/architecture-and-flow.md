@@ -32,7 +32,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 `config.rs` 负责 `rainy.yaml` 和 `capability.lock` 的读写。`rainy.yaml` 描述项目、路径、registry source、policy、verify 配置；`capability.lock` 记录已安装能力、provider、版本、artifacts 和 skills。
 
-`skills.rs` 负责项目级模型 Skill 生命周期。它读取 `rainy-skills.yaml`，安装内嵌的 Rainy Skills，调用固定版本 Comet 的官方 CLI 安装 OpenSpec/Comet，检测可选的独立 Superpowers Skills，生成 `skills.lock`，执行内容摘要和依赖 doctor，并提供 install/status/update/uninstall。核心能力 profile 不启用时不会要求 Node.js。
+`skills.rs` 负责项目级模型 Skill 生命周期。它读取 `rainy-skills.yaml`，安装内嵌的 Rainy Skills，调用固定版本 Comet 的官方 CLI 安装 OpenSpec/Comet，并通过固定版本 `skills` CLI 安装固定版本 Superpowers，生成 `skills.lock`，执行内容摘要和依赖 doctor，并提供 install/status/update/uninstall。核心能力 profile 不启用时不会要求 Node.js。
 
 `registry.rs` 负责加载 capability pack 和 capability definition。当前支持内置 community packs、本地 source、git cache source 和 HTTP registry source，并提供 pack install/update/sign/verify、capability list/explain/graph。内置 community packs 与 JSON schemas 会编译进可执行文件，独立安装后按版本提取到只读运行缓存，不依赖构建机或源码仓库路径。
 
@@ -157,9 +157,9 @@ rainy skill status
 rainy skill doctor
 ```
 
-所有安装、更新和卸载默认只生成 dry-run report，必须显式 `--apply`。Comet 包固定到精确 SemVer，并通过 `npx --package <exact-version>` 运行；OpenSpec/Comet 实际生成的 Skill 路径和内容摘要写入 `skills.lock`，项目中已安装的 Superpowers 也会被检测和记录。Superpowers 由其官方安装器独立管理，缺失时 doctor 给出 warning 和安装命令，不会错误判定 Comet 初始化失败。Rainy 自有 Skill 也记录摘要，发生手工修改时 update/uninstall 会拒绝继续，除非用户审阅后指定 `--force`。
+所有安装、更新和卸载默认只生成 dry-run report，必须显式 `--apply`。Comet、`skills` CLI 和 Superpowers 均固定到精确 SemVer；OpenSpec/Comet/Superpowers 实际生成的 Skill 路径、管理方和内容摘要写入 `skills.lock`。任一必需组件缺失都会阻止成功安装并使 doctor 失败。Rainy 自有 Skill 和 Rainy 管理的上游 Skill 发生手工修改时，update/uninstall 会拒绝继续，除非用户审阅后指定 `--force`。
 
-Comet 初始化前先安装目标宿主下的 `rainy-cli` 和 `rainy-comet`，使上游平台检测能够识别目标。当前支持 Codex、Claude、Cursor、GitHub Copilot、Gemini 和 OpenCode 的项目目录。Codex 检测同时覆盖 Comet 的标准 `.agents/skills` 和兼容 `.codex/skills` 路径。上游初始化完成后，Rainy 使用结构化 YAML 合并 `.comet/config.yaml` 并强制 `auto_transition: false`；Comet 阶段变化不能替代 Rainy apply、原生插件、部署、迁移或 secret 写入审批。
+Comet 初始化前先安装目标宿主下的 `rainy-cli`、`rainy-comet` 和固定版本 Superpowers，使 Comet 检测到 Superpowers 已存在并避免重复安装。当前支持 Codex、Claude、Cursor、GitHub Copilot、Gemini 和 OpenCode 的项目目录。Codex 检测同时覆盖 Comet 的标准 `.agents/skills` 和兼容 `.codex/skills` 路径。上游初始化完成后，Rainy 使用结构化 YAML 合并 `.comet/config.yaml` 并强制 `auto_transition: false`；Comet 阶段变化不能替代 Rainy apply、原生插件、部署、迁移或 secret 写入审批。
 
 `AGENTS.md` 使用 `rainy:context` 管理块更新，保留 Comet block 和用户自定义内容。`rainy skill sync` 对未启用 profile 的旧项目继续保持原有上下文同步行为。
 

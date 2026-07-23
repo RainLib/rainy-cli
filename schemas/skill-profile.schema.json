@@ -40,6 +40,14 @@
         "comet": {
           "type": "string",
           "pattern": "^@rpamis/comet@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "skills": {
+          "type": "string",
+          "pattern": "^skills@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "superpowers": {
+          "type": "string",
+          "pattern": "^obra/superpowers@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
         }
       },
       "additionalProperties": false
@@ -63,7 +71,7 @@
       },
       "then": {
         "properties": {
-          "packages": { "required": ["comet"] }
+          "packages": { "required": ["comet", "skills", "superpowers"] }
         }
       }
     }

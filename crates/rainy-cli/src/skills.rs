@@ -21,6 +21,10 @@ use walkdir::WalkDir;
 const PROFILE_PATH: &str = "rainy-skills.yaml";
 const LOCK_PATH: &str = "skills.lock";
 const COMET_PACKAGE: &str = "@rpamis/comet";
+const SKILLS_PACKAGE: &str = "skills";
+const SUPERPOWERS_PACKAGE: &str = "obra/superpowers";
+const DEFAULT_SKILLS_VERSION: &str = "1.5.20";
+const DEFAULT_SUPERPOWERS_VERSION: &str = "5.1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +44,10 @@ pub struct SkillProfileConfig {
 pub struct SkillPackages {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superpowers: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +71,10 @@ pub struct SkillLock {
     pub rainy_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comet: Option<LockedPackage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<LockedPackage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superpowers: Option<LockedPackage>,
     pub managed_skills: Vec<ManagedSkill>,
     #[serde(default)]
     pub upstream_skills: Vec<UpstreamSkill>,
@@ -177,7 +189,7 @@ fn init(
         if current != desired {
             return Err(RainyError::config(
                 "SKILL_PROFILE_CHANGE_REQUIRES_UNINSTALL",
-                "a different skill profile is already configured; uninstall it before changing profile, language, target, or Comet version",
+                "a different skill profile is already configured; uninstall it before changing profile, language, target, or pinned package versions",
             ));
         }
         let resumable_incomplete_init = apply && !workspace.join(LOCK_PATH).is_file();
@@ -244,9 +256,11 @@ fn install(
 
     let (mut changed_files, output_digest) =
         apply_install(workspace, &profile, args.force, false, progress)?;
-    progress.detail("Building and writing skills.lock");
+    progress.detail("Building and writing the normalized profile and skills.lock");
     let lock = build_lock(workspace, &profile, output_digest)?;
+    write_yaml_atomic(&workspace.join(PROFILE_PATH), &profile)?;
     write_yaml_atomic(&workspace.join(LOCK_PATH), &lock)?;
+    changed_files.push(PROFILE_PATH.to_string());
     changed_files.push(LOCK_PATH.to_string());
     progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
@@ -356,6 +370,16 @@ fn update(
         validate_comet_version(&version)?;
         profile.packages.comet = Some(format!("{COMET_PACKAGE}@{version}"));
     }
+    if let Some(version) = args.skills_version {
+        require_comet_profile(&profile, "--skills-version")?;
+        validate_exact_version("skills CLI", &version)?;
+        profile.packages.skills = Some(format!("{SKILLS_PACKAGE}@{version}"));
+    }
+    if let Some(version) = args.superpowers_version {
+        require_comet_profile(&profile, "--superpowers-version")?;
+        validate_exact_version("Superpowers", &version)?;
+        profile.packages.superpowers = Some(format!("{SUPERPOWERS_PACKAGE}@{version}"));
+    }
     if !apply {
         progress.detail("Building the Skill update preview");
         return Ok(CommandOutput::Skill {
@@ -411,6 +435,7 @@ fn uninstall(
     let lock = load_lock(workspace).ok();
     progress.detail("Checking managed files for local drift");
     validate_managed_skills(workspace, lock.as_ref(), args.force)?;
+    validate_upstream_skills(workspace, lock.as_ref(), args.force)?;
     if lock.is_none() {
         validate_unlocked_rainy_skills(workspace, &profile, args.force)?;
     }
@@ -435,6 +460,23 @@ fn uninstall(
             }
         }
     }
+    if let Some(lock) = &lock {
+        for skill in &lock.upstream_skills {
+            if !matches!(skill.managed_by.as_str(), "comet" | "rainy") {
+                continue;
+            }
+            for relative in &skill.paths {
+                let path = workspace.join(relative);
+                if path.exists() {
+                    std::fs::remove_dir_all(&path)?;
+                    changed_files.push(relative.clone());
+                }
+            }
+        }
+    }
+    if remove_superpowers_local_lock(workspace)? {
+        changed_files.push("skills-lock.json".to_string());
+    }
     for path in [workspace.join(LOCK_PATH), workspace.join(PROFILE_PATH)] {
         if path.exists() {
             std::fs::remove_file(&path)?;
@@ -450,6 +492,8 @@ fn uninstall(
 
 fn profile_from_args(args: &SkillInitArgs) -> RainyResult<SkillProfileConfig> {
     validate_comet_version(&args.comet_version)?;
+    validate_exact_version("skills CLI", &args.skills_version)?;
+    validate_exact_version("Superpowers", &args.superpowers_version)?;
     let profile = profile_name(&args.profile).to_string();
     let mut targets = args
         .target
@@ -473,6 +517,10 @@ fn profile_from_args(args: &SkillInitArgs) -> RainyResult<SkillProfileConfig> {
         targets,
         packages: SkillPackages {
             comet: (profile == "comet").then(|| format!("{COMET_PACKAGE}@{}", args.comet_version)),
+            skills: (profile == "comet")
+                .then(|| format!("{SKILLS_PACKAGE}@{}", args.skills_version)),
+            superpowers: (profile == "comet")
+                .then(|| format!("{SUPERPOWERS_PACKAGE}@{}", args.superpowers_version)),
         },
         policy: SkillPolicy {
             auto_transition: false,
@@ -490,7 +538,17 @@ fn load_profile(workspace: &Path) -> RainyResult<SkillProfileConfig> {
             format!("{PROFILE_PATH} not found; run rainy skill init first"),
         ));
     }
-    let profile: SkillProfileConfig = serde_yaml::from_str(&std::fs::read_to_string(path)?)?;
+    let mut profile: SkillProfileConfig = serde_yaml::from_str(&std::fs::read_to_string(path)?)?;
+    if profile.profile == "comet" {
+        profile
+            .packages
+            .skills
+            .get_or_insert_with(|| format!("{SKILLS_PACKAGE}@{DEFAULT_SKILLS_VERSION}"));
+        profile
+            .packages
+            .superpowers
+            .get_or_insert_with(|| format!("{SUPERPOWERS_PACKAGE}@{DEFAULT_SUPERPOWERS_VERSION}"));
+    }
     validate_profile(&profile)?;
     Ok(profile)
 }
@@ -549,6 +607,8 @@ fn validate_profile(profile: &SkillProfileConfig) -> RainyResult<()> {
                 format!("Comet package must be pinned as {COMET_PACKAGE}@<exact-version>"),
             ));
         }
+        skills_version(profile)?;
+        superpowers_version(profile)?;
     }
     if profile.policy.auto_transition {
         return Err(RainyError::config(
@@ -581,6 +641,26 @@ fn validate_comet_version(version: &str) -> RainyResult<()> {
     Ok(())
 }
 
+fn validate_exact_version(name: &str, version: &str) -> RainyResult<()> {
+    Version::parse(version).map_err(|error| {
+        RainyError::config(
+            "SKILL_PACKAGE_VERSION_INVALID",
+            format!("{name} version must be an exact SemVer value: {error}"),
+        )
+    })?;
+    Ok(())
+}
+
+fn require_comet_profile(profile: &SkillProfileConfig, option: &str) -> RainyResult<()> {
+    if profile.profile != "comet" {
+        return Err(RainyError::config(
+            "SKILL_COMET_OPTION_UNUSED",
+            format!("{option} is only valid for the comet profile"),
+        ));
+    }
+    Ok(())
+}
+
 fn comet_version(profile: &SkillProfileConfig) -> RainyResult<String> {
     let package = profile.packages.comet.as_deref().ok_or_else(|| {
         RainyError::config(
@@ -599,6 +679,50 @@ fn comet_version(profile: &SkillProfileConfig) -> RainyResult<String> {
     Ok(version.to_string())
 }
 
+fn skills_version(profile: &SkillProfileConfig) -> RainyResult<String> {
+    pinned_package_version(
+        profile.packages.skills.as_deref(),
+        SKILLS_PACKAGE,
+        "skills",
+        "SKILL_SKILLS_PACKAGE_REQUIRED",
+        "skills CLI",
+    )
+}
+
+fn superpowers_version(profile: &SkillProfileConfig) -> RainyResult<String> {
+    pinned_package_version(
+        profile.packages.superpowers.as_deref(),
+        SUPERPOWERS_PACKAGE,
+        "superpowers",
+        "SKILL_SUPERPOWERS_PACKAGE_REQUIRED",
+        "Superpowers",
+    )
+}
+
+fn pinned_package_version(
+    package: Option<&str>,
+    expected_package: &str,
+    profile_key: &str,
+    required_code: &str,
+    display_name: &str,
+) -> RainyResult<String> {
+    let package = package.ok_or_else(|| {
+        RainyError::config(
+            required_code,
+            format!("comet profile requires packages.{profile_key}"),
+        )
+    })?;
+    let prefix = format!("{expected_package}@");
+    let version = package.strip_prefix(&prefix).ok_or_else(|| {
+        RainyError::config(
+            "SKILL_PACKAGE_INVALID",
+            format!("{display_name} package must be pinned as {expected_package}@<exact-version>"),
+        )
+    })?;
+    validate_exact_version(display_name, version)?;
+    Ok(version.to_string())
+}
+
 fn apply_install(
     workspace: &Path,
     profile: &SkillProfileConfig,
@@ -613,6 +737,7 @@ fn apply_install(
     }
     let lock = load_lock(workspace).ok();
     validate_managed_skills(workspace, lock.as_ref(), force)?;
+    validate_upstream_skills(workspace, lock.as_ref(), force)?;
     progress.detail("Installing bundled Rainy Skills for selected agent hosts");
     let mut changed_files = install_rainy_skills(workspace, profile, lock.as_ref(), force)?;
 
@@ -622,16 +747,39 @@ fn apply_install(
         } else {
             CometAction::Install
         };
+        let early_superpowers_digest = if matches!(action, CometAction::Install) {
+            progress.detail("Installing Rainy's pinned Superpowers Skill library");
+            Some(run_superpowers(workspace, profile)?)
+        } else {
+            None
+        };
         progress.detail(if overwrite_upstream {
             "Running the pinned upstream Comet updater"
         } else {
             "Running the pinned upstream Comet installer"
         });
-        let digest = run_comet(workspace, profile, action)?;
+        let comet_digest = run_comet(workspace, profile, action)?;
         progress.detail("Applying Rainy's safe Comet policy configuration");
         configure_comet(workspace)?;
         changed_files.push(".comet/config.yaml".to_string());
-        Some(digest)
+        let superpowers_digest = if let Some(digest) = early_superpowers_digest {
+            digest
+        } else {
+            progress.detail("Refreshing Rainy's pinned Superpowers Skill library");
+            run_superpowers(workspace, profile)?
+        };
+        for target in &profile.targets {
+            if let Some((_, paths)) = scan_upstream_for_target(workspace, target)?
+                .into_iter()
+                .find(|(name, _)| name == "superpowers")
+            {
+                changed_files.extend(paths.iter().map(|path| relative_string(workspace, path)));
+            }
+        }
+        if workspace.join("skills-lock.json").is_file() {
+            changed_files.push("skills-lock.json".to_string());
+        }
+        Some(combine_digests(&comet_digest, &superpowers_digest))
     } else {
         None
     };
@@ -716,7 +864,7 @@ fn build_lock(
             for (name, paths) in scan_upstream_for_target(workspace, target)? {
                 let digest = paths_digest(&paths)?;
                 let managed_by = if name == "superpowers" {
-                    "external"
+                    "rainy"
                 } else {
                     "comet"
                 };
@@ -752,6 +900,28 @@ fn build_lock(
     } else {
         None
     };
+    let skills = if profile.profile == "comet" {
+        Some(LockedPackage {
+            package: SKILLS_PACKAGE.to_string(),
+            version: skills_version(profile)?,
+            runner: if std::env::var_os("RAINY_SKILLS_BIN").is_some() {
+                "custom".to_string()
+            } else {
+                "npx".to_string()
+            },
+        })
+    } else {
+        None
+    };
+    let superpowers = if profile.profile == "comet" {
+        Some(LockedPackage {
+            package: SUPERPOWERS_PACKAGE.to_string(),
+            version: superpowers_version(profile)?,
+            runner: "skills".to_string(),
+        })
+    } else {
+        None
+    };
     Ok(SkillLock {
         api_version: "rainy.dev/v1".to_string(),
         kind: "SkillLock".to_string(),
@@ -762,6 +932,8 @@ fn build_lock(
         targets: profile.targets.clone(),
         rainy_version: env!("CARGO_PKG_VERSION").to_string(),
         comet,
+        skills,
+        superpowers,
         managed_skills,
         upstream_skills,
         installer_output_digest,
@@ -823,6 +995,25 @@ fn validate_lock(lock: &SkillLock) -> RainyResult<()> {
     if let Some(digest) = &lock.installer_output_digest {
         validate_digest(digest)?;
     }
+    for (locked, expected, name) in [
+        (lock.comet.as_ref(), COMET_PACKAGE, "Comet"),
+        (lock.skills.as_ref(), SKILLS_PACKAGE, "skills CLI"),
+        (
+            lock.superpowers.as_ref(),
+            SUPERPOWERS_PACKAGE,
+            "Superpowers",
+        ),
+    ] {
+        if let Some(locked) = locked {
+            if locked.package != expected {
+                return Err(RainyError::config(
+                    "SKILL_LOCK_PACKAGE_INVALID",
+                    format!("locked {name} package must be {expected}"),
+                ));
+            }
+            validate_exact_version(name, &locked.version)?;
+        }
+    }
     Ok(())
 }
 
@@ -878,6 +1069,39 @@ fn validate_managed_skills(
                 format!(
                     "{} was modified after installation; review it and rerun with --force to overwrite or remove it",
                     skill.path
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_upstream_skills(
+    workspace: &Path,
+    lock: Option<&SkillLock>,
+    force: bool,
+) -> RainyResult<()> {
+    let Some(lock) = lock else {
+        return Ok(());
+    };
+    for skill in &lock.upstream_skills {
+        if !matches!(skill.managed_by.as_str(), "comet" | "rainy") {
+            continue;
+        }
+        let paths = skill
+            .paths
+            .iter()
+            .map(|path| workspace.join(path))
+            .collect::<Vec<_>>();
+        if paths.iter().any(|path| !path.is_dir()) {
+            continue;
+        }
+        if paths_digest(&paths)? != skill.digest && !force {
+            return Err(RainyError::config(
+                "SKILL_UPSTREAM_FILES_MODIFIED",
+                format!(
+                    "{} Skills for {} were modified after installation; review them and rerun with --force to overwrite or remove them",
+                    skill.name, skill.target
                 ),
             ));
         }
@@ -945,6 +1169,7 @@ fn inspect(
         if lock.profile != profile.profile
             || lock.language != profile.language
             || lock.targets != profile.targets
+            || !locked_packages_match(lock, profile)?
         {
             checks.push(fail(
                 "lock.profile",
@@ -1002,7 +1227,6 @@ fn inspect(
             }
         }
     }
-
     if profile.profile == "comet" {
         for target in &profile.targets {
             let found = scan_upstream_for_target(workspace, target)?;
@@ -1010,7 +1234,7 @@ fn inspect(
                 .iter()
                 .map(|(name, _)| name.as_str())
                 .collect::<BTreeSet<_>>();
-            for name in ["comet", "openspec"] {
+            for name in ["comet", "openspec", "superpowers"] {
                 if names.contains(name) {
                     checks.push(pass(
                         format!("upstream.{target}.{name}"),
@@ -1023,26 +1247,37 @@ fn inspect(
                     ));
                 }
             }
-            if names.contains("superpowers") {
-                checks.push(pass(
-                    format!("upstream.{target}.superpowers"),
-                    format!("superpowers skills are installed for {target}"),
-                ));
-            } else {
-                checks.push(warn(
-                    format!("upstream.{target}.superpowers"),
-                    format!(
-                        "superpowers skills are optional and not installed for {target}; install them separately with `npx skills add obra/superpowers -y --agent {target}`"
-                    ),
-                ));
-            }
         }
         checks.push(check_comet_policy(workspace)?);
     }
     Ok(checks)
 }
 
-fn scan_upstream(root: &Path) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
+fn locked_packages_match(lock: &SkillLock, profile: &SkillProfileConfig) -> RainyResult<bool> {
+    if profile.profile != "comet" {
+        return Ok(lock.comet.is_none() && lock.skills.is_none() && lock.superpowers.is_none());
+    }
+    let comet_version = comet_version(profile)?;
+    let skills_version = skills_version(profile)?;
+    let superpowers_version = superpowers_version(profile)?;
+    Ok(lock
+        .comet
+        .as_ref()
+        .is_some_and(|package| package.version == comet_version)
+        && lock
+            .skills
+            .as_ref()
+            .is_some_and(|package| package.version == skills_version)
+        && lock
+            .superpowers
+            .as_ref()
+            .is_some_and(|package| package.version == superpowers_version))
+}
+
+fn scan_upstream(
+    root: &Path,
+    superpowers_names: &BTreeSet<String>,
+) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
     if !root.is_dir() {
         return Ok(Vec::new());
     }
@@ -1059,20 +1294,25 @@ fn scan_upstream(root: &Path) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
             comet.push(entry.path());
         } else if name.starts_with("openspec-") {
             openspec.push(entry.path());
-        } else if matches!(
-            name.as_str(),
-            "using-superpowers"
-                | "brainstorming"
-                | "writing-plans"
-                | "test-driven-development"
-                | "systematic-debugging"
-                | "subagent-driven-development"
-                | "verification-before-completion"
-                | "requesting-code-review"
-                | "receiving-code-review"
-                | "executing-plans"
-                | "finishing-a-development-branch"
-        ) {
+        } else if superpowers_names.contains(&name)
+            || matches!(
+                name.as_str(),
+                "using-superpowers"
+                    | "brainstorming"
+                    | "dispatching-parallel-agents"
+                    | "writing-plans"
+                    | "writing-skills"
+                    | "test-driven-development"
+                    | "systematic-debugging"
+                    | "subagent-driven-development"
+                    | "verification-before-completion"
+                    | "requesting-code-review"
+                    | "receiving-code-review"
+                    | "executing-plans"
+                    | "using-git-worktrees"
+                    | "finishing-a-development-branch"
+            )
+        {
             superpowers.push(entry.path());
         }
     }
@@ -1097,8 +1337,9 @@ fn scan_upstream_for_target(
     target: &str,
 ) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
     let mut found = BTreeMap::<String, Vec<PathBuf>>::new();
+    let superpowers_names = locked_superpowers_names(workspace)?;
     for root in upstream_roots(workspace, target)? {
-        for (name, paths) in scan_upstream(&root)? {
+        for (name, paths) in scan_upstream(&root, &superpowers_names)? {
             found.entry(name).or_default().extend(paths);
         }
     }
@@ -1109,12 +1350,56 @@ fn scan_upstream_for_target(
     Ok(found.into_iter().collect())
 }
 
+fn locked_superpowers_names(workspace: &Path) -> RainyResult<BTreeSet<String>> {
+    let path = workspace.join("skills-lock.json");
+    if !path.is_file() {
+        return Ok(BTreeSet::new());
+    }
+    let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    let Some(skills) = root.get("skills").and_then(serde_json::Value::as_object) else {
+        return Ok(BTreeSet::new());
+    };
+    Ok(skills
+        .iter()
+        .filter(|(_, value)| is_superpowers_lock_entry(value))
+        .map(|(name, _)| name.clone())
+        .collect())
+}
+
+fn is_superpowers_lock_entry(value: &serde_json::Value) -> bool {
+    ["source", "sourceUrl"]
+        .iter()
+        .filter_map(|key| value.get(key).and_then(serde_json::Value::as_str))
+        .any(|source| source.contains("obra/superpowers"))
+}
+
+fn remove_superpowers_local_lock(workspace: &Path) -> RainyResult<bool> {
+    let path = workspace.join("skills-lock.json");
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let mut root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let Some(skills) = root
+        .get_mut("skills")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(false);
+    };
+    let before = skills.len();
+    skills.retain(|_, value| !is_superpowers_lock_entry(value));
+    if skills.len() == before {
+        return Ok(false);
+    }
+    write_json_atomic(&path, &root)?;
+    Ok(true)
+}
+
 fn assert_required_upstream(
     profile: &SkillProfileConfig,
     upstream: &[UpstreamSkill],
 ) -> RainyResult<()> {
     for target in &profile.targets {
-        for name in ["comet", "openspec"] {
+        for name in ["comet", "openspec", "superpowers"] {
             if !upstream
                 .iter()
                 .any(|skill| skill.target == *target && skill.name == name)
@@ -1122,7 +1407,7 @@ fn assert_required_upstream(
                 return Err(RainyError::config(
                     "SKILL_UPSTREAM_INCOMPLETE",
                     format!(
-                        "Comet completed but did not install {name} skills for {target}; run rainy skill doctor and inspect Comet platform detection"
+                        "the managed installer completed but did not install {name} skills for {target}; run rainy skill doctor and retry with rainy skill install --apply"
                     ),
                 ));
             }
@@ -1176,6 +1461,102 @@ fn run_comet(
     hasher.update(&output.stdout);
     hasher.update(&output.stderr);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn run_superpowers(workspace: &Path, profile: &SkillProfileConfig) -> RainyResult<String> {
+    let (program, prefix) = skills_program(profile)?;
+    let mut command = Command::new(program);
+    command.args(prefix);
+    command.args(superpowers_args(profile)?);
+    command.current_dir(workspace);
+    let output = command.output().map_err(|error| {
+        RainyError::config(
+            "SKILL_SUPERPOWERS_EXEC_FAILED",
+            format!("failed to start the Superpowers installer: {error}"),
+        )
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(RainyError::config(
+            "SKILL_SUPERPOWERS_FAILED",
+            format!(
+                "Superpowers installer exited with {}: {}{}",
+                output.status,
+                truncate(stderr.trim(), 3000),
+                if stdout.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("; stdout: {}", truncate(stdout.trim(), 1000))
+                }
+            ),
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&output.stdout);
+    hasher.update(&output.stderr);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn skills_program(profile: &SkillProfileConfig) -> RainyResult<(OsString, Vec<OsString>)> {
+    if let Some(path) = std::env::var_os("RAINY_SKILLS_BIN") {
+        return Ok((path, Vec::new()));
+    }
+    let package = profile.packages.skills.as_deref().ok_or_else(|| {
+        RainyError::config(
+            "SKILL_SKILLS_PACKAGE_REQUIRED",
+            "comet profile requires packages.skills",
+        )
+    })?;
+    let executable = if cfg!(windows) { "npx.cmd" } else { "npx" };
+    Ok((
+        OsString::from(executable),
+        vec![
+            OsString::from("--yes"),
+            OsString::from("--package"),
+            OsString::from(package),
+            OsString::from("skills"),
+        ],
+    ))
+}
+
+fn superpowers_args(profile: &SkillProfileConfig) -> RainyResult<Vec<OsString>> {
+    let version = superpowers_version(profile)?;
+    let mut args = vec![
+        OsString::from("add"),
+        OsString::from(format!(
+            "https://github.com/{SUPERPOWERS_PACKAGE}/tree/v{version}/skills"
+        )),
+        OsString::from("--yes"),
+        OsString::from("--copy"),
+    ];
+    for target in &profile.targets {
+        args.push(OsString::from("--agent"));
+        args.push(OsString::from(skills_agent_name(target)?));
+    }
+    Ok(args)
+}
+
+fn skills_agent_name(target: &str) -> RainyResult<&'static str> {
+    match target {
+        "codex" => Ok("codex"),
+        "claude" => Ok("claude-code"),
+        "cursor" => Ok("cursor"),
+        "github-copilot" => Ok("github-copilot"),
+        "gemini" => Ok("gemini-cli"),
+        "opencode" => Ok("opencode"),
+        _ => Err(RainyError::config(
+            "SKILL_TARGET_UNSUPPORTED",
+            format!("unsupported skill target: {target}"),
+        )),
+    }
+}
+
+fn combine_digests(left: &str, right: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(left.as_bytes());
+    hasher.update(right.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn comet_program(profile: &SkillProfileConfig) -> RainyResult<(OsString, Vec<OsString>)> {
@@ -1284,7 +1665,37 @@ fn comet_display(profile: &SkillProfileConfig, action: CometAction) -> Vec<Strin
         .into_iter()
         .map(str::to_string),
     );
+    if !matches!(action, CometAction::Uninstall)
+        && let Ok(mut superpowers) = superpowers_display(profile)
+    {
+        values.push("&&".to_string());
+        values.append(&mut superpowers);
+    }
     values
+}
+
+fn superpowers_display(profile: &SkillProfileConfig) -> RainyResult<Vec<String>> {
+    let program = std::env::var("RAINY_SKILLS_BIN").unwrap_or_else(|_| "npx".to_string());
+    let mut values = vec![program];
+    if std::env::var_os("RAINY_SKILLS_BIN").is_none() {
+        values.extend([
+            "--yes".to_string(),
+            "--package".to_string(),
+            profile.packages.skills.clone().ok_or_else(|| {
+                RainyError::config(
+                    "SKILL_SKILLS_PACKAGE_REQUIRED",
+                    "comet profile requires packages.skills",
+                )
+            })?,
+            "skills".to_string(),
+        ]);
+    }
+    values.extend(
+        superpowers_args(profile)?
+            .into_iter()
+            .map(|value| value.to_string_lossy().to_string()),
+    );
+    Ok(values)
 }
 
 fn check_comet_prerequisites() -> RainyResult<()> {
@@ -1304,11 +1715,19 @@ fn check_comet_prerequisites() -> RainyResult<()> {
 }
 
 fn comet_prerequisite_checks() -> Vec<SkillCheck> {
-    if std::env::var_os("RAINY_COMET_BIN").is_some() {
-        return vec![pass(
-            "comet.runner",
-            "using the command configured by RAINY_COMET_BIN",
-        )];
+    let custom_comet = std::env::var_os("RAINY_COMET_BIN").is_some();
+    let custom_skills = std::env::var_os("RAINY_SKILLS_BIN").is_some();
+    if custom_comet && custom_skills {
+        return vec![
+            pass(
+                "comet.runner",
+                "using the command configured by RAINY_COMET_BIN",
+            ),
+            pass(
+                "superpowers.runner",
+                "using the command configured by RAINY_SKILLS_BIN",
+            ),
+        ];
     }
     let mut checks = Vec::new();
     match command_version("node") {
@@ -1331,7 +1750,22 @@ fn comet_prerequisite_checks() -> Vec<SkillCheck> {
         }
         Err(message) => checks.push(fail("prerequisite.node", message)),
     }
+    if custom_comet {
+        checks.push(pass(
+            "comet.runner",
+            "using the command configured by RAINY_COMET_BIN",
+        ));
+    }
+    if custom_skills {
+        checks.push(pass(
+            "superpowers.runner",
+            "using the command configured by RAINY_SKILLS_BIN",
+        ));
+    }
     for command in ["npx", "git"] {
+        if command == "npx" && custom_comet && custom_skills {
+            continue;
+        }
         match command_version(command) {
             Ok(version) => checks.push(pass(
                 format!("prerequisite.{command}"),
@@ -1565,6 +1999,7 @@ fn init_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> 
         command.push("--comet-version".to_string());
         command.push(version.to_string());
     }
+    append_upstream_version_flags(&mut command, profile);
     append_apply_flags(&mut command, force);
     command
 }
@@ -1581,8 +2016,24 @@ fn update_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String
         command.push("--comet-version".to_string());
         command.push(version.to_string());
     }
+    append_upstream_version_flags(&mut command, profile);
     append_apply_flags(&mut command, force);
     command
+}
+
+fn append_upstream_version_flags(command: &mut Vec<String>, profile: &SkillProfileConfig) {
+    if let Some(package) = &profile.packages.skills
+        && let Some(version) = package.strip_prefix(&format!("{SKILLS_PACKAGE}@"))
+    {
+        command.push("--skills-version".to_string());
+        command.push(version.to_string());
+    }
+    if let Some(package) = &profile.packages.superpowers
+        && let Some(version) = package.strip_prefix(&format!("{SUPERPOWERS_PACKAGE}@"))
+    {
+        command.push("--superpowers-version".to_string());
+        command.push(version.to_string());
+    }
 }
 
 fn change_apply_command(operation: &str, force: bool) -> Vec<String> {
@@ -1618,16 +2069,18 @@ fn fail(id: impl Into<String>, message: impl Into<String>) -> SkillCheck {
     }
 }
 
-fn warn(id: impl Into<String>, message: impl Into<String>) -> SkillCheck {
-    SkillCheck {
-        id: id.into(),
-        status: "warn".to_string(),
-        message: message.into(),
-    }
-}
-
 fn write_yaml_atomic(path: &Path, value: &impl Serialize) -> RainyResult<()> {
     let content = serde_yaml::to_string(value)?;
+    write_text_atomic(path, &content)
+}
+
+fn write_json_atomic(path: &Path, value: &impl Serialize) -> RainyResult<()> {
+    let mut content = serde_json::to_string_pretty(value)?;
+    content.push('\n');
+    write_text_atomic(path, &content)
+}
+
+fn write_text_atomic(path: &Path, content: &str) -> RainyResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

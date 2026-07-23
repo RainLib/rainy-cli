@@ -436,6 +436,25 @@ printf '%s\n' '{"status":"ok"}'
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_comet, permissions).expect("permissions");
     let fake_path = fake_comet.to_string_lossy().to_string();
+    let fake_skills = temp.path().join("fake-skills");
+    fs::write(
+        &fake_skills,
+        r##"#!/bin/sh
+set -eu
+for name in using-superpowers brainstorming custom-superpower; do
+  rm -rf "$PWD/.agents/skills/$name"
+  mkdir -p "$PWD/.agents/skills/$name"
+  printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$PWD/.agents/skills/$name/SKILL.md"
+done
+printf '%s\n' '{"version":1,"skills":{"using-superpowers":{"source":"https://github.com/obra/superpowers/tree/v5.1.0/skills"},"brainstorming":{"source":"https://github.com/obra/superpowers/tree/v5.1.0/skills"},"custom-superpower":{"source":"https://github.com/obra/superpowers/tree/v5.1.0/skills"},"unrelated":{"source":"https://github.com/example/other"}}}' > "$PWD/skills-lock.json"
+printf '%s\n' '{"status":"ok"}'
+"##,
+    )
+    .expect("fake skills");
+    let mut permissions = fs::metadata(&fake_skills).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_skills, permissions).expect("permissions");
+    let fake_skills_path = fake_skills.to_string_lossy().to_string();
 
     let preview = run(&[
         "--workspace",
@@ -471,7 +490,10 @@ printf '%s\n' '{"status":"ok"}'
             "--apply",
             "--json",
         ],
-        &[("RAINY_COMET_BIN", &fake_path)],
+        &[
+            ("RAINY_COMET_BIN", &fake_path),
+            ("RAINY_SKILLS_BIN", &fake_skills_path),
+        ],
     );
     for path in [
         ".codex/skills/rainy-cli/SKILL.md",
@@ -479,6 +501,9 @@ printf '%s\n' '{"status":"ok"}'
         ".agents/skills/comet/SKILL.md",
         ".agents/skills/comet-open/SKILL.md",
         ".codex/skills/openspec-propose/SKILL.md",
+        ".agents/skills/using-superpowers/SKILL.md",
+        ".agents/skills/brainstorming/SKILL.md",
+        ".agents/skills/custom-superpower/SKILL.md",
         ".comet/config.yaml",
     ] {
         assert!(app.join(path).is_file(), "missing {path}");
@@ -489,16 +514,24 @@ printf '%s\n' '{"status":"ok"}'
     assert!(lock.contains("version: 0.4.0-beta.6"));
     assert!(lock.contains("name: openspec"));
     assert!(lock.contains(".agents/skills/comet"));
-    assert!(!lock.contains("name: superpowers"));
+    assert!(lock.contains("name: superpowers"));
+    assert!(lock.contains("managedBy: rainy"));
+    assert!(lock.contains(".agents/skills/custom-superpower"));
+    let profile = fs::read_to_string(app.join("rainy-skills.yaml")).expect("skills profile");
+    assert!(profile.contains("skills: skills@1.5.20"));
+    assert!(profile.contains("superpowers: obra/superpowers@5.1.0"));
 
     let doctor = run_with_env(
         &["--workspace", &app_path, "skill", "doctor", "--json"],
-        &[("RAINY_COMET_BIN", &fake_path)],
+        &[
+            ("RAINY_COMET_BIN", &fake_path),
+            ("RAINY_SKILLS_BIN", &fake_skills_path),
+        ],
     );
     let doctor = String::from_utf8_lossy(&doctor.stdout);
     assert!(doctor.contains("\"status\": \"passed\""));
-    assert!(doctor.contains("\"status\": \"warn\""));
-    assert!(doctor.contains("superpowers skills are optional"));
+    assert!(!doctor.contains("\"status\": \"warn\""));
+    assert!(doctor.contains("superpowers skills are installed"));
 
     fs::write(
         app.join(".codex/skills/rainy-comet/local-edit.txt"),
@@ -515,6 +548,7 @@ printf '%s\n' '{"status":"ok"}'
             "--json",
         ])
         .env("RAINY_COMET_BIN", &fake_path)
+        .env("RAINY_SKILLS_BIN", &fake_skills_path)
         .output()
         .expect("run drifted update");
     assert!(!rejected.status.success());
@@ -532,10 +566,34 @@ printf '%s\n' '{"status":"ok"}'
             "--force",
             "--json",
         ],
-        &[("RAINY_COMET_BIN", &fake_path)],
+        &[
+            ("RAINY_COMET_BIN", &fake_path),
+            ("RAINY_SKILLS_BIN", &fake_skills_path),
+        ],
     );
     let updated_lock = fs::read_to_string(app.join("skills.lock")).expect("updated lock");
     assert!(updated_lock.contains("version: 0.4.0-beta.7"));
+
+    fs::write(
+        app.join(".agents/skills/using-superpowers/local-edit.txt"),
+        "modified\n",
+    )
+    .expect("modify upstream skill");
+    let rejected = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "skill",
+            "update",
+            "--apply",
+            "--json",
+        ])
+        .env("RAINY_COMET_BIN", &fake_path)
+        .env("RAINY_SKILLS_BIN", &fake_skills_path)
+        .output()
+        .expect("run upstream-drifted update");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("SKILL_UPSTREAM_FILES_MODIFIED"));
 
     run_with_env(
         &[
@@ -544,12 +602,22 @@ printf '%s\n' '{"status":"ok"}'
             "skill",
             "uninstall",
             "--apply",
+            "--force",
             "--json",
         ],
-        &[("RAINY_COMET_BIN", &fake_path)],
+        &[
+            ("RAINY_COMET_BIN", &fake_path),
+            ("RAINY_SKILLS_BIN", &fake_skills_path),
+        ],
     );
     assert!(!app.join(".codex/skills/rainy-comet").exists());
     assert!(!app.join(".agents/skills/comet").exists());
+    assert!(!app.join(".agents/skills/using-superpowers").exists());
+    assert!(!app.join(".agents/skills/brainstorming").exists());
+    assert!(!app.join(".agents/skills/custom-superpower").exists());
+    let upstream_lock = fs::read_to_string(app.join("skills-lock.json")).expect("upstream lock");
+    assert!(upstream_lock.contains("unrelated"));
+    assert!(!upstream_lock.contains("using-superpowers"));
     assert!(!app.join("rainy-skills.yaml").exists());
 }
 
@@ -579,6 +647,22 @@ printf '%s\n' '{"status":"ok"}'
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_comet, permissions).expect("permissions");
     let fake_path = fake_comet.to_string_lossy().to_string();
+    let fake_skills = temp.path().join("fake-skills-retry");
+    fs::write(
+        &fake_skills,
+        r##"#!/bin/sh
+set -eu
+mkdir -p "$PWD/.agents/skills/using-superpowers"
+printf '%s\n' '---' 'name: using-superpowers' 'description: test' '---' > "$PWD/.agents/skills/using-superpowers/SKILL.md"
+printf '%s\n' '{"version":1,"skills":{"using-superpowers":{"source":"https://github.com/obra/superpowers/tree/v5.1.0/skills"}}}' > "$PWD/skills-lock.json"
+printf '%s\n' '{"status":"ok"}'
+"##,
+    )
+    .expect("fake skills");
+    let mut permissions = fs::metadata(&fake_skills).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_skills, permissions).expect("permissions");
+    let fake_skills_path = fake_skills.to_string_lossy().to_string();
 
     let failed = rainy()
         .args([
@@ -596,6 +680,7 @@ printf '%s\n' '{"status":"ok"}'
             "--json",
         ])
         .env("RAINY_COMET_BIN", &fake_path)
+        .env("RAINY_SKILLS_BIN", &fake_skills_path)
         .output()
         .expect("run incomplete init");
     assert!(!failed.status.success());
@@ -652,10 +737,62 @@ printf '%s\n' '{"status":"ok"}'
             "--apply",
             "--json",
         ],
-        &[("RAINY_COMET_BIN", &fake_path)],
+        &[
+            ("RAINY_COMET_BIN", &fake_path),
+            ("RAINY_SKILLS_BIN", &fake_skills_path),
+        ],
     );
     assert!(app.join("rainy-skills.yaml").is_file());
     assert!(app.join("skills.lock").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn comet_skill_init_rejects_superpowers_installer_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "superpowers-failure-app"]);
+    let app = temp.path().join("superpowers-failure-app");
+    let app_path = app.to_string_lossy().to_string();
+    let comet_marker = temp.path().join("comet-ran");
+    let fake_comet = temp.path().join("fake-comet-not-expected");
+    fs::write(
+        &fake_comet,
+        format!("#!/bin/sh\ntouch '{}'\n", comet_marker.display()),
+    )
+    .expect("fake comet");
+    let fake_skills = temp.path().join("fake-skills-failure");
+    fs::write(
+        &fake_skills,
+        "#!/bin/sh\necho 'network unavailable' >&2\nexit 17\n",
+    )
+    .expect("fake skills failure");
+    for path in [&fake_comet, &fake_skills] {
+        let mut permissions = fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("permissions");
+    }
+
+    let failed = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "skill",
+            "init",
+            "--apply",
+            "--json",
+        ])
+        .env("RAINY_COMET_BIN", &fake_comet)
+        .env("RAINY_SKILLS_BIN", &fake_skills)
+        .output()
+        .expect("run failed Superpowers install");
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("SKILL_SUPERPOWERS_FAILED"));
+    assert!(!comet_marker.exists());
+    assert!(!app.join("rainy-skills.yaml").exists());
+    assert!(!app.join("skills.lock").exists());
 }
 
 #[cfg(unix)]

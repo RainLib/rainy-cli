@@ -558,7 +558,7 @@ pub enum AgentSubcommand {
 #[derive(Debug, Args)]
 #[command(
     about = "Manage project-scoped AI agent skills",
-    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts.\n\nThe default profile is comet, which installs Rainy, OpenSpec, and Comet and detects an optional independently installed Superpowers library. Mutating commands preview changes by default and write files only when --apply or --yes is supplied.",
+    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts.\n\nThe default profile is comet, which installs and locks Rainy, OpenSpec, Superpowers, and Comet. Mutating commands preview changes by default and write files only when --apply or --yes is supplied.",
     after_help = "QUICK START:\n  Preview the default Comet profile:\n    rainy skill init\n\n  Apply the previewed profile:\n    rainy skill init --apply\n\n  Install only the Rainy Skill (no Node.js required):\n    rainy skill init --profile rainy --apply\n\n  Check an installed profile:\n    rainy skill status\n    rainy skill doctor\n\nRun 'rainy skill <COMMAND> --help' for command-specific examples."
 )]
 pub struct SkillCommand {
@@ -600,8 +600,8 @@ pub enum SkillSubcommand {
     Doctor,
     #[command(
         about = "Update the configured Skill profile",
-        long_about = "Refresh Rainy-managed Skills and update the pinned Comet package when --comet-version is supplied.\n\nThe command previews changes by default. Use --apply or --yes to write files. Comet versions must be exact semantic versions.",
-        after_help = "EXAMPLES:\n  Preview an update using the configured versions:\n    rainy skill update\n\n  Preview a pinned Comet update:\n    rainy skill update --comet-version 0.4.0-beta.6\n\n  Apply the pinned update:\n    rainy skill update --comet-version 0.4.0-beta.6 --apply"
+        long_about = "Refresh Rainy-managed Skills and optionally update the pinned Comet, skills CLI, or Superpowers versions.\n\nThe command previews changes by default. Use --apply or --yes to write files. Package versions must be exact semantic versions.",
+        after_help = "EXAMPLES:\n  Preview an update using the configured versions:\n    rainy skill update\n\n  Preview a pinned Comet update:\n    rainy skill update --comet-version 0.4.0-beta.6\n\n  Apply a pinned Superpowers update:\n    rainy skill update --superpowers-version 5.1.0 --apply\n\n  Update all managed upstream versions:\n    rainy skill update --comet-version 0.4.0-beta.6 --skills-version 1.5.20 --superpowers-version 5.1.0 --apply"
     )]
     Update(SkillUpdateArgs),
     #[command(
@@ -636,8 +636,8 @@ pub enum SkillTarget {
 
 #[derive(Debug, Args)]
 pub struct SkillInitArgs {
-    /// Skill bundle to manage: comet installs Rainy, OpenSpec, and Comet and detects optional
-    /// Superpowers Skills; rainy installs only the Rainy Skill.
+    /// Skill bundle to manage: comet installs and manages Rainy, OpenSpec, Superpowers, and
+    /// Comet; rainy installs only the Rainy Skill.
     #[arg(long, value_enum, value_name = "PROFILE", default_value = "comet")]
     pub profile: SkillProfile,
 
@@ -658,6 +658,14 @@ pub struct SkillInitArgs {
     /// Exact Comet package version used by the comet profile.
     #[arg(long, value_name = "VERSION", default_value = "0.4.0-beta.6")]
     pub comet_version: String,
+
+    /// Exact npm skills CLI version used to install Superpowers.
+    #[arg(long, value_name = "VERSION", default_value = "1.5.20")]
+    pub skills_version: String,
+
+    /// Exact Superpowers release version installed by the comet profile.
+    #[arg(long, value_name = "VERSION", default_value = "5.1.0")]
+    pub superpowers_version: String,
 
     /// Preview managed paths without writing files (this is the default mode).
     #[arg(long)]
@@ -692,6 +700,14 @@ pub struct SkillUpdateArgs {
     /// New exact Comet version; valid only for the comet profile.
     #[arg(long, value_name = "VERSION")]
     pub comet_version: Option<String>,
+
+    /// New exact npm skills CLI version; valid only for the comet profile.
+    #[arg(long, value_name = "VERSION")]
+    pub skills_version: Option<String>,
+
+    /// New exact Superpowers release version; valid only for the comet profile.
+    #[arg(long, value_name = "VERSION")]
+    pub superpowers_version: Option<String>,
 
     /// Preview managed paths without writing files (this is the default mode).
     #[arg(long)]
