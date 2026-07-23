@@ -4,6 +4,19 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-23
+
+### Changed
+
+- Added purpose descriptions to every top-level command and subcommand.
+- Added command-specific examples, business-oriented value placeholders, and
+  top-level guidance for required and optional CLI syntax.
+
+### Tests
+
+- Added regression coverage that renders every command group's help and every
+  leaf command's examples.
+
 ## [0.3.5] - 2026-07-23
 
 ### Fixed

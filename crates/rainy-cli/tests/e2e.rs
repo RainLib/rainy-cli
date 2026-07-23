@@ -12,6 +12,98 @@ use tempfile::TempDir;
 static HTTP_PLUGIN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples() {
+    let help = String::from_utf8(run(&["--help"]).stdout).expect("top-level help");
+    assert!(help.contains("Arguments shown as <VALUE> are required values"));
+    assert!(help.contains("init         Initialize a Rainy application"));
+    assert!(help.contains("self         Check, install, or skip Rainy CLI updates"));
+    assert!(help.contains("--workspace <PROJECT_DIR>"));
+    assert!(help.contains("QUICK START:"));
+
+    let groups: &[&[&str]] = &[
+        &["init"],
+        &["add"],
+        &["capability"],
+        &["pack"],
+        &["evidence"],
+        &["plugin"],
+        &["agent"],
+        &["skill"],
+        &["conformance"],
+        &["schema"],
+        &["self"],
+    ];
+    for path in groups {
+        let mut args = path.to_vec();
+        args.push("--help");
+        let help = String::from_utf8(run(&args).stdout).expect("command group help");
+        assert!(
+            help.contains("EXAMPLES:") || help.contains("QUICK START:"),
+            "missing examples for rainy {}",
+            path.join(" ")
+        );
+    }
+
+    let leaves: &[&[&str]] = &[
+        &["init", "app"],
+        &["new"],
+        &["add", "capability"],
+        &["apply"],
+        &["capability", "list"],
+        &["capability", "explain"],
+        &["capability", "graph"],
+        &["capability", "installed"],
+        &["capability", "upgrade"],
+        &["capability", "remove"],
+        &["pack", "list"],
+        &["pack", "inspect"],
+        &["pack", "install"],
+        &["pack", "update"],
+        &["pack", "sign"],
+        &["pack", "verify"],
+        &["doctor"],
+        &["verify"],
+        &["evidence", "generate"],
+        &["plugin", "list"],
+        &["plugin", "inspect"],
+        &["plugin", "install"],
+        &["plugin", "call"],
+        &["agent", "init"],
+        &["agent", "context"],
+        &["conformance", "check"],
+        &["schema", "list"],
+        &["schema", "validate"],
+        &["self", "check"],
+        &["self", "update"],
+        &["self", "skip"],
+    ];
+    for path in leaves {
+        let mut args = path.to_vec();
+        args.push("--help");
+        let help = String::from_utf8(run(&args).stdout).expect("leaf command help");
+        let invocation = format!("rainy {}", path.join(" "));
+        assert!(
+            help.contains("EXAMPLES:"),
+            "missing examples for {invocation}"
+        );
+        assert!(
+            help.contains(&invocation),
+            "missing runnable example for {invocation}"
+        );
+    }
+
+    let capability_help =
+        String::from_utf8(run(&["add", "capability", "--help"]).stdout).expect("add help");
+    assert!(capability_help.contains("<CAPABILITY_ID>"));
+    assert!(capability_help.contains("--output-plan <PLAN_FILE>"));
+
+    let self_help =
+        String::from_utf8(run(&["self", "update", "--help"]).stdout).expect("self help");
+    assert!(self_help.contains("--repo <OWNER/REPO>"));
+    assert!(self_help.contains("--version <VERSION>"));
+}
+
+#[test]
 fn skill_help_explains_the_workflow_and_each_subcommand() {
     let help = String::from_utf8(run(&["skill", "--help"]).stdout).expect("skill help");
     assert!(help.contains("Manage a project-scoped AI Skill profile"));
