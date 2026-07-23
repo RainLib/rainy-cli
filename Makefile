@@ -10,6 +10,9 @@ CAPABILITY ?= minio-file-storage
 PROVIDER ?= minio
 PROFILE ?= local
 PLAN ?= plans/$(CAPABILITY).json
+TAG ?=
+DIST ?= dist
+OSS_DEST ?=
 
 .DEFAULT_GOAL := help
 
@@ -44,8 +47,10 @@ help:
 	@printf '%s\n' '  make skill-check        Validate Rainy/Comet Skills and bootstrap installers'
 	@printf '%s\n' '  make installer-check    Syntax-check installer scripts where possible'
 	@printf '%s\n' '  make installer-test     Run installer platform/checksum tests'
+	@printf '%s\n' '  make mirror-test        Test OSS mirror publication ordering'
 	@printf '%s\n' '  make release-input-test Validate release tag/version gates'
 	@printf '%s\n' '  make smoke              JSON smoke commands'
+	@printf '%s\n' '  make oss-publish        Publish DIST to OSS; requires TAG and OSS_DEST'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Demo project:'
 	@printf '%s\n' '  make demo-dry-run       Preview Golden Path project creation'
@@ -125,6 +130,8 @@ skill-check:
 installer-check:
 	sh -n scripts/install.sh
 	sh -n scripts/test-install.sh
+	sh -n scripts/publish-oss.sh
+	sh -n scripts/test-publish-oss.sh
 	sh -n scripts/check-release-version.sh
 	sh -n scripts/test-release.sh
 	$(PYTHON) -m py_compile scripts/test-installer-server.py
@@ -133,6 +140,14 @@ installer-check:
 .PHONY: installer-test
 installer-test:
 	sh scripts/test-install.sh
+
+.PHONY: mirror-test
+mirror-test:
+	sh scripts/test-publish-oss.sh
+
+.PHONY: oss-publish
+oss-publish:
+	RAINY_OSS_DEST="$(OSS_DEST)" sh scripts/publish-oss.sh "$(TAG)" "$(DIST)"
 
 .PHONY: release-input-test
 release-input-test:
@@ -155,7 +170,7 @@ security-check:
 	@if command -v cargo-deny >/dev/null 2>&1; then cargo deny check; else printf '%s\n' 'cargo-deny not found; security workflow installs and runs it'; fi
 
 .PHONY: ci
-ci: fmt-check test clippy schema-check mcp-check skill-check installer-check installer-test release-input-test smoke repo-check
+ci: fmt-check test clippy schema-check mcp-check skill-check installer-check installer-test mirror-test release-input-test smoke repo-check
 
 .PHONY: release-check
 release-check: ci

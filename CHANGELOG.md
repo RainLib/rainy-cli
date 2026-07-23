@@ -4,6 +4,19 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-23
+
+### Fixed
+
+- Unix installers now persist the default install directory in the detected
+  shell profile; Windows installers update both the user and current-process
+  PATH by default. Both paths are idempotent and support an explicit opt-out.
+
+### Added
+
+- Added a static release-mirror protocol using `latest.txt`, configurable
+  mirror URLs for both installers, and an `ossutil` publishing helper for OSS.
+
 ## [0.3.4] - 2026-07-22
 
 ### Fixed

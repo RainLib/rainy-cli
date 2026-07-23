@@ -68,8 +68,10 @@ check_download_install_and_rollback() {
   server_root="$tmp_dir/server"
   release_dir="$server_root/v0.1.1"
   install_dir="$tmp_dir/install"
+  test_home="$tmp_dir/home"
+  shell_profile="$test_home/.zshrc"
   port_file="$tmp_dir/port"
-  mkdir -p "$release_dir" "$tmp_dir/archive"
+  mkdir -p "$release_dir" "$tmp_dir/archive" "$test_home"
 
   write_fake_binary() {
     version="$1"
@@ -81,21 +83,40 @@ check_download_install_and_rollback() {
   }
 
   write_fake_binary 0.1.1
+  printf '%s\n' v0.1.1 >"$server_root/latest.txt"
   python3 "$ROOT_DIR/scripts/test-installer-server.py" "$server_root" "$port_file" 2 &
   server_pid=$!
   while [ ! -s "$port_file" ]; do sleep 0.05; done
-  base_url="http://127.0.0.1:$(cat "$port_file")/v0.1.1"
+  release_base_url="http://127.0.0.1:$(cat "$port_file")"
+  base_url="$release_base_url/v0.1.1"
 
-  RAINY_VERSION=v0.1.1 \
+  HOME="$test_home" \
+    SHELL=/bin/zsh \
+    PATH="$install_dir:$PATH" \
+    RAINY_INSTALLER_OS=Linux \
+    RAINY_INSTALLER_ARCH=x86_64 \
+    RAINY_RELEASE_BASE_URL="$release_base_url" \
+    INSTALL_DIR="$install_dir" \
+    sh "$INSTALLER" >/dev/null
+  [ "$("$install_dir/rainy" --version)" = "rainy 0.1.1" ] || fail "installed binary version was not verified"
+  [ "$(cat "$test_home/.rainy/release-source")" = "$release_base_url" ] || fail "installer did not persist the release mirror"
+  path_line="export PATH='$install_dir':\$PATH"
+  grep -Fqx "$path_line" "$shell_profile" || fail "installer did not persist PATH in .zshrc"
+
+  HOME="$test_home" \
+    SHELL=/bin/zsh \
+    RAINY_VERSION=v0.1.1 \
     RAINY_INSTALLER_OS=Linux \
     RAINY_INSTALLER_ARCH=x86_64 \
     RAINY_INSTALLER_BASE_URL="$base_url" \
     INSTALL_DIR="$install_dir" \
     sh "$INSTALLER" >/dev/null
-  [ "$("$install_dir/rainy" --version)" = "rainy 0.1.1" ] || fail "installed binary version was not verified"
+  [ "$(grep -Fxc "$path_line" "$shell_profile")" -eq 1 ] || fail "installer added duplicate PATH entries"
 
   write_fake_binary 9.9.9
-  if RAINY_VERSION=v0.1.1 \
+  if HOME="$test_home" \
+    SHELL=/bin/zsh \
+    RAINY_VERSION=v0.1.1 \
     RAINY_INSTALLER_OS=Linux \
     RAINY_INSTALLER_ARCH=x86_64 \
     RAINY_INSTALLER_BASE_URL="$base_url" \
@@ -106,7 +127,9 @@ check_download_install_and_rollback() {
   [ "$("$install_dir/rainy" --version)" = "rainy 0.1.1" ] || fail "existing binary was not preserved"
 
   rm -f "$release_dir/rainy-x86_64-unknown-linux-gnu.tar.gz.sha256"
-  if RAINY_VERSION=v0.1.1 \
+  if HOME="$test_home" \
+    SHELL=/bin/zsh \
+    RAINY_VERSION=v0.1.1 \
     RAINY_INSTALLER_OS=Linux \
     RAINY_INSTALLER_ARCH=x86_64 \
     RAINY_INSTALLER_BASE_URL="$base_url" \

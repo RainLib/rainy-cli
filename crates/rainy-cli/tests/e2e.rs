@@ -78,6 +78,37 @@ fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
 }
 
 #[test]
+fn self_check_reuses_the_persisted_release_mirror() {
+    let temp = TempDir::new().expect("tempdir");
+    let server_root = temp.path().join("server");
+    let rainy_home = temp.path().join("rainy-home");
+    write(&server_root.join("latest.txt"), "v9.9.9\n");
+    let release_base = serve_static(server_root, 1);
+    write(&rainy_home.join("release-source"), &release_base);
+
+    let mut command = rainy();
+    let output = command
+        .args(["self", "check", "--json"])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("run mirrored self check");
+    assert!(
+        output.status.success(),
+        "mirrored self check failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("update report JSON");
+    assert_eq!(report["report"]["latestVersion"], "9.9.9");
+    assert!(
+        report["report"]["installCommand"]
+            .as_str()
+            .expect("install command")
+            .contains(&release_base)
+    );
+}
+
+#[test]
 fn rainy_skill_profile_has_a_safe_project_lifecycle() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();

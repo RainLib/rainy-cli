@@ -77,7 +77,7 @@ curl -fsSL https://github.com/RainLib/rainy-cli/releases/latest/download/install
 Windows PowerShell：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "iwr https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 -UseB | iex"
+irm https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 | iex
 ```
 
 安装脚本会根据当前系统下载对应的 release asset：
@@ -88,21 +88,32 @@ powershell -ExecutionPolicy Bypass -c "iwr https://github.com/RainLib/rainy-cli/
 - macOS Apple Silicon: `rainy-aarch64-apple-darwin.tar.gz`
 - Windows x64: `rainy-x86_64-pc-windows-msvc.zip`
 
-默认安装目录是 `~/.rainy/bin`。可以覆盖：
+默认安装目录是 `~/.rainy/bin`。Unix 安装器会根据 `$SHELL` 幂等写入
+`.zshrc`、`.bashrc`、`.profile` 或 Fish 配置；新终端可以直接执行
+`rainy`。由于 `curl | sh` 是子进程，当前 Unix 终端需要按安装器输出执行
+一次 `source`，或者重新打开终端。Windows 安装器默认同时更新用户 PATH 和
+当前 PowerShell 进程 PATH。
+
+可以覆盖安装目录或禁止修改 PATH：
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
 RAINY_REPO=owner/repo RAINY_VERSION=v0.1.2 sh scripts/install.sh
+RAINY_NO_MODIFY_PATH=1 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.1.2 -InstallDir "$HOME\.rainy\bin" -AddToPath
+.\scripts\install.ps1 -Repo owner/repo -Version v0.1.2 -InstallDir "$HOME\.rainy\bin"
+.\scripts\install.ps1 -NoModifyPath
 ```
 
 安装器必须下载并验证对应 `.sha256` 文件，校验文件缺失或摘要不匹配时会停止。替换失败会恢复原有二进制，成功后会自动验证 `rainy --version`。
 预编译 CLI 已内嵌 community packs 和 JSON schemas，安装后不依赖源码仓库；首次使用时会把只读运行资源提取到系统临时缓存。
+
+GitHub 访问不稳定时可以使用 OSS/CDN 静态镜像。镜像配置、目录协议和
+`ossutil` 发布步骤见 [Release mirrors](docs/release-mirrors.md)。
 
 从空目录创建 Golden Path 项目：
 
@@ -471,5 +482,6 @@ make installer-test
 - Model Skill: [integrations/skills/rainy-cli](integrations/skills/rainy-cli)
 - Composed workflow Skill: [integrations/skills/rainy-comet](integrations/skills/rainy-comet)
 - Skill profile management: [docs/skills-management.md](docs/skills-management.md)
+- Release mirrors and OSS: [docs/release-mirrors.md](docs/release-mirrors.md)
 - Backstage example: [integrations/backstage](integrations/backstage)
 - Full design document: [Rainy_CLI_最终形态程序设计与详细开发文档.md](Rainy_CLI_最终形态程序设计与详细开发文档.md)

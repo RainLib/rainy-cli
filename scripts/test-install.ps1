@@ -33,6 +33,9 @@ if ($LASTEXITCODE -ne 0 -or $VersionOutput -notmatch '^rainy (?<Version>[0-9]+\.
 }
 $CurrentVersion = $Matches.Version
 $CurrentTag = "v$CurrentVersion"
+$OriginalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$OriginalProcessPath = $env:Path
+$OriginalRainyHome = $env:RAINY_HOME
 
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rainy-installer-test-" + [System.Guid]::NewGuid())
 $ServerRoot = Join-Path $TempDir "server"
@@ -40,6 +43,7 @@ $InstallDir = Join-Path $TempDir "install"
 $PortFile = Join-Path $TempDir "port"
 $ServerOutput = Join-Path $TempDir "server.stdout.log"
 $ServerError = Join-Path $TempDir "server.stderr.log"
+$RainyHome = Join-Path $TempDir "rainy-home"
 $Server = $null
 
 function Write-TestRelease {
@@ -74,9 +78,20 @@ function Assert-InstallerFails {
   }
 }
 
+function Get-PathEntryCount {
+  param([AllowNull()][string]$PathValue, [string]$Directory)
+  if (-not $PathValue) { return 0 }
+  $Expected = $Directory.TrimEnd([char[]]"\/")
+  return @($PathValue -split ";" | Where-Object {
+    $_ -and $_.Trim().TrimEnd([char[]]"\/") -ieq $Expected
+  }).Count
+}
+
 New-Item -ItemType Directory -Force -Path $ServerRoot | Out-Null
 try {
+  $env:RAINY_HOME = $RainyHome
   $ReleaseCurrent = Write-TestRelease -Version $CurrentTag
+  $CurrentTag | Out-File -NoNewline -Encoding ascii (Join-Path $ServerRoot "latest.txt")
   $Python = (Get-Command python -ErrorAction SilentlyContinue)
   if (-not $Python) { $Python = Get-Command python3 -ErrorAction Stop }
   $ServerArguments = @(
@@ -121,8 +136,24 @@ try {
   }
   $ServerBase = "http://127.0.0.1:$ServerPort"
 
-  & $Installer -Version $CurrentTag -InstallDir $InstallDir -BaseUrl "$ServerBase/$CurrentTag"
+  & $Installer -InstallDir $InstallDir -ReleaseBaseUrl $ServerBase
   Assert-Version -Expected $CurrentVersion
+  if ((Get-Content (Join-Path $RainyHome "release-source") -Raw) -ne $ServerBase) {
+    throw "installer did not persist the release mirror"
+  }
+  if ((Get-PathEntryCount -PathValue $env:Path -Directory $InstallDir) -ne 1) {
+    throw "installer did not add the install directory to the current process PATH"
+  }
+  $UpdatedUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  if ((Get-PathEntryCount -PathValue $UpdatedUserPath -Directory $InstallDir) -ne 1) {
+    throw "installer did not add the install directory to the user PATH"
+  }
+
+  & $Installer -Version $CurrentTag -InstallDir $InstallDir -BaseUrl "$ServerBase/$CurrentTag"
+  $UpdatedUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  if ((Get-PathEntryCount -PathValue $UpdatedUserPath -Directory $InstallDir) -ne 1) {
+    throw "installer added duplicate user PATH entries"
+  }
 
   Write-TestRelease -Version "v9.9.9" | Out-Null
   Assert-InstallerFails -Version "v9.9.9" -BaseUrl "$ServerBase/v9.9.9"
@@ -142,6 +173,13 @@ try {
   Assert-Version -Expected $CurrentVersion
 } finally {
   if ($Server -and -not $Server.HasExited) { Stop-Process -Id $Server.Id -Force }
+  [Environment]::SetEnvironmentVariable("Path", $OriginalUserPath, "User")
+  $env:Path = $OriginalProcessPath
+  if ($null -eq $OriginalRainyHome) {
+    Remove-Item Env:RAINY_HOME -ErrorAction SilentlyContinue
+  } else {
+    $env:RAINY_HOME = $OriginalRainyHome
+  }
   Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
 }
 

@@ -185,6 +185,11 @@ publish GitHub Release assets, checksums, and installer scripts
 - macOS Apple Silicon
 - Windows x64
 
+安装器默认把 `~/.rainy/bin` 持久化到检测到的 Unix shell profile，或写入
+Windows 用户 PATH；两种方式都保持幂等并允许显式禁用。静态镜像使用
+`latest.txt` 加版本目录协议，设置 `RAINY_RELEASE_BASE_URL` 后版本解析和
+资产下载都从 OSS/CDN 完成，不访问 GitHub API。
+
 CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 Cargo package repository，也可以通过 `--repo` 或 `RAINY_UPDATE_REPO` 覆盖。版本检查使用原生 HTTPS、标准 SemVer、超时和失败退避；指定版本更新固定使用对应 tag 的安装器，并在执行前通过该 Release 的 `installers.sha256` 验证安装脚本。
 
 ## 模型接入
@@ -226,7 +231,7 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
 
 ### P2 / 长期
 
-- 发布渠道仍集中在 GitHub Release。可补 crates.io、Homebrew、npm 或包管理器 tap，并统一安装文档。
+- GitHub Release 仍是主发布源，OSS/CDN 镜像当前由发布辅助脚本同步。后续可把镜像上传接入受保护的发布环境，并补 crates.io、Homebrew、npm 或包管理器 tap。
 - audit log 具备预检、文件锁和落盘同步，但仍是本地文件；企业场景需要集中化审计、指标、trace id 贯通和 SIEM/日志平台集成。
 - Capability registry 已具备协议限制、超时、大小上限、逐文件摘要和原子缓存替换；后续仍可增加离线镜像治理、公钥轮换和撤销分发。
 - 企业审批系统、密钥系统、权限平台、starter 生态都需要通过私有 pack/plugin 落地，本仓库只提供协议和示例。

@@ -183,9 +183,17 @@ fn check_latest_with_state(
 }
 
 fn latest_release_version(repository: &str) -> RainyResult<String> {
+    if let Some(url) = configured_latest_version_url()? {
+        let body = http_get_limited(&url, "UPDATE_CHECK_FAILED")?;
+        return parse_latest_marker(&body);
+    }
     let url = format!("https://api.github.com/repos/{repository}/releases/latest");
     let body = http_get_limited(&url, "UPDATE_CHECK_FAILED")?;
     parse_latest_release_version(body.as_bytes())
+}
+
+fn parse_latest_marker(marker: &str) -> RainyResult<String> {
+    Ok(parse_version(marker)?.to_string())
 }
 
 fn parse_latest_release_version(release_json: &[u8]) -> RainyResult<String> {
@@ -202,7 +210,7 @@ fn parse_latest_release_version(release_json: &[u8]) -> RainyResult<String> {
 fn run_install_script(repo: Option<&str>, version: &str) -> RainyResult<()> {
     let repository = repository_slug(repo)?;
     let version = parse_version(version)?.to_string();
-    let install_url = format!("https://github.com/{repository}/releases/download/v{version}");
+    let install_url = configured_version_url(&repository, &version)?;
     let script_name = if cfg!(windows) {
         "install.ps1"
     } else {
@@ -333,15 +341,96 @@ fn valid_repository_char(ch: char) -> bool {
 }
 
 fn install_command(repository: &str) -> String {
+    if let Ok(Some(base_url)) = configured_release_base_url() {
+        if cfg!(windows) {
+            let escaped = base_url.replace('\'', "''");
+            return format!(
+                "$env:RAINY_RELEASE_BASE_URL = '{escaped}'; irm \"$env:RAINY_RELEASE_BASE_URL/install.ps1\" | iex"
+            );
+        }
+        let escaped = shell_single_quote(&base_url);
+        return format!(
+            "curl -fsSL '{escaped}/install.sh' | env RAINY_RELEASE_BASE_URL='{escaped}' sh"
+        );
+    }
     if cfg!(windows) {
-        format!(
-            "powershell -ExecutionPolicy Bypass -c \"iwr https://github.com/{repository}/releases/latest/download/install.ps1 -UseB | iex\""
-        )
+        format!("irm https://github.com/{repository}/releases/latest/download/install.ps1 | iex")
     } else {
         format!(
             "curl -fsSL https://github.com/{repository}/releases/latest/download/install.sh | sh"
         )
     }
+}
+
+fn configured_latest_version_url() -> RainyResult<Option<String>> {
+    if let Some(url) = non_empty_env("RAINY_LATEST_VERSION_URL") {
+        validate_update_url(&url, "UPDATE_CHECK_FAILED")?;
+        return Ok(Some(url));
+    }
+    Ok(configured_release_base_url()?.map(|base| format!("{base}/latest.txt")))
+}
+
+fn configured_release_base_url() -> RainyResult<Option<String>> {
+    let url = if let Some(url) = non_empty_env("RAINY_RELEASE_BASE_URL") {
+        url
+    } else if let Some(path) = config_home().map(|home| home.join("release-source"))
+        && path.exists()
+    {
+        std::fs::read_to_string(path)?.trim().to_string()
+    } else {
+        return Ok(None);
+    };
+    if url.is_empty() {
+        return Ok(None);
+    }
+    let url = url.trim_end_matches('/').to_string();
+    validate_update_url(&url, "UPDATE_REPOSITORY_INVALID")?;
+    Ok(Some(url))
+}
+
+fn configured_version_url(repository: &str, version: &str) -> RainyResult<String> {
+    let url = if let Some(url) = non_empty_env("RAINY_INSTALLER_BASE_URL") {
+        url.trim_end_matches('/').to_string()
+    } else if let Some(base) = configured_release_base_url()? {
+        format!("{base}/v{version}")
+    } else {
+        format!("https://github.com/{repository}/releases/download/v{version}")
+    };
+    validate_update_url(&url, "UPDATE_INSTALL_FAILED")?;
+    Ok(url)
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_update_url(url: &str, error_code: &'static str) -> RainyResult<()> {
+    if url.starts_with("https://") || is_loopback_http_url(url) {
+        return Ok(());
+    }
+    Err(RainyError::config(
+        error_code,
+        format!("only HTTPS or loopback HTTP update URLs are allowed: {url}"),
+    ))
+}
+
+fn is_loopback_http_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|value| value.split(']').next())
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or_default());
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+fn shell_single_quote(value: &str) -> String {
+    value.replace('\'', "'\\''")
 }
 
 fn current_version() -> String {
@@ -462,12 +551,7 @@ fn failure_retry_hours(failures: u32) -> i64 {
 }
 
 fn http_get_limited(url: &str, error_code: &'static str) -> RainyResult<String> {
-    if !url.starts_with("https://") {
-        return Err(RainyError::config(
-            error_code,
-            format!("only HTTPS update URLs are allowed: {url}"),
-        ));
-    }
+    validate_update_url(url, error_code)?;
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(StdDuration::from_secs(3))
         .timeout_read(StdDuration::from_secs(7))
@@ -572,6 +656,30 @@ mod tests {
         )
         .expect("release version");
         assert_eq!(version, "1.2.3");
+    }
+
+    #[test]
+    fn parses_static_mirror_latest_marker() {
+        assert_eq!(parse_latest_marker("v1.2.3\n").expect("marker"), "1.2.3");
+        assert!(parse_latest_marker("latest").is_err());
+        assert!(parse_latest_marker("v1.2.3\nv1.2.4").is_err());
+    }
+
+    #[test]
+    fn update_urls_require_https_or_loopback_http() {
+        validate_update_url("https://downloads.example.com/rainy", "TEST").expect("https URL");
+        validate_update_url("http://127.0.0.1:8080/rainy", "TEST").expect("loopback URL");
+        validate_update_url("http://localhost/rainy", "TEST").expect("localhost URL");
+        assert!(validate_update_url("http://downloads.example.com/rainy", "TEST").is_err());
+        assert!(validate_update_url("http://localhost.example.com/rainy", "TEST").is_err());
+    }
+
+    #[test]
+    fn quotes_mirror_urls_for_posix_install_commands() {
+        assert_eq!(
+            shell_single_quote("https://example.com/team's/rainy"),
+            "https://example.com/team'\\''s/rainy"
+        );
     }
 
     #[test]

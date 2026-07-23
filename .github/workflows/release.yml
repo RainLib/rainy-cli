@@ -64,7 +64,7 @@ jobs:
         run: python3 -m py_compile integrations/mcp/rainy_mcp.py
       - name: Skill and installer tests
         shell: bash
-        run: make skill-check installer-check installer-test
+        run: make skill-check installer-check installer-test mirror-test
       - name: Release input tests
         run: sh scripts/test-release.sh
 
@@ -184,6 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           cp scripts/install.sh scripts/install.ps1 dist/
+          printf '%s\n' "$RELEASE_TAG" > dist/latest.txt
           (cd dist && sha256sum install.sh install.ps1 > installers.sha256)
           tar -czf dist/rainy-cli-skill.tar.gz -C integrations/skills rainy-cli
           tar -czf dist/rainy-comet-skill.tar.gz -C integrations/skills rainy-comet
