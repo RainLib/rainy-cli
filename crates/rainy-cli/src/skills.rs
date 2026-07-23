@@ -6,6 +6,7 @@ use crate::cli::{
 use crate::config;
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
+use crate::progress::ProgressReporter;
 use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -120,15 +121,19 @@ pub struct SkillCheck {
     pub message: String,
 }
 
-pub fn handle_skill_command(workspace: &Path, command: SkillCommand) -> RainyResult<CommandOutput> {
+pub fn handle_skill_command(
+    workspace: &Path,
+    command: SkillCommand,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
     match command.command {
-        SkillSubcommand::Init(args) => init(workspace, args),
-        SkillSubcommand::Install(args) => install(workspace, args),
-        SkillSubcommand::Sync => sync(workspace),
-        SkillSubcommand::Status => status(workspace),
-        SkillSubcommand::Doctor => doctor(workspace),
-        SkillSubcommand::Update(args) => update(workspace, args),
-        SkillSubcommand::Uninstall(args) => uninstall(workspace, args),
+        SkillSubcommand::Init(args) => init(workspace, args, progress),
+        SkillSubcommand::Install(args) => install(workspace, args, progress),
+        SkillSubcommand::Sync => sync(workspace, progress),
+        SkillSubcommand::Status => status(workspace, progress),
+        SkillSubcommand::Doctor => doctor(workspace, progress),
+        SkillSubcommand::Update(args) => update(workspace, args, progress),
+        SkillSubcommand::Uninstall(args) => uninstall(workspace, args, progress),
     }
 }
 
@@ -155,7 +160,12 @@ pub fn context_summary(workspace: &Path) -> RainyResult<Option<String>> {
     Ok(Some(summary))
 }
 
-fn init(workspace: &Path, args: SkillInitArgs) -> RainyResult<CommandOutput> {
+fn init(
+    workspace: &Path,
+    args: SkillInitArgs,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
+    progress.detail("Validating workspace and requested Skill profile");
     config::load_config(workspace)?;
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let desired = profile_from_args(&args)?;
@@ -178,6 +188,7 @@ fn init(workspace: &Path, args: SkillInitArgs) -> RainyResult<CommandOutput> {
     }
 
     if !apply {
+        progress.detail("Building the Skill installation preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
                 "init",
@@ -188,12 +199,16 @@ fn init(workspace: &Path, args: SkillInitArgs) -> RainyResult<CommandOutput> {
         });
     }
 
+    progress.detail("Writing rainy-skills.yaml");
     write_yaml_atomic(&profile_path, &desired)?;
-    let (mut changed_files, output_digest) = apply_install(workspace, &desired, args.force, false)?;
+    let (mut changed_files, output_digest) =
+        apply_install(workspace, &desired, args.force, false, progress)?;
     changed_files.insert(0, PROFILE_PATH.to_string());
+    progress.detail("Building and writing skills.lock");
     let lock = build_lock(workspace, &desired, output_digest)?;
     write_yaml_atomic(&workspace.join(LOCK_PATH), &lock)?;
     changed_files.push(LOCK_PATH.to_string());
+    progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
     changed_files.push("AGENTS.md".to_string());
     changed_files.sort();
@@ -204,11 +219,17 @@ fn init(workspace: &Path, args: SkillInitArgs) -> RainyResult<CommandOutput> {
     })
 }
 
-fn install(workspace: &Path, args: SkillChangeArgs) -> RainyResult<CommandOutput> {
+fn install(
+    workspace: &Path,
+    args: SkillChangeArgs,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
+    progress.detail("Loading and validating rainy-skills.yaml");
     config::load_config(workspace)?;
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let profile = load_profile(workspace)?;
     if !apply {
+        progress.detail("Building the Skill installation preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
                 "install",
@@ -219,10 +240,13 @@ fn install(workspace: &Path, args: SkillChangeArgs) -> RainyResult<CommandOutput
         });
     }
 
-    let (mut changed_files, output_digest) = apply_install(workspace, &profile, args.force, false)?;
+    let (mut changed_files, output_digest) =
+        apply_install(workspace, &profile, args.force, false, progress)?;
+    progress.detail("Building and writing skills.lock");
     let lock = build_lock(workspace, &profile, output_digest)?;
     write_yaml_atomic(&workspace.join(LOCK_PATH), &lock)?;
     changed_files.push(LOCK_PATH.to_string());
+    progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
     changed_files.push("AGENTS.md".to_string());
     changed_files.sort();
@@ -233,7 +257,8 @@ fn install(workspace: &Path, args: SkillChangeArgs) -> RainyResult<CommandOutput
     })
 }
 
-fn sync(workspace: &Path) -> RainyResult<CommandOutput> {
+fn sync(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandOutput> {
+    progress.detail("Refreshing Rainy-managed agent context files");
     if !workspace.join(PROFILE_PATH).is_file() {
         return agent::sync_skills_command(workspace);
     }
@@ -253,7 +278,8 @@ fn sync(workspace: &Path) -> RainyResult<CommandOutput> {
     })
 }
 
-fn status(workspace: &Path) -> RainyResult<CommandOutput> {
+fn status(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandOutput> {
+    progress.detail("Comparing Skill profile, lock, and installed files");
     let profile = load_profile(workspace)?;
     let checks = inspect(workspace, &profile, false)?;
     let status = if checks.iter().any(|check| check.status == "fail") {
@@ -274,7 +300,8 @@ fn status(workspace: &Path) -> RainyResult<CommandOutput> {
     })
 }
 
-fn doctor(workspace: &Path) -> RainyResult<CommandOutput> {
+fn doctor(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandOutput> {
+    progress.detail("Checking Skill files, tools, policy, and lock state");
     let profile = load_profile(workspace)?;
     let checks = inspect(workspace, &profile, true)?;
     let report = report(
@@ -299,7 +326,12 @@ fn doctor(workspace: &Path) -> RainyResult<CommandOutput> {
     Ok(CommandOutput::Skill { report })
 }
 
-fn update(workspace: &Path, args: SkillUpdateArgs) -> RainyResult<CommandOutput> {
+fn update(
+    workspace: &Path,
+    args: SkillUpdateArgs,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
+    progress.detail("Loading and validating the configured Skill profile");
     config::load_config(workspace)?;
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let mut profile = load_profile(workspace)?;
@@ -314,6 +346,7 @@ fn update(workspace: &Path, args: SkillUpdateArgs) -> RainyResult<CommandOutput>
         profile.packages.comet = Some(format!("{COMET_PACKAGE}@{version}"));
     }
     if !apply {
+        progress.detail("Building the Skill update preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
                 "update",
@@ -324,12 +357,15 @@ fn update(workspace: &Path, args: SkillUpdateArgs) -> RainyResult<CommandOutput>
         });
     }
 
-    let (mut changed_files, output_digest) = apply_install(workspace, &profile, args.force, true)?;
+    let (mut changed_files, output_digest) =
+        apply_install(workspace, &profile, args.force, true, progress)?;
+    progress.detail("Writing the updated profile and skills.lock");
     write_yaml_atomic(&workspace.join(PROFILE_PATH), &profile)?;
     changed_files.push(PROFILE_PATH.to_string());
     let lock = build_lock(workspace, &profile, output_digest)?;
     write_yaml_atomic(&workspace.join(LOCK_PATH), &lock)?;
     changed_files.push(LOCK_PATH.to_string());
+    progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
     changed_files.push("AGENTS.md".to_string());
     changed_files.sort();
@@ -340,11 +376,17 @@ fn update(workspace: &Path, args: SkillUpdateArgs) -> RainyResult<CommandOutput>
     })
 }
 
-fn uninstall(workspace: &Path, args: SkillChangeArgs) -> RainyResult<CommandOutput> {
+fn uninstall(
+    workspace: &Path,
+    args: SkillChangeArgs,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
+    progress.detail("Loading and validating the configured Skill profile");
     config::load_config(workspace)?;
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let profile = load_profile(workspace)?;
     if !apply {
+        progress.detail("Building the Skill removal preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
                 "uninstall",
@@ -356,14 +398,17 @@ fn uninstall(workspace: &Path, args: SkillChangeArgs) -> RainyResult<CommandOutp
     }
 
     let lock = load_lock(workspace).ok();
+    progress.detail("Checking managed files for local drift");
     validate_managed_skills(workspace, lock.as_ref(), args.force)?;
     if lock.is_none() {
         validate_unlocked_rainy_skills(workspace, &profile, args.force)?;
     }
     if profile.profile == "comet" {
+        progress.detail("Running the upstream Comet uninstaller");
         run_comet(workspace, &profile, CometAction::Uninstall)?;
     }
 
+    progress.detail("Removing Rainy-managed Skill files");
     let mut changed_files = Vec::new();
     let names = if profile.profile == "comet" {
         vec!["rainy-cli", "rainy-comet"]
@@ -548,13 +593,16 @@ fn apply_install(
     profile: &SkillProfileConfig,
     force: bool,
     overwrite_upstream: bool,
+    progress: &ProgressReporter,
 ) -> RainyResult<(Vec<String>, Option<String>)> {
+    progress.detail("Checking prerequisites and managed-file drift");
     validate_profile(profile)?;
     if profile.profile == "comet" {
         check_comet_prerequisites()?;
     }
     let lock = load_lock(workspace).ok();
     validate_managed_skills(workspace, lock.as_ref(), force)?;
+    progress.detail("Installing bundled Rainy Skills for selected agent hosts");
     let mut changed_files = install_rainy_skills(workspace, profile, lock.as_ref(), force)?;
 
     let output_digest = if profile.profile == "comet" {
@@ -563,7 +611,13 @@ fn apply_install(
         } else {
             CometAction::Install
         };
+        progress.detail(if overwrite_upstream {
+            "Running the pinned upstream Comet updater"
+        } else {
+            "Running the pinned upstream Comet installer"
+        });
         let digest = run_comet(workspace, profile, action)?;
+        progress.detail("Applying Rainy's safe Comet policy configuration");
         configure_comet(workspace)?;
         changed_files.push(".comet/config.yaml".to_string());
         Some(digest)

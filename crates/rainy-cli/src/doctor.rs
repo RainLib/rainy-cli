@@ -1,6 +1,7 @@
 use crate::config;
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
+use crate::progress::ProgressReporter;
 use crate::registry::{CapabilityDefinition, DoctorCheckSpec, RegistryClient};
 use handlebars::Handlebars;
 use serde::Serialize;
@@ -43,7 +44,12 @@ pub struct DoctorCheckResult {
     pub message: String,
 }
 
-pub fn doctor_command(workspace: &Path, capability: Option<&str>) -> RainyResult<CommandOutput> {
+pub fn doctor_command(
+    workspace: &Path,
+    capability: Option<&str>,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
+    progress.detail("Checking project files, locks, secrets, and capability health");
     let report = run_doctor(workspace, capability)?;
     if report.status == "failed" {
         return Err(RainyError::doctor(

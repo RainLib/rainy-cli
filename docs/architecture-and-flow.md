@@ -211,6 +211,8 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
 - `schemas/*.schema.json`: 对外协议和报告结构的稳定参考。
 - `.rainy/audit.log`: 命令成功或失败的本地审计记录。
 - JSON 输出：所有主要命令支持 `--json`，供 Agent、MCP、CI 调用。
+- 进度输出：统一四阶段生命周期写入 `stderr`，TTY 使用带心跳和耗时的动态进度条，
+  `--progress always` 使用稳定逐行日志；`--json` 和 `--quiet` 强制关闭进度。
 - Release assets: 多平台 CLI 包、对应 sha256 文件和安装脚本。
 - Model Skill assets: 平台无关的 `rainy-cli-skill`、`rainy-comet-skill` 压缩包及对应 sha256。
 

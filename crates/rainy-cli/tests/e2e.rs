@@ -12,6 +12,45 @@ use tempfile::TempDir;
 static HTTP_PLUGIN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
+    let output = run(&["--progress", "always", "capability", "list"]);
+    let progress = String::from_utf8(output.stderr).expect("progress output");
+    assert!(progress.contains("[1/4] Preparing capability"));
+    assert!(progress.contains("[2/4] Running capability"));
+    assert!(progress.contains("[4/4] Completed in"));
+
+    let output = run(&["--progress", "always", "--json", "capability", "list"]);
+    assert!(output.stderr.is_empty(), "JSON mode emitted progress");
+    serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("valid JSON output");
+
+    let output = run(&["--progress", "always", "--quiet", "capability", "list"]);
+    assert!(output.stderr.is_empty(), "quiet mode emitted progress");
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "progress-demo", "--apply"]);
+    let workspace = temp.path().join("progress-demo");
+    let workspace = workspace.to_string_lossy().to_string();
+    let output = run(&[
+        "--workspace",
+        &workspace,
+        "--progress",
+        "always",
+        "skill",
+        "init",
+        "--profile",
+        "rainy",
+    ]);
+    let progress = String::from_utf8(output.stderr).expect("skill progress");
+    assert!(progress.contains("Validating workspace and requested Skill profile"));
+    assert!(progress.contains("Building the Skill installation preview"));
+
+    let help = String::from_utf8(run(&["--help"]).stdout).expect("top-level help");
+    assert!(help.contains("--progress <MODE>"));
+    assert!(help.contains("[possible values: auto, always, never]"));
+}
+
+#[test]
 fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples() {
     let help = String::from_utf8(run(&["--help"]).stdout).expect("top-level help");
     assert!(help.contains("Arguments shown as <VALUE> are required values"));

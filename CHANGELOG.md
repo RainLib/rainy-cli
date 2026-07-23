@@ -4,6 +4,20 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-23
+
+### Added
+
+- Added a terminal-aware four-stage command progress system with a heartbeat,
+  current task, elapsed time, success, and failure states.
+- Added `--progress auto|always|never` and the `RAINY_PROGRESS` environment
+  variable, plus detailed Skill, verify, and doctor task updates.
+
+### Compatibility
+
+- Progress is written only to stderr and is always disabled by `--json` and
+  `--quiet`, preserving machine-readable output and automation contracts.
+
 ## [0.3.6] - 2026-07-23
 
 ### Changed

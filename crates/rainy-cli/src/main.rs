@@ -13,6 +13,7 @@ mod output;
 mod patch;
 mod plugin;
 mod policy;
+mod progress;
 mod registry;
 mod schema;
 mod skills;
@@ -37,33 +38,43 @@ fn main() {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let audit_command = command_label(&cli.command).to_string();
+    let is_self_command = matches!(cli.command, Commands::SelfCommand(_));
+    update::maybe_notify(json, cli.quiet, is_self_command);
+    let mut progress =
+        progress::ProgressReporter::new(cli.progress, cli.json, cli.quiet, cli.no_color);
+    progress.stage(format!("Preparing {audit_command}"));
 
     if command_requires_audit(&cli.command)
         && let Err(err) = audit::preflight(&audit_workspace)
     {
+        progress.finish_error(&err.to_string());
         output::print_error(&err, json);
         std::process::exit(err.exit_code());
     }
 
-    let is_self_command = matches!(cli.command, Commands::SelfCommand(_));
-    update::maybe_notify(json, cli.quiet, is_self_command);
+    progress.stage(format!("Running {audit_command}"));
 
-    match run(cli) {
+    match run(cli, &progress) {
         Ok(output) => {
+            progress.stage("Recording command result");
             if let Err(err) = audit::record_success(
                 &audit_workspace,
                 &audit_command,
                 trace_id.as_deref(),
                 &output,
             ) {
+                progress.finish_error(&err.to_string());
                 output::print_error(&err, json);
                 std::process::exit(err.exit_code());
             }
+            progress.stage("Rendering output");
+            progress.finish_success();
             output.print(json);
         }
         Err(err) => {
             let _ =
                 audit::record_error(&audit_workspace, &audit_command, trace_id.as_deref(), &err);
+            progress.finish_error(&err.to_string());
             output::print_error(&err, json);
             std::process::exit(err.exit_code());
         }
@@ -119,7 +130,7 @@ fn command_label(command: &Commands) -> &'static str {
     }
 }
 
-fn run(cli: Cli) -> RainyResult<CommandOutput> {
+fn run(cli: Cli, progress: &progress::ProgressReporter) -> RainyResult<CommandOutput> {
     let workspace = cli.workspace.unwrap_or(std::env::current_dir()?);
     let allow_native_plugin = cli.allow_native_plugin
         || config::load_config(&workspace)
@@ -160,10 +171,15 @@ fn run(cli: Cli) -> RainyResult<CommandOutput> {
             CapabilitySubcommand::Remove(args) => remove_capability(&workspace, args),
         },
         Commands::Pack(command) => registry::handle_pack_command(&workspace, command),
-        Commands::Doctor(args) => doctor::doctor_command(&workspace, args.capability.as_deref()),
-        Commands::Verify(args) => {
-            verify::verify_command(&workspace, &args.profile, args.capability.as_deref())
+        Commands::Doctor(args) => {
+            doctor::doctor_command(&workspace, args.capability.as_deref(), progress)
         }
+        Commands::Verify(args) => verify::verify_command(
+            &workspace,
+            &args.profile,
+            args.capability.as_deref(),
+            progress,
+        ),
         Commands::Evidence(args) => {
             let format = match args.command {
                 Some(EvidenceSubcommand::Generate(generate)) => generate.format.or(args.format),
@@ -176,7 +192,7 @@ fn run(cli: Cli) -> RainyResult<CommandOutput> {
             plugin::handle_plugin_command(&workspace, command, allow_native_plugin)
         }
         Commands::Agent(command) => agent::handle_agent_command(&workspace, command),
-        Commands::Skill(command) => skills::handle_skill_command(&workspace, command),
+        Commands::Skill(command) => skills::handle_skill_command(&workspace, command, progress),
         Commands::Conformance(command) => conformance::handle_conformance_command(command),
         Commands::Schema(command) => schema::handle_schema_command(command),
         Commands::SelfCommand(command) => update::handle_self_command(command),

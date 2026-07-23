@@ -1,3 +1,4 @@
+use crate::progress::ProgressMode;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -34,6 +35,17 @@ pub struct Cli {
     /// Suppress non-essential output.
     #[arg(long, global = true)]
     pub quiet: bool,
+
+    /// Progress display mode: auto uses an interactive terminal only.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        value_name = "MODE",
+        default_value = "auto",
+        env = "RAINY_PROGRESS"
+    )]
+    pub progress: ProgressMode,
 
     /// Allow plugins that execute as unrestricted host processes.
     #[arg(

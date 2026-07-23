@@ -174,6 +174,22 @@ rainy add capability minio-file-storage --provider minio --dry-run --json
 rainy doctor --json
 ```
 
+## 命令进度
+
+Rainy 在交互式终端中默认显示四阶段进度条、当前任务和耗时。Skill、verify、doctor
+等多步骤命令会继续更新当前正在执行的具体内容。进度写入 `stderr`，最终结果写入
+`stdout`，因此可以安全地重定向业务结果。
+
+```bash
+rainy skill init --apply                 # 终端自动显示动态进度
+rainy verify --profile ci --progress always # CI/日志中强制逐行显示进度
+rainy doctor --progress never            # 关闭进度
+```
+
+进度模式也可以通过 `RAINY_PROGRESS=auto|always|never` 配置。`--json` 和 `--quiet`
+始终关闭进度，保证 JSON 协议及静默调用不会混入额外内容；`--no-color` 会保留进度
+但关闭颜色。
+
 ## Makefile 管理命令
 
 仓库提供了 `Makefile` 作为常用管理入口：

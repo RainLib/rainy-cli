@@ -2,6 +2,7 @@ use crate::config;
 use crate::doctor;
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
+use crate::progress::ProgressReporter;
 use crate::registry::{CapabilityDefinition, RegistryClient, ValidationCommand};
 use handlebars::Handlebars;
 use serde::Serialize;
@@ -37,8 +38,9 @@ pub fn verify_command(
     workspace: &Path,
     profile: &str,
     capability: Option<&str>,
+    progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
-    let report = run_verify(workspace, profile, capability)?;
+    let report = run_verify_inner(workspace, profile, capability, Some(progress))?;
     if report.status == "failed" {
         return Err(RainyError::verify(
             "VERIFY_FAILED",
@@ -53,6 +55,18 @@ pub fn run_verify(
     profile: &str,
     capability: Option<&str>,
 ) -> RainyResult<VerifyReport> {
+    run_verify_inner(workspace, profile, capability, None)
+}
+
+fn run_verify_inner(
+    workspace: &Path,
+    profile: &str,
+    capability: Option<&str>,
+    progress: Option<&ProgressReporter>,
+) -> RainyResult<VerifyReport> {
+    if let Some(progress) = progress {
+        progress.detail(format!("Loading verification profile '{profile}'"));
+    }
     let config = config::load_config(workspace)?;
     let lock = config::load_lock(workspace)?;
     let steps = config
@@ -70,7 +84,13 @@ pub fn run_verify(
     let mut checks = Vec::new();
     let strict = strict_verify_enabled(profile);
     for step in steps {
+        if let Some(progress) = progress {
+            progress.detail(format!("Running verification step: {step}"));
+        }
         checks.push(run_step(workspace, &step, capability, strict)?);
+    }
+    if let Some(progress) = progress {
+        progress.detail("Running installed capability validations");
     }
     checks.extend(run_capability_validations(
         workspace, &config, &lock, capability, strict,
