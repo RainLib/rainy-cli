@@ -19,7 +19,7 @@ Upstream projects remain independently maintained:
 
 ## Profiles
 
-`comet` is the default AI development profile. It installs the Rainy execution Skill, the Rainy-Comet bridge, and asks a pinned Comet package to install OpenSpec, Superpowers, and Comet Skills.
+`comet` is the default AI development profile. It installs the Rainy execution Skill and Rainy-Comet bridge, then asks a pinned Comet package to install OpenSpec and Comet Skills. Superpowers is an independently installed, optional method library: Rainy detects and locks it when present, but its absence is a warning rather than an installation failure.
 
 `rainy` installs only the Rainy execution Skill. It has no Node.js dependency.
 
@@ -36,6 +36,13 @@ rainy skill init --profile comet --target codex --language zh --dry-run
 rainy skill init --profile comet --target codex --language zh --apply
 rainy skill status --json
 rainy skill doctor --json
+```
+
+To add the optional Superpowers method library for Codex, use its upstream installer, then refresh the Rainy lock:
+
+```bash
+npx skills add obra/superpowers -y --agent codex
+rainy skill install --apply
 ```
 
 `rainy skill init` uses `comet`, `codex`, and `zh` by default and performs only a preview. Human-readable previews print `Apply this plan` with the exact Rainy command to run next. `--yes` is an explicit compatibility alias for `--apply`. An `Upstream command` shown in the preview is informational: Rainy runs it internally only during apply, so users should not copy its internal `npx --yes` flag into the Rainy command.
@@ -60,7 +67,8 @@ Set `RAINY_COMET_BIN` to an audited enterprise wrapper or local Comet executable
 - Rainy CLI version
 - Exact Comet package version
 - Rainy-managed Skill paths and SHA-256 content digests
-- Comet/OpenSpec/Superpowers paths and aggregate SHA-256 content digests
+- Comet/OpenSpec paths and aggregate SHA-256 content digests
+- Superpowers paths and digests when that optional library is installed in the project
 - Installer output digest and installation timestamp
 
 `.comet/config.yaml` remains Comet-owned. Rainy merges `auto_transition: false` into it after install/update.
@@ -79,6 +87,8 @@ rainy skill uninstall --apply
 ```
 
 `init`, `install`, `update`, and `uninstall` default to dry-run. `--apply` or its `--yes` alias is mandatory for mutation. Rainy refuses to overwrite or remove a locked Rainy Skill whose digest changed; use `--force` only after reviewing the local edits. Run `rainy skill <command> --help` for command-specific behavior and runnable examples.
+
+If an older Rainy release left `rainy-skills.yaml` without `skills.lock` after an upstream failure, rerun the same `rainy skill init ... --apply` command or use `rainy skill install --apply`. Rainy treats that state as an interrupted installation and rebuilds the lock without requiring `--force`.
 
 `update` runs the selected pinned Comet package with `init --overwrite`. It does not depend on a mutable global Comet installation.
 

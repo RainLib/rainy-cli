@@ -162,6 +162,8 @@ rainy skill doctor
 
 默认 `comet` profile 由 OpenSpec 管理需求与验收标准、Superpowers 管理工程方法、Comet 管理阶段和恢复状态，Rainy 继续负责可执行计划、policy、显式 `--apply`、verify、evidence 和 audit。核心 CLI 不强制依赖这些 Node 工具；只需要 Rainy Skill 时可使用：
 
+Comet profile 会安装 OpenSpec 和 Comet Skills；Superpowers 是独立的可选方法库，需要时使用 `npx skills add obra/superpowers -y --agent codex` 安装，再运行 `rainy skill install --apply` 将其内容摘要写入 `skills.lock`。未安装时 `rainy skill doctor` 只报告 warning。
+
 ```bash
 rainy skill init --profile rainy --target codex --apply
 ```

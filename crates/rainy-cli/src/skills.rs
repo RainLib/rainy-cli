@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -171,7 +171,8 @@ fn init(
     let desired = profile_from_args(&args)?;
     let profile_path = workspace.join(PROFILE_PATH);
 
-    if profile_path.exists() {
+    let profile_exists = profile_path.exists();
+    if profile_exists {
         let current = load_profile(workspace)?;
         if current != desired {
             return Err(RainyError::config(
@@ -179,10 +180,11 @@ fn init(
                 "a different skill profile is already configured; uninstall it before changing profile, language, target, or Comet version",
             ));
         }
-        if !args.force {
+        let resumable_incomplete_init = apply && !workspace.join(LOCK_PATH).is_file();
+        if !args.force && !resumable_incomplete_init {
             return Err(RainyError::config(
                 "SKILL_PROFILE_EXISTS",
-                "rainy-skills.yaml already exists; use skill install or pass --force to repair managed Rainy skills",
+                "rainy-skills.yaml and skills.lock already exist; use skill install or pass --force to repair managed Rainy skills",
             ));
         }
     }
@@ -199,14 +201,14 @@ fn init(
         });
     }
 
-    progress.detail("Writing rainy-skills.yaml");
-    write_yaml_atomic(&profile_path, &desired)?;
     let (mut changed_files, output_digest) =
         apply_install(workspace, &desired, args.force, false, progress)?;
-    changed_files.insert(0, PROFILE_PATH.to_string());
-    progress.detail("Building and writing skills.lock");
+    progress.detail("Validating installed Skills and building skills.lock");
     let lock = build_lock(workspace, &desired, output_digest)?;
+    progress.detail("Writing rainy-skills.yaml and skills.lock");
+    write_yaml_atomic(&profile_path, &desired)?;
     write_yaml_atomic(&workspace.join(LOCK_PATH), &lock)?;
+    changed_files.push(PROFILE_PATH.to_string());
     changed_files.push(LOCK_PATH.to_string());
     progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
@@ -318,9 +320,18 @@ fn doctor(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandO
         checks,
     );
     if report.status == "failed" {
+        let failures = report
+            .checks
+            .iter()
+            .filter(|check| check.status == "fail")
+            .map(|check| format!("{} ({})", check.id, check.message))
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(RainyError::doctor(
             "SKILL_DOCTOR_FAILED",
-            serde_json::to_string(&report)?,
+            format!(
+                "Skill diagnostics failed: {failures}; run `rainy skill status` for detailed checks"
+            ),
         ));
     }
     Ok(CommandOutput::Skill { report })
@@ -702,8 +713,13 @@ fn build_lock(
             });
         }
         if profile.profile == "comet" {
-            for (name, paths) in scan_upstream(&root)? {
+            for (name, paths) in scan_upstream_for_target(workspace, target)? {
                 let digest = paths_digest(&paths)?;
+                let managed_by = if name == "superpowers" {
+                    "external"
+                } else {
+                    "comet"
+                };
                 upstream_skills.push(UpstreamSkill {
                     name,
                     target: target.clone(),
@@ -711,7 +727,7 @@ fn build_lock(
                         .iter()
                         .map(|path| relative_string(workspace, path))
                         .collect(),
-                    managed_by: "comet".to_string(),
+                    managed_by: managed_by.to_string(),
                     digest,
                 });
             }
@@ -789,10 +805,10 @@ fn validate_lock(lock: &SkillLock) -> RainyResult<()> {
         validate_digest(&skill.digest)?;
     }
     for skill in &lock.upstream_skills {
-        let root = Path::new(target_relative_root(&skill.target)?);
+        let roots = upstream_relative_roots(&skill.target)?;
         for path in &skill.paths {
             validate_locked_path(path)?;
-            if !Path::new(path).starts_with(root) {
+            if !roots.iter().any(|root| Path::new(path).starts_with(root)) {
                 return Err(RainyError::config(
                     "SKILL_LOCK_PATH_INVALID",
                     format!(
@@ -989,13 +1005,12 @@ fn inspect(
 
     if profile.profile == "comet" {
         for target in &profile.targets {
-            let root = skills_root(workspace, target)?;
-            let found = scan_upstream(&root)?;
+            let found = scan_upstream_for_target(workspace, target)?;
             let names = found
                 .iter()
                 .map(|(name, _)| name.as_str())
                 .collect::<BTreeSet<_>>();
-            for name in ["comet", "openspec", "superpowers"] {
+            for name in ["comet", "openspec"] {
                 if names.contains(name) {
                     checks.push(pass(
                         format!("upstream.{target}.{name}"),
@@ -1007,6 +1022,19 @@ fn inspect(
                         format!("{name} skills are missing for {target}"),
                     ));
                 }
+            }
+            if names.contains("superpowers") {
+                checks.push(pass(
+                    format!("upstream.{target}.superpowers"),
+                    format!("superpowers skills are installed for {target}"),
+                ));
+            } else {
+                checks.push(warn(
+                    format!("upstream.{target}.superpowers"),
+                    format!(
+                        "superpowers skills are optional and not installed for {target}; install them separately with `npx skills add obra/superpowers -y --agent {target}`"
+                    ),
+                ));
             }
         }
         checks.push(check_comet_policy(workspace)?);
@@ -1023,7 +1051,7 @@ fn scan_upstream(root: &Path) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
     let mut superpowers = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
-        if !entry.file_type()?.is_dir() || !entry.path().join("SKILL.md").is_file() {
+        if !entry.path().is_dir() || !entry.path().join("SKILL.md").is_file() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
@@ -1038,6 +1066,12 @@ fn scan_upstream(root: &Path) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
                 | "writing-plans"
                 | "test-driven-development"
                 | "systematic-debugging"
+                | "subagent-driven-development"
+                | "verification-before-completion"
+                | "requesting-code-review"
+                | "receiving-code-review"
+                | "executing-plans"
+                | "finishing-a-development-branch"
         ) {
             superpowers.push(entry.path());
         }
@@ -1058,12 +1092,29 @@ fn scan_upstream(root: &Path) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
     Ok(result)
 }
 
+fn scan_upstream_for_target(
+    workspace: &Path,
+    target: &str,
+) -> RainyResult<Vec<(String, Vec<PathBuf>)>> {
+    let mut found = BTreeMap::<String, Vec<PathBuf>>::new();
+    for root in upstream_roots(workspace, target)? {
+        for (name, paths) in scan_upstream(&root)? {
+            found.entry(name).or_default().extend(paths);
+        }
+    }
+    for paths in found.values_mut() {
+        paths.sort();
+        paths.dedup();
+    }
+    Ok(found.into_iter().collect())
+}
+
 fn assert_required_upstream(
     profile: &SkillProfileConfig,
     upstream: &[UpstreamSkill],
 ) -> RainyResult<()> {
     for target in &profile.targets {
-        for name in ["comet", "openspec", "superpowers"] {
+        for name in ["comet", "openspec"] {
             if !upstream
                 .iter()
                 .any(|skill| skill.target == *target && skill.name == name)
@@ -1358,6 +1409,25 @@ fn skills_root(workspace: &Path, target: &str) -> RainyResult<PathBuf> {
     Ok(workspace.join(target_relative_root(target)?))
 }
 
+fn upstream_roots(workspace: &Path, target: &str) -> RainyResult<Vec<PathBuf>> {
+    let mut roots = upstream_relative_roots(target)?
+        .into_iter()
+        .map(|root| workspace.join(root))
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+fn upstream_relative_roots(target: &str) -> RainyResult<Vec<&'static Path>> {
+    let target_root = Path::new(target_relative_root(target)?);
+    let mut roots = vec![target_root];
+    if target == "codex" {
+        roots.push(Path::new(".agents/skills"));
+    }
+    Ok(roots)
+}
+
 fn target_relative_root(target: &str) -> RainyResult<&'static str> {
     match target {
         "codex" => Ok(".codex/skills"),
@@ -1544,6 +1614,14 @@ fn fail(id: impl Into<String>, message: impl Into<String>) -> SkillCheck {
     SkillCheck {
         id: id.into(),
         status: "fail".to_string(),
+        message: message.into(),
+    }
+}
+
+fn warn(id: impl Into<String>, message: impl Into<String>) -> SkillCheck {
+    SkillCheck {
+        id: id.into(),
+        status: "warn".to_string(),
         message: message.into(),
     }
 }

@@ -34,7 +34,7 @@
         "required": ["id", "status", "message"],
         "properties": {
           "id": { "type": "string" },
-          "status": { "enum": ["pass", "fail"] },
+          "status": { "enum": ["pass", "warn", "fail"] },
           "message": { "type": "string" }
         },
         "additionalProperties": false

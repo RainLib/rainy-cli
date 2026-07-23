@@ -67,7 +67,7 @@
             "minItems": 1,
             "items": { "type": "string", "minLength": 1 }
           },
-          "managedBy": { "const": "comet" },
+          "managedBy": { "enum": ["comet", "external"] },
           "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
         },
         "additionalProperties": false

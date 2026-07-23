@@ -413,13 +413,16 @@ action="$1"
 workspace="$2"
 case "$action" in
   init)
-    for name in comet openspec-propose brainstorming; do
-      mkdir -p "$workspace/.codex/skills/$name"
-      printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$workspace/.codex/skills/$name/SKILL.md"
+    for name in comet comet-open; do
+      mkdir -p "$workspace/.agents/skills/$name"
+      printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$workspace/.agents/skills/$name/SKILL.md"
     done
+    name=openspec-propose
+    mkdir -p "$workspace/.codex/skills/$name"
+    printf '%s\n' '---' "name: $name" "description: test $name" '---' '' "# $name" > "$workspace/.codex/skills/$name/SKILL.md"
     ;;
   uninstall)
-    rm -rf "$workspace/.codex/skills/comet" "$workspace/.codex/skills/openspec-propose" "$workspace/.codex/skills/brainstorming"
+    rm -rf "$workspace/.agents/skills/comet" "$workspace/.agents/skills/comet-open" "$workspace/.codex/skills/openspec-propose"
     ;;
   *)
     exit 2
@@ -473,9 +476,9 @@ printf '%s\n' '{"status":"ok"}'
     for path in [
         ".codex/skills/rainy-cli/SKILL.md",
         ".codex/skills/rainy-comet/SKILL.md",
-        ".codex/skills/comet/SKILL.md",
+        ".agents/skills/comet/SKILL.md",
+        ".agents/skills/comet-open/SKILL.md",
         ".codex/skills/openspec-propose/SKILL.md",
-        ".codex/skills/brainstorming/SKILL.md",
         ".comet/config.yaml",
     ] {
         assert!(app.join(path).is_file(), "missing {path}");
@@ -485,13 +488,17 @@ printf '%s\n' '{"status":"ok"}'
     let lock = fs::read_to_string(app.join("skills.lock")).expect("skills lock");
     assert!(lock.contains("version: 0.4.0-beta.6"));
     assert!(lock.contains("name: openspec"));
-    assert!(lock.contains("name: superpowers"));
+    assert!(lock.contains(".agents/skills/comet"));
+    assert!(!lock.contains("name: superpowers"));
 
     let doctor = run_with_env(
         &["--workspace", &app_path, "skill", "doctor", "--json"],
         &[("RAINY_COMET_BIN", &fake_path)],
     );
-    assert!(String::from_utf8_lossy(&doctor.stdout).contains("\"status\": \"passed\""));
+    let doctor = String::from_utf8_lossy(&doctor.stdout);
+    assert!(doctor.contains("\"status\": \"passed\""));
+    assert!(doctor.contains("\"status\": \"warn\""));
+    assert!(doctor.contains("superpowers skills are optional"));
 
     fs::write(
         app.join(".codex/skills/rainy-comet/local-edit.txt"),
@@ -542,8 +549,113 @@ printf '%s\n' '{"status":"ok"}'
         &[("RAINY_COMET_BIN", &fake_path)],
     );
     assert!(!app.join(".codex/skills/rainy-comet").exists());
-    assert!(!app.join(".codex/skills/comet").exists());
+    assert!(!app.join(".agents/skills/comet").exists());
     assert!(!app.join("rainy-skills.yaml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn comet_skill_init_failure_is_retryable_without_force() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "retry-app"]);
+    let app = temp.path().join("retry-app");
+    let app_path = app.to_string_lossy().to_string();
+    let fake_comet = temp.path().join("fake-comet-retry");
+    fs::write(
+        &fake_comet,
+        r##"#!/bin/sh
+set -eu
+workspace="$2"
+mkdir -p "$workspace/.codex/skills/openspec-propose"
+printf '%s\n' '---' 'name: openspec-propose' 'description: test' '---' > "$workspace/.codex/skills/openspec-propose/SKILL.md"
+printf '%s\n' '{"status":"ok"}'
+"##,
+    )
+    .expect("incomplete fake comet");
+    let mut permissions = fs::metadata(&fake_comet).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_comet, permissions).expect("permissions");
+    let fake_path = fake_comet.to_string_lossy().to_string();
+
+    let failed = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "skill",
+            "init",
+            "--profile",
+            "comet",
+            "--target",
+            "codex",
+            "--language",
+            "zh",
+            "--apply",
+            "--json",
+        ])
+        .env("RAINY_COMET_BIN", &fake_path)
+        .output()
+        .expect("run incomplete init");
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("SKILL_UPSTREAM_INCOMPLETE"));
+    assert!(!app.join("rainy-skills.yaml").exists());
+    assert!(!app.join("skills.lock").exists());
+
+    // Simulate the partial state left by Rainy <= 0.3.7, which wrote the
+    // profile before validating Comet's installed Skills.
+    fs::write(
+        app.join("rainy-skills.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: SkillProfile
+profile: comet
+scope: project
+language: zh
+targets:
+- codex
+packages:
+  comet: '@rpamis/comet@0.4.0-beta.6'
+policy:
+  autoTransition: false
+  requireApplyApproval: true
+  verifyProfile: ci
+"#,
+    )
+    .expect("legacy partial profile");
+
+    fs::write(
+        &fake_comet,
+        r##"#!/bin/sh
+set -eu
+workspace="$2"
+mkdir -p "$workspace/.agents/skills/comet" "$workspace/.codex/skills/openspec-propose"
+printf '%s\n' '---' 'name: comet' 'description: test' '---' > "$workspace/.agents/skills/comet/SKILL.md"
+printf '%s\n' '---' 'name: openspec-propose' 'description: test' '---' > "$workspace/.codex/skills/openspec-propose/SKILL.md"
+printf '%s\n' '{"status":"ok"}'
+"##,
+    )
+    .expect("complete fake comet");
+
+    run_with_env(
+        &[
+            "--workspace",
+            &app_path,
+            "skill",
+            "init",
+            "--profile",
+            "comet",
+            "--target",
+            "codex",
+            "--language",
+            "zh",
+            "--apply",
+            "--json",
+        ],
+        &[("RAINY_COMET_BIN", &fake_path)],
+    );
+    assert!(app.join("rainy-skills.yaml").is_file());
+    assert!(app.join("skills.lock").is_file());
 }
 
 #[cfg(unix)]

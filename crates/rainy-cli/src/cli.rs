@@ -558,7 +558,7 @@ pub enum AgentSubcommand {
 #[derive(Debug, Args)]
 #[command(
     about = "Manage project-scoped AI agent skills",
-    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts.\n\nThe default profile is comet, which combines Rainy with OpenSpec, Superpowers, and Comet. Mutating commands preview changes by default and write files only when --apply or --yes is supplied.",
+    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts.\n\nThe default profile is comet, which installs Rainy, OpenSpec, and Comet and detects an optional independently installed Superpowers library. Mutating commands preview changes by default and write files only when --apply or --yes is supplied.",
     after_help = "QUICK START:\n  Preview the default Comet profile:\n    rainy skill init\n\n  Apply the previewed profile:\n    rainy skill init --apply\n\n  Install only the Rainy Skill (no Node.js required):\n    rainy skill init --profile rainy --apply\n\n  Check an installed profile:\n    rainy skill status\n    rainy skill doctor\n\nRun 'rainy skill <COMMAND> --help' for command-specific examples."
 )]
 pub struct SkillCommand {
@@ -636,8 +636,8 @@ pub enum SkillTarget {
 
 #[derive(Debug, Args)]
 pub struct SkillInitArgs {
-    /// Skill bundle to manage: comet integrates Rainy, OpenSpec, Superpowers, and Comet;
-    /// rainy installs only the Rainy Skill.
+    /// Skill bundle to manage: comet installs Rainy, OpenSpec, and Comet and detects optional
+    /// Superpowers Skills; rainy installs only the Rainy Skill.
     #[arg(long, value_enum, value_name = "PROFILE", default_value = "comet")]
     pub profile: SkillProfile,
 
