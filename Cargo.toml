@@ -33,7 +33,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 semver = "1.0"
 thiserror = "2.0"
-toml = "0.9"
+toml = "1.1"
 tar = "0.4"
 ureq = { version = "2.12", default-features = true }
 walkdir = "2.5"
