@@ -1,5 +1,9 @@
 # Enterprise Routing
 
+When authoring or reviewing an enterprise GitHub/GitLab Registry, follow the repository's
+`docs/enterprise-git-authoring.md` contract. It defines the supported root layout, module boundaries,
+manifests, CI gates, immutable releases, project consumption, updates, and rollback.
+
 ## Decision Table
 
 | Request | Rainy extension |

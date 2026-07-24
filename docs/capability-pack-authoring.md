@@ -4,6 +4,10 @@ A capability pack is a directory with `pack.yaml`, one or more capability
 definitions, optional templates, validators, and skills. Rainy loads packs from
 `rainy.yaml` registry sources plus the managed official defaults package.
 
+For a complete enterprise GitHub/GitLab repository layout, CI gate, release policy,
+Skills, Plugins, organization Policy, update, and rollback workflow, see
+[Enterprise Git capability repository authoring](enterprise-git-authoring.md).
+
 ## Minimal Pack
 
 ```yaml

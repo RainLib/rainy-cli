@@ -9,6 +9,10 @@
 **/.rainy/audit.log
 /demo-saas/
 
+# Private enterprise package checkout (local-only submodule)
+/enterprise-cli-package/
+/.gitmodules
+
 # Python
 __pycache__/
 *.py[cod]

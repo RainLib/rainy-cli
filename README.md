@@ -23,6 +23,10 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - `docs`: 外部作者编写 capability pack 和 plugin 的说明。
 - `.github/workflows/ci.yml`: 基础 CI 门禁示例。
 
+企业平台团队从零建设 GitHub/GitLab 能力仓库，请从
+[企业 Git 能力仓库制作规范](docs/enterprise-git-authoring.md) 开始；其中给出了仓库目录、Pack、
+Capability、模板、Skill、Plugin、Policy、CI、版本发布、项目消费、更新和回滚的完整约定。
+
 官方默认包中的 community packs 覆盖以下主流研发闭环：
 
 - Spring Boot backend
@@ -323,8 +327,9 @@ rainy registry doctor company
 ```
 
 可同时关联多个 Registry，也可使用带 SHA-256 的 `.tar.gz`、`.tgz`、`.zip` URL 或 HTTPS index。
-项目提交 `rainy.yaml` 和 `.rainy/registry.lock`；通过 `RAINY_HOME` 可修改系统缓存根目录。完整企业
-包结构和发布流程见 [docs/enterprise-integration.md](docs/enterprise-integration.md)。
+项目提交 `rainy.yaml` 和 `.rainy/registry.lock`；通过 `RAINY_HOME` 可修改系统缓存根目录。企业仓库的
+完整制作流程见 [企业 Git 能力仓库制作规范](docs/enterprise-git-authoring.md)，接入边界与架构说明见
+[企业能力接入](docs/enterprise-integration.md)。
 
 Plugin 管理：
 
@@ -539,6 +544,7 @@ make installer-test
 - Current architecture and flow: [docs/architecture-and-flow.md](docs/architecture-and-flow.md)
 - Command reference: [docs/command-reference.md](docs/command-reference.md)
 - Enterprise integration: [docs/enterprise-integration.md](docs/enterprise-integration.md)
+- Enterprise Git registry authoring: [docs/enterprise-git-authoring.md](docs/enterprise-git-authoring.md)
 - CLI output style: [docs/cli-output-style.md](docs/cli-output-style.md)
 - Capability Pack authoring: [docs/capability-pack-authoring.md](docs/capability-pack-authoring.md)
 - Plugin protocol: [docs/plugin-protocol.md](docs/plugin-protocol.md)
