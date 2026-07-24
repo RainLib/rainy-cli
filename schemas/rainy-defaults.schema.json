@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/rainy-defaults.schema.json",
+  "title": "Rainy Default Distribution",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "requires", "paths"],
+  "properties": {
+    "apiVersion": { "const": "rainy.dev/v1" },
+    "kind": { "const": "RainyDefaults" },
+    "metadata": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "requires": {
+      "type": "object",
+      "required": ["rainy"],
+      "properties": {
+        "rainy": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "paths": {
+      "type": "object",
+      "required": ["packs", "skills", "templates"],
+      "properties": {
+        "packs": { "type": "string", "minLength": 1 },
+        "skills": { "type": "string", "minLength": 1 },
+        "templates": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

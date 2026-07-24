@@ -70,6 +70,20 @@ rainy capability remove <CAPABILITY_ID> --apply
 
 `--force` 只能在审阅冲突后使用，不能用于绕过 policy。
 
+## 管理官方默认内容
+
+```bash
+rainy defaults status
+rainy defaults install --dry-run
+rainy defaults install --apply
+rainy defaults update --apply
+rainy defaults doctor
+```
+
+默认源是 `RainLib/rainy-cli` 的当前 CLI 版本 tag。可通过 `RAINY_DEFAULTS_SOURCE`、
+`RAINY_DEFAULTS_REF` 使用企业 Git 镜像；内容固定在 `RAINY_HOME/defaults`，`RAINY_OFFLINE=1`
+时只允许使用已验证缓存。
+
 ## 管理 Capability Pack
 
 ```bash

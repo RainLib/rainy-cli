@@ -76,6 +76,8 @@ pub enum Commands {
     Pack(PackCommand),
     /// Manage named local, Git, HTTP, and archive registries.
     Registry(RegistryCommand),
+    /// Install and update Rainy's official default content package.
+    Defaults(DefaultsCommand),
     /// Diagnose workspace configuration and capability health.
     Doctor(DoctorCommand),
     /// Run workspace and capability verification profiles.
@@ -470,6 +472,60 @@ pub enum RegistrySubcommand {
         after_help = "EXAMPLES:\n  Diagnose all registries:\n    rainy registry doctor\n\n  Diagnose one registry:\n    rainy registry doctor company\n\n  Return structured checks:\n    rainy registry doctor --json"
     )]
     Doctor(RegistryDoctorArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(
+    about = "Manage Rainy's official Packs, Skills, and templates",
+    long_about = "Install and update Rainy's version-compatible official content package. Content is downloaded from Git into RAINY_HOME/defaults and is not embedded in the CLI binary or copied into project workspaces.",
+    after_help = "EXAMPLES:\n  Inspect default content state:\n    rainy defaults status\n\n  Preview the first installation:\n    rainy defaults install\n\n  Install the package:\n    rainy defaults install --apply\n\n  Refresh the pinned package:\n    rainy defaults update --apply\n\n  Validate the cache and compatibility:\n    rainy defaults doctor\n\nRun 'rainy defaults <COMMAND> --help' for command-specific examples."
+)]
+pub struct DefaultsCommand {
+    #[command(subcommand)]
+    pub command: DefaultsSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DefaultsSubcommand {
+    #[command(
+        about = "Show the configured source, version, and cache state",
+        after_help = "EXAMPLES:\n  Show default package state:\n    rainy defaults status\n\n  Return structured state:\n    rainy defaults status --json"
+    )]
+    Status,
+    #[command(
+        about = "Install the version-compatible default package",
+        after_help = "EXAMPLES:\n  Preview installation:\n    rainy defaults install\n\n  Install the official package:\n    rainy defaults install --apply\n\n  Install from an enterprise mirror:\n    rainy defaults install --source https://git.example.com/rainy/defaults.git --ref v0.4.0 --apply"
+    )]
+    Install(DefaultsChangeArgs),
+    #[command(
+        about = "Refresh the default package from its pinned Git source",
+        after_help = "EXAMPLES:\n  Preview an update:\n    rainy defaults update\n\n  Refresh the cache:\n    rainy defaults update --apply"
+    )]
+    Update(DefaultsChangeArgs),
+    #[command(
+        about = "Validate default package files and CLI compatibility",
+        after_help = "EXAMPLES:\n  Diagnose default content:\n    rainy defaults doctor\n\n  Return structured diagnostics:\n    rainy defaults doctor --json"
+    )]
+    Doctor,
+}
+
+#[derive(Debug, Args)]
+pub struct DefaultsChangeArgs {
+    /// Local path or HTTPS/SSH Git repository. Defaults to RAINY_DEFAULTS_SOURCE or RainLib/rainy-cli.
+    #[arg(long, value_name = "PATH_OR_GIT_URL")]
+    pub source: Option<String>,
+
+    /// Git tag, branch, or commit. Defaults to RAINY_DEFAULTS_REF or the current CLI version tag.
+    #[arg(long = "ref", value_name = "GIT_REF")]
+    pub reference: Option<String>,
+
+    /// Preview without downloading or changing the global lock.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Download, verify, and atomically install the default package.
+    #[arg(long)]
+    pub apply: bool,
 }
 
 #[derive(Debug, Args)]

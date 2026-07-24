@@ -32,7 +32,7 @@
 
 ## Installation
 
-- Use only the bundled bootstrap scripts for automatic installation.
+- Use only the managed Rainy bootstrap scripts for automatic CLI installation.
 - Keep the default repository `RainLib/rainy-cli` unless the user explicitly selects a trusted fork.
 - Require HTTPS except for loopback URLs used in tests.
 - Verify `install.sh` or `install.ps1` against `installers.sha256` before execution.

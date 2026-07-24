@@ -107,7 +107,7 @@ pub fn init_app(options: InitOptions) -> RainyResult<CommandOutput> {
     write(
         &project_dir,
         "apps/frontend/pnpm-lock.yaml",
-        include_str!("../assets/frontend-pnpm-lock.yaml"),
+        std::fs::read_to_string(crate::defaults::template_path("frontend-pnpm-lock.yaml")?)?,
         &mut files,
         options.dry_run,
     )?;

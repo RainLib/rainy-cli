@@ -934,7 +934,7 @@ fn apply_install(
     let lock = load_lock(workspace).ok();
     validate_managed_skills(workspace, lock.as_ref(), force)?;
     validate_upstream_skills(workspace, lock.as_ref(), force)?;
-    progress.detail("Installing bundled Rainy Skills for selected agent hosts");
+    progress.detail("Installing managed Rainy Skills for selected agent hosts");
     let mut changed_files = install_rainy_skills(workspace, profile, lock.as_ref(), force)?;
 
     let output_digest = if profile.profile == "comet" {
@@ -1006,7 +1006,7 @@ fn install_rainy_skills(
             if !source.join("SKILL.md").is_file() {
                 return Err(RainyError::config(
                     "SKILL_ASSET_MISSING",
-                    format!("bundled skill is missing: {name}"),
+                    format!("managed default Skill is missing: {name}"),
                 ));
             }
             let destination = root.join(name);
@@ -1022,7 +1022,7 @@ fn install_rainy_skills(
                     return Err(RainyError::config(
                         "SKILL_TARGET_ALREADY_EXISTS",
                         format!(
-                            "{} already exists but is not owned by skills.lock and does not match the bundled Skill; inspect it or rerun with --force",
+                            "{} already exists but is not owned by skills.lock and does not match the managed default Skill; inspect it or rerun with --force",
                             relative_string(workspace, &destination)
                         ),
                     ));
@@ -1402,7 +1402,7 @@ fn validate_unlocked_rainy_skills(
                 return Err(RainyError::config(
                     "SKILL_MANAGED_FILES_MODIFIED",
                     format!(
-                        "{} has no lock and differs from the bundled Skill; inspect it and rerun with --force",
+                        "{} has no lock and differs from the managed default Skill; inspect it and rerun with --force",
                         relative_string(workspace, &destination)
                     ),
                 ));
@@ -2424,13 +2424,13 @@ fn copy_directory(source: &Path, destination: &Path) -> RainyResult<()> {
         let entry = entry.map_err(|error| {
             RainyError::config(
                 "SKILL_ASSET_READ_FAILED",
-                format!("cannot read bundled skill asset: {error}"),
+                format!("cannot read managed default Skill: {error}"),
             )
         })?;
         let relative = entry.path().strip_prefix(source).map_err(|error| {
             RainyError::config(
                 "SKILL_ASSET_READ_FAILED",
-                format!("cannot resolve bundled skill asset: {error}"),
+                format!("cannot resolve managed default Skill: {error}"),
             )
         })?;
         let target = destination.join(relative);
@@ -2445,7 +2445,7 @@ fn copy_directory(source: &Path, destination: &Path) -> RainyResult<()> {
             return Err(RainyError::config(
                 "SKILL_ASSET_TYPE_UNSUPPORTED",
                 format!(
-                    "bundled Skill contains an unsupported file type: {}",
+                    "managed default Skill contains an unsupported file type: {}",
                     entry.path().display()
                 ),
             ));

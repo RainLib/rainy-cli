@@ -57,6 +57,9 @@ pub enum CommandOutput {
     Registry {
         report: crate::registry::RegistryReport,
     },
+    Defaults {
+        report: crate::defaults::DefaultsReport,
+    },
     Doctor {
         report: DoctorReport,
     },
@@ -158,6 +161,7 @@ impl CommandOutput {
             Self::Installed { .. } => "installed",
             Self::Packs { .. } => "packs",
             Self::Registry { .. } => "registry",
+            Self::Defaults { .. } => "defaults",
             Self::Doctor { .. } => "doctor",
             Self::Verify { .. } => "verify",
             Self::Evidence { .. } => "evidence",
@@ -187,6 +191,7 @@ impl CommandOutput {
             Self::SchemaValidation { report } => &report.status,
             Self::Skill { report } => &report.status,
             Self::Registry { report } => &report.status,
+            Self::Defaults { report } => &report.status,
             Self::Update { .. } => "ok",
             _ => "ok",
         }
@@ -236,6 +241,9 @@ impl CommandOutput {
             Self::Packs { packs } => format!("listed {} packs", packs.len()),
             Self::Registry { report } => {
                 format!("registry {} {}", report.operation, report.status)
+            }
+            Self::Defaults { report } => {
+                format!("defaults {} {}", report.operation, report.status)
             }
             Self::Doctor { report } => format!("doctor {}", report.status),
             Self::Verify { report } => format!("verify {} {}", report.profile, report.status),
@@ -516,6 +524,31 @@ impl CommandOutput {
                     print_next_step(
                         "Review the registry plan, then rerun the same command with --apply.",
                     );
+                }
+            }
+            Self::Defaults { report } => {
+                print_title(&format!("Defaults {}", report.operation));
+                print_summary(&[
+                    ("Status", result_status_label(&report.status).to_string()),
+                    (
+                        "Package",
+                        report.package_version.as_deref().unwrap_or("-").to_string(),
+                    ),
+                    ("Source", report.source.clone()),
+                    ("Requested ref", report.requested_ref.clone()),
+                ]);
+                if let Some(resolved) = &report.resolved_ref {
+                    print_details(&format!("Resolved commit: {resolved}"));
+                }
+                if let Some(cache) = &report.cache_path {
+                    print_details(&format!("Content root: {cache}"));
+                }
+                if report.status == "dry-run" {
+                    print_next_step(
+                        "Review the source and ref, then rerun the same command with --apply.",
+                    );
+                } else if report.status == "missing" {
+                    print_next_step("Run rainy defaults install --apply while online.");
                 }
             }
             Self::Doctor { report } => {

@@ -15,7 +15,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 ## 当前仓库分层
 
 - `crates/rainy-cli`: 当前唯一 Rust crate，包含 CLI 命令树、配置、registry、plan、action、policy、patch、doctor、verify、evidence、plugin、schema、conformance、audit、self-update 等模块。
-- `community-packs`: 内置开源能力包，覆盖 Spring Boot、Next.js、Docker Compose、PostgreSQL、Redis、MinIO、OIDC/Keycloak、OpenAPI、Dev Container、GitHub Actions、OpenTelemetry、Helm draft。
+- `community-packs`: 官方默认分发包中的开源能力模块，覆盖 Spring Boot、Next.js、Docker Compose、PostgreSQL、Redis、MinIO、OIDC/Keycloak、OpenAPI、Dev Container、GitHub Actions、OpenTelemetry、Helm draft。
 - `schemas`: Rainy 项目、能力包、计划、变更集、报告、插件、审计、自更新等 JSON Schema。
 - `integrations/skills/rainy-cli`: 模型可发现的 Rainy 执行 Skill，定义 bootstrap、plan/apply/verify 安全工作流。
 - `integrations/skills/rainy-comet`: OpenSpec、Superpowers、Comet 和 Rainy 之间的职责与审批边界 Skill。
@@ -28,13 +28,15 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 `main.rs` 是命令分发和全局横切逻辑入口。它解析 CLI 参数，执行自更新提示，按命令路由到各模块，并在成功或失败后写 audit log。
 
-`cli.rs` 定义命令树和参数结构。当前命令包括 `new/init/add/apply/capability/pack/doctor/verify/evidence/plugin/agent/skill/conformance/schema/self`，未知顶层命令会进入 plugin external forwarding。
+`cli.rs` 定义命令树和参数结构。当前命令包括 `new/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/conformance/schema/self`，未知顶层命令会进入 plugin external forwarding。
 
 `config.rs` 负责 `rainy.yaml` 和 `capability.lock` 的读写。`rainy.yaml` 描述项目、路径、registry source、policy、verify 配置；`capability.lock` 记录已安装能力、provider、版本、artifacts 和 skills。
 
-`skills.rs` 负责项目级模型 Skill 生命周期。它读取 `rainy-skills.yaml`，安装内嵌的 Rainy Skills，调用固定版本 Comet 的官方 CLI 安装 OpenSpec/Comet，并通过固定版本 `skills` CLI 安装固定版本 Superpowers，生成 `skills.lock`，执行内容摘要和依赖 doctor，并提供 install/status/update/uninstall。核心能力 profile 不启用时不会要求 Node.js。
+`defaults.rs` 管理官方内容分发。`rainy-defaults.yaml` 声明 CLI 兼容范围以及 Packs、Skills、模板目录；Git source 按 ref 解析到 commit，下载到 `RAINY_HOME/defaults`，通过全局 lock、跨进程文件锁和原子目录替换保证一致性。Debug 构建可直接读取工作区；release 二进制始终按默认包流程运行，除非显式配置开发源。
 
-`registry.rs` 负责加载 capability pack 和 capability definition。当前支持内置 community packs、命名本地源、GitHub/GitLab Git 源、HTTPS index 和带 SHA-256 的 HTTPS 压缩包，并提供模块选择、企业 Skill 安装、pack install/update/sign/verify、capability list/explain/graph。远程内容使用 `RAINY_HOME/registries/<name>/<source-hash>` 全局缓存，项目仅保存配置和 `.rainy/registry.lock`。内置 community packs 与 JSON schemas 会编译进可执行文件，独立安装后按版本提取到只读运行缓存，不依赖构建机或源码仓库路径。
+`skills.rs` 负责项目级模型 Skill 生命周期。它读取 `rainy-skills.yaml`，从默认分发包安装 Rainy Skills，调用固定版本 Comet 的官方 CLI 安装 OpenSpec/Comet，并通过固定版本 `skills` CLI 安装固定版本 Superpowers，生成 `skills.lock`，执行内容摘要和依赖 doctor，并提供 install/status/update/uninstall。核心能力 profile 不启用时不会要求 Node.js。
+
+`registry.rs` 负责加载 capability pack 和 capability definition。当前支持默认分发包、命名本地源、GitHub/GitLab Git 源、HTTPS index 和带 SHA-256 的 HTTPS 压缩包，并提供模块选择、企业 Skill 安装、pack install/update/sign/verify、capability list/explain/graph。远程企业内容使用 `RAINY_HOME/registries/<name>/<source-hash>` 缓存，项目仅保存配置和 `.rainy/registry.lock`。官方默认内容使用独立的 `RAINY_HOME/defaults` 缓存；只有 JSON Schemas 编译进可执行文件。
 
 `actions.rs` 负责把 capability action 转换成 `ExecutionPlan` 和 `ChangeSet`。它处理依赖检查、provider 选择、模板变量、内置 action 执行、plan file 重放、upgrade/remove，并生成 capability lock 更新。
 
@@ -74,7 +76,7 @@ rainy capability explain <id>
 rainy capability graph
 ```
 
-Registry 会先读取项目配置，再加载配置中的 source 和内置 community packs，最终按 capability id 提供查询。
+Registry 会先读取项目配置，再加载配置中的 source 和官方默认包，最终按 capability id 提供查询。
 
 ### 3. 计划能力变更
 
@@ -179,7 +181,7 @@ Release workflow 在 tag 或手动触发时运行：
 verify release inputs
 build Linux/macOS/Windows binaries
 package archives and sha256 files
-force embedded-resource smoke, verify all expected assets, and generate SBOM/provenance
+force standalone defaults-download and embedded-schema smoke, verify all expected assets, and generate SBOM/provenance
 publish GitHub Release assets, checksums, and installer scripts
 ```
 

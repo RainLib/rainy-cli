@@ -1,0 +1,14 @@
+apiVersion: rainy.dev/v1
+kind: RainyDefaults
+
+metadata:
+  name: rainy-official
+  version: 0.4.0
+
+requires:
+  rainy: ">=0.4.0, <0.5.0"
+
+paths:
+  packs: community-packs
+  skills: integrations/skills
+  templates: defaults/templates

@@ -4,7 +4,7 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-07-23
+## [0.4.0] - 2026-07-24
 
 ### Added
 
@@ -17,12 +17,17 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
   and OpenCode targets, managed digests, update handling, and local-drift protection.
 - Added interactive Skill target selection, normalized command output and progress presentation,
   Registry schemas, enterprise examples, command reference, and architecture documentation.
+- Added `rainy defaults status/install/update/doctor`, `rainy-defaults.yaml`, global defaults locks,
+  enterprise mirror overrides, offline mode, safe Git checkout, and atomic shared caches.
 
 ### Changed
 
 - Registry downloads no longer write into the current project. Projects retain only `rainy.yaml`
   and `.rainy/registry.lock`; removing a project Registry keeps the shared cache available.
 - Expanded command help with purpose descriptions, value placeholders, next actions, and examples.
+- Moved official community Packs, Rainy Skills, and Golden Path template assets out of the CLI
+  binary into a version-compatible Git-managed default distribution.
+- Kept protocol JSON Schemas embedded so validation and recovery commands remain available offline.
 
 ### Tests
 

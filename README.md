@@ -23,7 +23,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - `docs`: 外部作者编写 capability pack 和 plugin 的说明。
 - `.github/workflows/ci.yml`: 基础 CI 门禁示例。
 
-内置 community packs 覆盖的主流研发闭环包括：
+官方默认包中的 community packs 覆盖以下主流研发闭环：
 
 - Spring Boot backend
 - Next.js frontend
@@ -111,7 +111,19 @@ Windows 安装脚本也支持同样的参数：
 ```
 
 安装器必须下载并验证对应 `.sha256` 文件，校验文件缺失或摘要不匹配时会停止。替换失败会恢复原有二进制，成功后会自动验证 `rainy --version`。
-预编译 CLI 已内嵌 community packs 和 JSON schemas，安装后不依赖源码仓库；首次使用时会把只读运行资源提取到系统临时缓存。
+预编译 CLI 仅内嵌与当前协议强绑定的 JSON Schemas。官方 community packs、Rainy Skills 和
+Golden Path 模板由默认分发包管理，首次需要时从同版本 Git tag 下载到
+`~/.rainy/defaults/rainy-official/<SOURCE_HASH>`，不会写入当前工程。下载成功后可离线复用。
+
+```bash
+rainy defaults status
+rainy defaults install --apply
+rainy defaults doctor
+rainy defaults update --apply
+```
+
+企业镜像可设置 `RAINY_DEFAULTS_SOURCE` 和 `RAINY_DEFAULTS_REF`；`RAINY_OFFLINE=1` 禁止网络
+回源，缓存不存在时会返回可操作的错误。
 
 GitHub 访问不稳定时可以使用 OSS/CDN 静态镜像。镜像配置、目录协议和
 `ossutil` 发布步骤见 [Release mirrors](docs/release-mirrors.md)。

@@ -40,10 +40,16 @@ Locate the workspace containing `rainy.yaml`. Do not initialize or overwrite a p
 Start with read-only JSON commands:
 
 ```sh
+"$RAINY_BIN" defaults status --json
 "$RAINY_BIN" --workspace "$WORKSPACE" agent context --json
 "$RAINY_BIN" --workspace "$WORKSPACE" doctor --json
 "$RAINY_BIN" --workspace "$WORKSPACE" capability installed --json
 ```
+
+If defaults are missing, preview `rainy defaults install`, obtain approval, then run it with
+`--apply`. Do not invent a source or ref: use the official version-matched package or an explicitly
+configured enterprise mirror. In offline mode, report `DEFAULTS_OFFLINE_MISSING` instead of bypassing
+the package manager.
 
 When `rainy-skills.yaml` exists, also run:
 

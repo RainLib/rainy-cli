@@ -99,6 +99,7 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["capability"],
         &["pack"],
         &["registry"],
+        &["defaults"],
         &["evidence"],
         &["plugin"],
         &["agent"],
@@ -140,6 +141,10 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["registry", "sync"],
         &["registry", "remove"],
         &["registry", "doctor"],
+        &["defaults", "status"],
+        &["defaults", "install"],
+        &["defaults", "update"],
+        &["defaults", "doctor"],
         &["doctor"],
         &["verify"],
         &["evidence", "generate"],
@@ -1150,9 +1155,125 @@ fn new_dry_run_json_does_not_create_project() {
 }
 
 #[test]
-fn standalone_binary_uses_embedded_packs_and_schemas() {
+fn standalone_binary_downloads_defaults_and_keeps_schemas_embedded() {
     let temp = TempDir::new().expect("tempdir");
-    let cache = temp.path().join("asset-cache");
+    let rainy_home = temp.path().join("rainy-home");
+    let schema_cache = temp.path().join("schema-cache");
+    let distribution = temp.path().join("defaults-repository");
+    write(
+        &distribution.join("rainy-defaults.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: RainyDefaults
+metadata:
+  name: rainy-official
+  version: 0.4.0
+requires:
+  rainy: ">=0.4.0, <0.5.0"
+paths:
+  packs: community-packs
+  skills: integrations/skills
+  templates: defaults/templates
+"#,
+    );
+    copy_directory(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../community-packs"),
+        &distribution.join("community-packs"),
+    );
+    copy_directory(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integrations/skills"),
+        &distribution.join("integrations/skills"),
+    );
+    copy_directory(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../defaults/templates"),
+        &distribution.join("defaults/templates"),
+    );
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "rainy-test@example.com"],
+        vec!["config", "user.name", "Rainy Test"],
+        vec!["add", "."],
+        vec!["commit", "--quiet", "-m", "default distribution"],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&distribution)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success());
+    }
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&distribution)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("resolve defaults commit");
+    let commit = String::from_utf8(commit.stdout)
+        .expect("commit UTF-8")
+        .trim()
+        .to_string();
+    let source = format!("file://{}", distribution.display());
+
+    let status = rainy()
+        .args(["defaults", "status", "--json"])
+        .current_dir(temp.path())
+        .env("RAINY_HOME", &rainy_home)
+        .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
+        .env("RAINY_DEFAULTS_SOURCE", &source)
+        .env("RAINY_DEFAULTS_REF", &commit)
+        .output()
+        .expect("check defaults status");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&status.stdout).expect("status JSON")["report"]
+            ["status"],
+        "missing"
+    );
+    let offline = rainy()
+        .args(["capability", "list", "--json"])
+        .current_dir(temp.path())
+        .env("RAINY_HOME", &rainy_home)
+        .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
+        .env("RAINY_DEFAULTS_SOURCE", &source)
+        .env("RAINY_DEFAULTS_REF", &commit)
+        .env("RAINY_OFFLINE", "1")
+        .output()
+        .expect("run offline defaults check");
+    assert!(!offline.status.success());
+    assert!(String::from_utf8_lossy(&offline.stderr).contains("DEFAULTS_OFFLINE_MISSING"));
+
+    let install = rainy()
+        .args(["defaults", "install", "--apply", "--json"])
+        .current_dir(temp.path())
+        .env("RAINY_HOME", &rainy_home)
+        .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
+        .env("RAINY_DEFAULTS_SOURCE", &source)
+        .env("RAINY_DEFAULTS_REF", &commit)
+        .output()
+        .expect("install defaults");
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    for command in ["doctor", "update"] {
+        let mut args = vec!["defaults", command, "--json"];
+        if command == "update" {
+            args.insert(2, "--apply");
+        }
+        let output = rainy()
+            .args(args)
+            .current_dir(temp.path())
+            .env("RAINY_HOME", &rainy_home)
+            .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
+            .output()
+            .expect("validate managed defaults");
+        assert!(
+            output.status.success(),
+            "defaults {command} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     for args in [
         &["capability", "list", "--json"][..],
         &["schema", "list", "--json"][..],
@@ -1160,8 +1281,10 @@ fn standalone_binary_uses_embedded_packs_and_schemas() {
         let output = rainy()
             .args(args)
             .current_dir(temp.path())
+            .env("RAINY_HOME", &rainy_home)
+            .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
             .env("RAINY_FORCE_EMBEDDED_ASSETS", "1")
-            .env("RAINY_ASSET_CACHE", &cache)
+            .env("RAINY_ASSET_CACHE", &schema_cache)
             .output()
             .expect("run standalone command");
         assert!(
@@ -1174,7 +1297,7 @@ fn standalone_binary_uses_embedded_packs_and_schemas() {
         .args(["new", "standalone-app"])
         .current_dir(temp.path())
         .env("RAINY_FORCE_EMBEDDED_ASSETS", "1")
-        .env("RAINY_ASSET_CACHE", &cache)
+        .env("RAINY_ASSET_CACHE", &schema_cache)
         .output()
         .expect("create standalone project");
     assert!(
@@ -1185,7 +1308,7 @@ fn standalone_binary_uses_embedded_packs_and_schemas() {
     let config = fs::read_to_string(temp.path().join("standalone-app/rainy.yaml"))
         .expect("standalone config");
     assert!(config.contains("sources: []"));
-    assert!(!config.contains(&cache.to_string_lossy().to_string()));
+    assert!(!config.contains(&rainy_home.to_string_lossy().to_string()));
     let output = rainy()
         .args([
             "--workspace",
@@ -1200,12 +1323,14 @@ fn standalone_binary_uses_embedded_packs_and_schemas() {
             "--json",
         ])
         .env("RAINY_FORCE_EMBEDDED_ASSETS", "1")
-        .env("RAINY_ASSET_CACHE", &cache)
+        .env("RAINY_ASSET_CACHE", &schema_cache)
+        .env("RAINY_HOME", &rainy_home)
+        .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
         .output()
-        .expect("install embedded Rainy skill");
+        .expect("install managed Rainy skill");
     assert!(
         output.status.success(),
-        "embedded skill install failed: {}",
+        "managed skill install failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
@@ -1214,17 +1339,15 @@ fn standalone_binary_uses_embedded_packs_and_schemas() {
             .is_file()
     );
     assert!(
-        cache
-            .join(format!("rainy-cli-assets-{}", env!("CARGO_PKG_VERSION")))
+        schema_cache
+            .join(format!("rainy-cli-schemas-{}", env!("CARGO_PKG_VERSION")))
             .join(".complete")
             .is_file()
     );
-    assert!(
-        cache
-            .join(format!("rainy-cli-assets-{}", env!("CARGO_PKG_VERSION")))
-            .join("integrations/skills/rainy-comet/SKILL.md")
-            .is_file()
-    );
+    assert!(rainy_home.join("defaults.lock").is_file());
+    let lock = fs::read_to_string(rainy_home.join("defaults.lock")).expect("defaults lock");
+    assert!(lock.contains(&commit));
+    assert!(lock.contains("packageVersion: 0.4.0"));
 }
 
 #[test]
@@ -3713,6 +3836,19 @@ fn write(path: &Path, content: &str) {
         fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, content).expect("write file");
+}
+
+fn copy_directory(source: &Path, target: &Path) {
+    fs::create_dir_all(target).expect("create copied directory");
+    for entry in fs::read_dir(source).expect("read copied directory") {
+        let entry = entry.expect("copied directory entry");
+        let destination = target.join(entry.file_name());
+        if entry.file_type().expect("copied file type").is_dir() {
+            copy_directory(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), destination).expect("copy fixture file");
+        }
+    }
 }
 
 fn first_directory(path: &Path) -> std::path::PathBuf {

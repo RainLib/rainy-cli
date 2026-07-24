@@ -98,6 +98,9 @@ Never infer `--apply` approval from a Comet transition. Use `--force` only after
 ## Enterprise Capabilities
 
 ```sh
+"$RAINY_BIN" defaults status --json
+"$RAINY_BIN" defaults install --dry-run --json
+"$RAINY_BIN" defaults doctor --json
 "$RAINY_BIN" schema validate --schema org-policy --file "$WORKSPACE/.rainy/org-policy.yaml" --json
 "$RAINY_BIN" conformance check --path "$PACK_ROOT" --json
 "$RAINY_BIN" --workspace "$WORKSPACE" pack install "$PACK_SOURCE" --dry-run --json

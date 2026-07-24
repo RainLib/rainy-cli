@@ -5,6 +5,7 @@ mod bundled_assets;
 mod cli;
 mod config;
 mod conformance;
+mod defaults;
 mod doctor;
 mod error;
 mod evidence;
@@ -127,6 +128,7 @@ fn command_requires_audit(command: &Commands) -> bool {
             cli::RegistrySubcommand::Remove(args) => args.apply,
             _ => false,
         },
+        Commands::Defaults(_) => false,
         Commands::Plugin(command) => match &command.command {
             cli::PluginSubcommand::Install(args) => args.apply,
             cli::PluginSubcommand::Call(args) => args.apply,
@@ -148,6 +150,7 @@ fn command_label(command: &Commands) -> &'static str {
         Commands::Capability(_) => "capability",
         Commands::Pack(_) => "pack",
         Commands::Registry(_) => "registry",
+        Commands::Defaults(_) => "defaults",
         Commands::Doctor(_) => "doctor",
         Commands::Verify(_) => "verify",
         Commands::Evidence(_) => "evidence",
@@ -208,6 +211,7 @@ fn run(
         },
         Commands::Pack(command) => registry::handle_pack_command(&workspace, command),
         Commands::Registry(command) => registry::handle_registry_command(&workspace, command),
+        Commands::Defaults(command) => defaults::handle_defaults_command(command),
         Commands::Doctor(args) => {
             doctor::doctor_command(&workspace, args.capability.as_deref(), progress)
         }
