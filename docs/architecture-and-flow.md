@@ -34,9 +34,9 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 `defaults.rs` 管理官方内容分发。`rainy-defaults.yaml` 声明 CLI 兼容范围以及 Packs、Skills、模板目录；Git source 按 ref 解析到 commit，下载到 `RAINY_HOME/defaults`，通过全局 lock、跨进程文件锁和原子目录替换保证一致性。Debug 构建可直接读取工作区；release 二进制始终按默认包流程运行，除非显式配置开发源。
 
-`skills.rs` 负责项目级模型 Skill 生命周期。它读取 `rainy-skills.yaml`，从默认分发包安装 Rainy Skills，调用固定版本 Comet 的官方 CLI 安装 OpenSpec/Comet，并通过固定版本 `skills` CLI 安装固定版本 Superpowers，生成 `skills.lock`，执行内容摘要和依赖 doctor，并提供 install/status/update/uninstall。核心能力 profile 不启用时不会要求 Node.js。
+`skills.rs` 负责项目级模型 Skill 生命周期。它可独立运行于没有 `rainy.yaml` 的普通仓库，发现并校验 `rainy-skills/` 中项目拥有的规则与命令包，读取 `rainy-skills.yaml`，从默认分发包安装 Rainy Skills，调用固定版本 Comet 的官方 CLI 安装 OpenSpec/Comet，并通过固定版本 `skills` CLI 安装固定版本 Superpowers，生成 `skills.lock`，执行内容摘要和依赖 doctor，并提供 create/init/install/status/update/uninstall。完整 Rainy 工程额外同步 capability 上下文；核心能力 profile 不启用时不会要求 Node.js。
 
-`registry.rs` 负责加载 capability pack 和 capability definition。当前支持默认分发包、命名本地源、GitHub/GitLab Git 源、HTTPS index 和带 SHA-256 的 HTTPS 压缩包，并提供模块选择、企业 Skill 安装、pack install/update/sign/verify、capability list/explain/graph。远程企业内容使用 `RAINY_HOME/registries/<name>/<source-hash>` 缓存，项目仅保存配置和 `.rainy/registry.lock`。官方默认内容使用独立的 `RAINY_HOME/defaults` 缓存；只有 JSON Schemas 编译进可执行文件。
+`registry.rs` 负责加载 capability pack 和 capability definition。当前支持默认分发包、命名本地源、GitHub/GitLab Git 源、HTTPS index 和带 SHA-256 的 HTTPS 压缩包，并提供模块选择、企业 Skill 发现/多选安装、pack install/update/sign/verify、capability list/explain/graph。交互终端先选择平台，再从所选 Pack 的 `exports.skills` 多选实际 Skill；CI/Agent 使用 `--target` 与 `--skill` 或 `--all-skills` 复现。锁只记录最终选择，更新采用锁中集合，不会自动启用新增 Skill；取消选择前验证旧 digest，避免删除本地修改。远程企业内容使用 `RAINY_HOME/registries/<name>/<source-hash>` 缓存，项目仅保存配置和 `.rainy/registry.lock`。官方默认内容使用独立的 `RAINY_HOME/defaults` 缓存；只有 JSON Schemas 编译进可执行文件。
 
 `actions.rs` 负责把 capability action 转换成 `ExecutionPlan` 和 `ChangeSet`。它处理依赖检查、provider 选择、模板变量、内置 action 执行、plan file 重放、upgrade/remove，并生成 capability lock 更新。
 
@@ -83,7 +83,7 @@ Registry 会先读取项目配置，再加载配置中的 source 和官方默认
 能力接入通常从 dry-run 开始：
 
 ```text
-rainy add capability <id> --dry-run
+rainy capability add <id> --dry-run
 ```
 
 流程是：
@@ -102,12 +102,17 @@ return ExecutionPlan + ChangeSet + rendered diff
 
 如果指定 `--output-plan`，CLI 会把 plan 写成 JSON，后续可通过 `rainy apply --plan` 重放。
 
+企业 Git starter 使用独立的 `project_template.rs`。`rainy new --template` 在项目建立前读取
+`ProjectTemplateCatalog`，把固定 Git ref 拉取到同文件系统临时目录，拒绝不安全条目，过滤所有 `.git`
+元数据，使用严格 Handlebars 变量渲染，并校验 `rainy.yaml`/`capability.lock` 后原子移动到目标位置。
+目标 Git 初始化和 remote 设置只作为结构化 Next steps 输出，不隐式执行。
+
 ### 4. 应用能力变更
 
 写文件必须显式 `--apply`：
 
 ```text
-rainy add capability <id> --apply
+rainy capability add <id> --apply
 rainy apply --plan plans/<id>.json --apply
 ```
 
@@ -159,21 +164,23 @@ User / Agent
 默认组合 profile 通过以下命令启用：
 
 ```text
-rainy skill init --profile comet --target codex --language zh --dry-run
-rainy skill init --profile comet --target codex --language zh --apply
+rainy skill install --profile comet --target codex --language zh --dry-run
+rainy skill install --profile comet --target codex --language zh --apply
 rainy skill status
 rainy skill doctor
 ```
 
 所有安装、更新和卸载默认只生成 dry-run report，必须显式 `--apply`。Comet、`skills` CLI 和 Superpowers 均固定到精确 SemVer；OpenSpec/Comet/Superpowers 实际生成的 Skill 路径、管理方和内容摘要写入 `skills.lock`。任一必需组件缺失都会阻止成功安装并使 doctor 失败。Rainy 自有 Skill 和 Rainy 管理的上游 Skill 发生手工修改时，update/uninstall 会拒绝继续，除非用户审阅后指定 `--force`。
 
-交互终端中的 `skill init` 先选择完整组合或 Rainy-only 套件，始终加入 Universal `.agents/skills`，再多选 Codex、Claude、Cursor、GitHub Copilot、Gemini 和 OpenCode 目标，最后展示安装摘要并要求独立的 yes/no 确认；已有 profile 的 `skill install` 使用同一确认流程。非 TTY、JSON 和 CI 使用确定性的 `comet + codex + universal` 默认值且不会提示，必须显式 `--apply`。Comet 初始化前先安装目标宿主下的 `rainy-cli`、`rainy-comet` 和固定版本 Superpowers，使 Comet 检测到 Superpowers 已存在并避免重复安装。Universal 和 Codex 共享 `.agents/skills`，Claude 使用 `.claude/skills`，Cursor 使用 `.cursor/skills` 并兼容从 `.agents/skills` 发现遵循 Universal 标准的上游 Skills；安装后会按摘要把受管的 `.codex/skills`、`.agent/skills` 兼容副本合并到规范通用目录，保留规则、hooks、workflows 和未知用户文件。上游初始化完成后，Rainy 使用结构化 YAML 合并 `.comet/config.yaml` 并强制 `auto_transition: false`；Comet 阶段变化不能替代 Rainy apply、原生插件、部署、迁移或 secret 写入审批。
+交互终端中的 `skill install` 在缺少 profile 时自动初始化：先选择完整组合或 Rainy-only 套件，始终加入 Universal `.agents/skills`，再多选 Codex、Claude、Cursor、GitHub Copilot、Gemini 和 OpenCode 目标，然后从 `rainy-skills/` 多选项目 Skill，最后展示安装摘要并要求独立的 yes/no 确认。已有 profile 时固定套件、语言、宿主和版本，只重新选择项目 Skill。非 TTY、JSON 和 CI 首次使用确定性的 `comet + codex + universal` 默认值且不会提示，必须显式 `--apply`，自定义 Skill 使用 `--skill` 或 `--all-custom-skills` 声明。Comet 初始化前先安装目标宿主下的 `rainy-cli`、`rainy-comet` 和固定版本 Superpowers，使 Comet 检测到 Superpowers 已存在并避免重复安装。Universal 和 Codex 共享 `.agents/skills`，Claude 使用 `.claude/skills`，Cursor 使用 `.cursor/skills` 并兼容从 `.agents/skills` 发现遵循 Universal 标准的上游 Skills；安装后会按摘要把受管的 `.codex/skills`、`.agent/skills` 兼容副本合并到规范通用目录，保留规则、hooks、workflows 和未知用户文件。选中的项目 Skill 复制到每个目标宿主并写入 lock 摘要，安装过程不执行 `scripts/`，源 `rainy-skills/` 不由卸载流程删除。上游初始化完成后，Rainy 使用结构化 YAML 合并 `.comet/config.yaml` 并强制 `auto_transition: false`；Comet 阶段变化不能替代 Rainy apply、原生插件、部署、迁移或 secret 写入审批。
 
 `AGENTS.md` 使用 `rainy:context` 管理块更新，保留 Comet block 和用户自定义内容。`rainy skill sync` 对未启用 profile 的旧项目继续保持原有上下文同步行为。
 
 ### 8. 发布、安装和自更新
 
-CI 和依赖安全检查在面向 `main` 的 pull request 上运行，普通 `main` push 不会重复触发。安全 workflow 还保留每周定时扫描和手动触发；仓库应通过分支保护禁止绕过 PR required checks 直接写入 `main`。
+普通 `main` push 和 pull request 不自动运行构建。推送 `vX.Y.Z` tag 后，release workflow 统一执行
+质量检查、跨平台构建和发布；打 tag 前应在本地执行 `make production-check`。安全 workflow 保留每周
+定时扫描和手动触发。
 
 Release workflow 在 tag 或手动触发时运行：
 
@@ -212,8 +219,9 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
 
 - `rainy.yaml`: 项目配置入口，包含路径、registry source、policy、verify。
 - `capability.lock`: 已安装能力的事实来源，记录 provider、版本、Pack source/digest、artifacts、skills。
-- `rainy-skills.yaml`: 项目模型 Skill 期望状态，记录 profile、scope、语言、宿主目标、固定 Comet 包和审批策略。
-- `skills.lock`: Skill 安装事实，记录 Rainy/Comet 版本、宿主路径、实际上游组件和内容摘要。
+- `rainy-skills/`: 当前仓库拥有的自定义 Skill 源，包含 `SKILL.md`、参考资料和可选脚本。
+- `rainy-skills.yaml`: 项目模型 Skill 期望状态，记录 profile、scope、语言、宿主目标、自定义 Skill 选择、固定 Comet 包和审批策略。
+- `skills.lock`: Skill 安装事实，记录 Rainy/Comet 版本、宿主路径、项目 Skill、实际上游组件和内容摘要。
 - `ExecutionPlan`: 可保存和重放的能力变更计划。
 - `ChangeSet`: 文件级变更集合，包含 before/after、kind、summary、noop。
 - `schemas/*.schema.json`: 对外协议和报告结构的稳定参考。
@@ -224,7 +232,8 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
   仅由 `--verbose` 展示。错误只输出一次，并包含稳定 code、原因和可执行恢复命令。
 - 进度输出：统一四阶段生命周期写入 `stderr`，TTY 使用带心跳和耗时的动态进度条，
   `--progress always` 使用稳定逐行日志；失败进度只报告耗时，具体错误由结构化错误块输出一次。
-  `--json` 和 `--quiet` 强制关闭进度。
+  `auto` 只用于可能耗时的命令，`--no-color`/`NO_COLOR` 使用逐行输出而不重绘；`--json` 和
+  `--quiet` 强制关闭进度。`Ctrl+C` 清理动态行并以退出码 `130` 退出。
 - Release assets: 多平台 CLI 包、对应 sha256 文件和安装脚本。
 - Model Skill assets: 平台无关的 `rainy-cli-skill`、`rainy-comet-skill` 压缩包及对应 sha256。
 

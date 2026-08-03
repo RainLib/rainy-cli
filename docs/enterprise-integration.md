@@ -139,16 +139,18 @@ plugin 不应自行写项目目录。部署、数据库迁移和 secret 写入�
 
 ## 5. 将企业规范提供给模型
 
-企业 Skill 放在 Pack 的 `exports.skills` 中，Rainy 只安装显式声明的 Skill，并记录文件摘要。安装时
-必须选择生效平台；Codex/Universal 使用 `.agents/skills`，Claude 使用 `.claude/skills`，Cursor
-使用 `.cursor/skills`：
+企业 Skill 放在 Pack 的 `exports.skills` 中，Rainy 只安装显式声明且最终被选择的 Skill，并记录文件
+摘要。人工终端省略 `--target` 和 `--skill` 时依次多选平台与 Skill；Agent/CI 必须显式传参。
+Codex/Universal 使用 `.agents/skills`，Claude 使用 `.claude/skills`，Cursor 使用
+`.cursor/skills`：
 
 ```bash
 rainy registry sync platform --module company-engineering \
-  --install-skills --target codex,cursor --apply
+  --install-skills --target codex,cursor --skill company-service --apply
 ```
 
-已安装 Skill 被人工修改后，更新会以 `REGISTRY_SKILL_CONFLICT` 停止；审查后才可使用 `--force` 覆盖。
+可重复 `--skill` 选择多个导出项；只有明确需要全部内容时才用 `--all-skills`。已安装 Skill 被人工修改
+后，更新或取消选择会以 `REGISTRY_SKILL_CONFLICT` 停止；审查后才可使用 `--force` 覆盖。
 企业 Skill 负责解释公司术语、服务目录和操作顺序，但不得绕过 Rainy。建议让 Agent 执行：
 
 ```bash

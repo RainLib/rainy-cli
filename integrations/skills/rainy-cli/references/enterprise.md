@@ -9,6 +9,7 @@ manifests, CI gates, immutable releases, project consumption, updates, and rollb
 | Request | Rainy extension |
 | --- | --- |
 | Add dependencies, config, templates, CI, Helm, or SDK files | Capability pack |
+| Create a complete new project from a private Git starter | ProjectTemplateCatalog plus `rainy new --template` |
 | Publish and pin internal capability versions | Named Git, archive, or HTTP registry |
 | Deny paths or require approval action IDs | Layered policy |
 | Call approval, IAM, CMDB, artifact, or deployment APIs | Wasm plugin or HTTPS adapter |
@@ -29,8 +30,9 @@ manifests, CI gates, immutable releases, project consumption, updates, and rollb
 Associate named registries with `rainy registry add`, select modules with `rainy registry sync
 <NAME> --module ...`, and use `--all` only when every module is intended. Git refs resolve to commit
 IDs; archives require SHA-256; HTTP indexes verify every file and downloaded pack identity. Remote
-content belongs under `RAINY_HOME/registries`, never under the workspace. Install exported enterprise
-Skills only with explicit `--install-skills --target ...`. Do not continue when checksums, publisher
+content belongs under `RAINY_HOME/registries`, never under the workspace. In Agent and CI flows, install
+exported enterprise Skills only with explicit `--install-skills --target ... --skill ...`; do not invoke
+the terminal selector. Use `--all-skills` only when the user explicitly requests every export. Do not continue when checksums, publisher
 signatures, local Skill drift, policy, approval, or verification fail.
 
 Organization policy files are loaded from `/etc/rainy/policy.yaml`, `~/.rainy/policy.yaml`, and
@@ -39,3 +41,8 @@ accumulate. `allowEdit` entries are additive, so absolute restrictions belong in
 
 Never generate real credentials. Generate references to the enterprise secret provider and leave value
 injection to workload identity, CI, Vault, or KMS.
+
+For a new project, inspect and validate the selected `ProjectTemplateCatalog`, preview `rainy new
+<PROJECT_NAME> --template <TEMPLATE_ID>`, and require explicit approval before `--apply`. Rainy must clone
+the fixed source ref, exclude source `.git`, and print destination repository setup commands. Do not run
+those Git commands or push until the user has created and confirmed the target remote URL.

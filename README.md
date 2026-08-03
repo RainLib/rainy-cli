@@ -139,6 +139,25 @@ rainy new demo-saas --golden-path spring-nextjs-saas --package com.example.demo 
 cd demo-saas
 ```
 
+从企业 Git 模板创建项目：
+
+```bash
+rainy schema validate --schema project-template-catalog \
+  --file ./project-templates.yaml
+rainy new order-service --template enterprise-java-service \
+  --template-config ./project-templates.yaml \
+  --package com.company.orders --dry-run
+rainy new order-service --template enterprise-java-service \
+  --template-config ./project-templates.yaml \
+  --package com.company.orders \
+  --git-url git@git.example.com:apps/order-service.git --apply
+```
+
+Rainy 会将固定 Git ref 克隆到临时目录，渲染模板并校验 `rainy.yaml` 与 `capability.lock`，但不会把
+模板仓库的 `.git` 带入新工程。创建完成后会输出 `git init`、`git remote add origin`、首次提交与推送
+命令。以 `.hbs` 结尾的文件内容和路径支持变量渲染；其他文件原样复制。模板源也可以统一声明在
+`~/.rainy/templates.yaml`，或由 `RAINY_TEMPLATE_CONFIG` 指定。
+
 查看可用能力：
 
 ```bash
@@ -150,8 +169,8 @@ rainy capability graph
 先 dry-run 计划变更，再 apply：
 
 ```bash
-rainy add capability minio-file-storage --provider minio --dry-run
-rainy add capability minio-file-storage --provider minio --apply
+rainy capability add minio-file-storage --provider minio --dry-run
+rainy capability add minio-file-storage --provider minio --apply
 ```
 
 检查和验证项目：
@@ -167,29 +186,46 @@ rainy evidence generate
 
 ```bash
 rainy skill --help
-rainy skill init --help
-rainy skill init # 交互选择 Skill 套件和目标平台，仅预览
-# 按预览中的 Next step 执行：
-rainy skill init --apply
+rainy skill install --help
+rainy skill install # 缺少配置时自动初始化，并交互选择套件、平台和项目 Skill
 rainy skill status
 rainy skill doctor
 ```
 
-在真实终端中省略 `--profile` 或 `--target` 时，`rainy skill init` 会先选择 Skill
-套件，再用方向键、空格和回车多选目标平台。无交互的脚本、Agent 和 CI 默认使用
+`rainy skill install` 是日常统一入口。没有 `rainy-skills.yaml` 时会自动执行初始化；
+在真实终端中会依次选择 Skill 套件、目标平台和 `rainy-skills/` 中的项目自定义 Skill。
+已有配置时保留套件和平台，只重新选择项目 Skill。无交互的脚本、Agent 和 CI 默认使用
 `--profile comet --target codex --language zh`，并始终加入 Universal `.agents/skills`；
-也可显式传参保证完全可复现。交互终端
-在选择后显示安装摘要并询问 `[Y/n]`；明确确认后立即安装，选择 `n` 则只预览。
+使用 `--skill <SKILL_ID>`、`--all-custom-skills` 或 `--no-custom-skills` 可以明确自定义选择。
+交互终端在选择后
+显示安装摘要并询问 `[Y/n]`；明确确认后立即安装，选择 `n` 则只预览。
 非交互调用仍必须使用 `--apply` 才会执行，`--yes` 是含义相同的兼容别名。
 预览默认只显示状态、启用的 Skills、下一步和影响位置；`--verbose` 才显示内部上游命令
 及全部路径。
 
+Skill 管理可以直接用于普通 Git 项目，不要求预先存在 `rainy.yaml` 或 `capability.lock`。
+这种模式只创建 `rainy-skills.yaml`、`skills.lock`、`AGENTS.md` 和选定宿主的 Skill 目录；
+已有完整 Rainy 工程时才同步 `.enterprise-agent/` 能力上下文。
+
 默认 `comet` profile 由 OpenSpec 管理需求与验收标准、Superpowers 管理工程方法、Comet 管理阶段和恢复状态，Rainy 继续负责可执行计划、policy、显式 `--apply`、verify、evidence 和 audit。Rainy 会统一安装并锁定三套上游 Skills：Comet、OpenSpec 和 Superpowers；任一项缺失都会使安装或 doctor 失败，不需要再手工执行 `npx skills add`。
 
-`rainy-skills.yaml` 记录精确的 Comet、`skills` CLI 和 Superpowers 版本，`skills.lock` 记录实际路径和 SHA-256 摘要。核心 CLI 仍不强制依赖这些 Node 工具；只需要 Rainy Skill 时可使用：
+用户可以把自己的规则、参考资料和可选命令放在项目的 Skill 库中，无需修改或重新打包
+Rainy CLI：
 
 ```bash
-rainy skill init --profile rainy --target codex --apply
+rainy skill create release-review --description "Review enterprise releases" --apply
+# 编辑 rainy-skills/release-review/SKILL.md、references/ 和 scripts/
+rainy skill install --skill release-review --apply
+```
+
+Rainy 安装时只复制选中的 Skill，不执行其中的脚本，并把选择和内容摘要写入
+`rainy-skills.yaml` 与 `skills.lock`。需要跨仓库共享的企业 Skill 应通过 Registry Pack
+发布和安装，项目 `rainy-skills/` 只负责当前仓库拥有的规则。
+
+核心 CLI 仍不强制依赖 Node 工具；只需要 Rainy Skill 时可使用：
+
+```bash
+rainy skill install --profile rainy --target codex --apply
 ```
 
 Universal 和 Codex 的规范项目目录是 `.agents/skills`；Claude 使用
@@ -203,25 +239,42 @@ Agent 或 CI 使用 JSON 输出：
 
 ```bash
 rainy capability list --json
-rainy add capability minio-file-storage --provider minio --dry-run --json
+rainy capability add minio-file-storage --provider minio --dry-run --json
 rainy doctor --json
 ```
 
 ## 命令进度
 
-Rainy 在交互式终端中默认显示四阶段进度条、当前任务和耗时。Skill、verify、doctor
-等多步骤命令会继续更新当前正在执行的具体内容。进度写入 `stderr`，最终结果写入
-`stdout`，因此可以安全地重定向业务结果。
+Rainy 在交互式终端中为可能耗时的命令显示四阶段进度条、当前任务和耗时。Skill、verify、doctor
+等多步骤命令会继续更新当前正在执行的具体内容；列表、说明和补全等快速读取命令默认保持安静。
+进度写入 `stderr`，最终结果写入 `stdout`，因此可以安全地重定向业务结果。
 
 ```bash
-rainy skill init --apply                 # 终端自动显示动态进度
+rainy skill install                      # 终端交互选择并显示动态进度
 rainy verify --profile ci --progress always # CI/日志中强制逐行显示进度
 rainy doctor --progress never            # 关闭进度
 ```
 
 进度模式也可以通过 `RAINY_PROGRESS=auto|always|never` 配置。`--json` 和 `--quiet`
-始终关闭进度，保证 JSON 协议及静默调用不会混入额外内容；`--no-color` 会保留进度
-但关闭颜色。
+始终关闭进度，保证 JSON 协议及静默调用不会混入额外内容；`--no-color` 会将终端进度改为
+稳定逐行输出，不使用 ANSI 重绘。Rainy 同时遵循 `NO_COLOR`；`TERM=dumb` 会关闭颜色和动态
+终端绘制。按 `Ctrl+C` 会以退出码 `130` 终止，并清理活动进度行。
+
+## Shell 补全
+
+`rainy completion <SHELL>` 从当前版本的真实命令树生成补全脚本，普通输出只包含脚本正文，
+不会混入进度或审计记录：
+
+```bash
+# Zsh：当前会话
+source <(rainy completion zsh)
+
+# Fish：持久安装
+rainy completion fish > ~/.config/fish/completions/rainy.fish
+
+# Bash：持久安装
+rainy completion bash > ~/.local/share/bash-completion/completions/rainy
+```
 
 ## Makefile 管理命令
 
@@ -232,6 +285,7 @@ make help          # 查看所有目标
 make build         # 构建 debug binary
 make release       # 构建 release binary
 make install       # cargo install --path crates/rainy-cli
+make install-local # 构建 release 并原子替换 ~/.rainy/bin/rainy
 make install-script # 从 GitHub Release 安装预编译包
 make uninstall     # cargo uninstall rainy-cli
 make fmt           # 格式化 Rust 代码
@@ -266,6 +320,19 @@ make demo-evidence     # 生成 evidence
 make clean-demo        # 删除 demo-saas
 ```
 
+本地验证当前工作区版本并替换已安装命令：
+
+```bash
+make install-local
+rainy --version
+
+# 覆盖安装目录（例如 CI 沙箱或测试目录）
+make install-local INSTALL_DIR="$HOME/.local/bin"
+```
+
+`install-local` 使用 `target/release/rainy`，先写入同目录临时文件，再原子替换
+`$INSTALL_DIR/rainy`。它不会修改 shell 的 `PATH`；首次安装仍使用发布安装器来写入 shell 配置。
+
 常用变量可以覆盖：
 
 ```bash
@@ -279,15 +346,18 @@ make demo-verify PROJECT=my-app PROFILE=ci
 项目初始化：
 
 ```bash
-rainy init app demo-saas --preset spring-nextjs --package com.example.demo
-rainy new demo-saas --golden-path spring-nextjs-saas
+rainy init app demo-saas --preset spring-nextjs --package com.example.demo --apply # 兼容入口
+rainy new demo-saas --golden-path spring-nextjs-saas --apply
 rainy new demo-saas --golden-path spring-nextjs-saas --dry-run --json
+rainy new order-service --template enterprise-java-service \
+  --template-config ./project-templates.yaml --dry-run
 ```
 
 能力管理：
 
 ```bash
 rainy capability list
+rainy capability add minio-file-storage --provider minio --dry-run
 rainy capability explain minio-file-storage
 rainy capability installed
 rainy capability graph
@@ -298,7 +368,7 @@ rainy capability remove minio-file-storage --dry-run
 计划文件工作流：
 
 ```bash
-rainy add capability minio-file-storage --provider minio --output-plan plans/minio.json
+rainy capability add minio-file-storage --provider minio --output-plan plans/minio.json
 rainy apply --plan plans/minio.json --dry-run
 rainy apply --plan plans/minio.json --apply
 ```
@@ -321,7 +391,10 @@ rainy pack verify ./community-packs/minio-file-storage
 ```bash
 rainy registry add company git+https://gitlab.example.com/platform/rainy-packs.git --ref v1.0.0 --apply
 rainy registry sync company --module service-baseline,observability --apply
-rainy registry sync company --module company-engineering --install-skills --target codex,cursor --apply
+# 交互选择平台和 Pack 实际导出的 Skill
+rainy registry sync company --module company-engineering --install-skills --apply
+# CI / Agent 中显式选择，完全无交互
+rainy registry sync company --module company-engineering --install-skills --target codex,cursor --skill company-service --apply
 rainy registry list --verbose
 rainy registry doctor company
 ```
@@ -330,6 +403,11 @@ rainy registry doctor company
 项目提交 `rainy.yaml` 和 `.rainy/registry.lock`；通过 `RAINY_HOME` 可修改系统缓存根目录。企业仓库的
 完整制作流程见 [企业 Git 能力仓库制作规范](docs/enterprise-git-authoring.md)，接入边界与架构说明见
 [企业能力接入](docs/enterprise-integration.md)。
+
+交互终端省略 `--target` 和 `--skill` 时会先多选 Agent 平台，再多选 `pack.yaml` 中
+`exports.skills` 声明的 Skill。自动化使用可重复的 `--skill <SKILL_ID>`；确实需要全部安装时使用
+`--all-skills`。`.rainy/registry.lock` 只记录已选项，后续 `rainy pack update --apply` 不会静默安装
+Registry 新增的 Skill。
 
 Plugin 管理：
 
@@ -360,11 +438,14 @@ rainy skill sync
 Skill profile 管理：
 
 ```bash
-rainy skill init --profile comet --target codex --language zh --dry-run
-rainy skill init --profile comet --target codex --language zh --apply
-rainy skill init --yes # --apply 的兼容别名
-rainy skill install --dry-run
-rainy skill install --apply
+rainy skill create release-review --description "Review enterprise releases" --apply
+rainy skill install # 自动初始化并进入交互选择
+rainy skill install --profile comet --target codex --language zh \
+  --skill release-review --dry-run
+rainy skill install --profile comet --target codex --language zh \
+  --skill release-review --apply
+rainy skill install --no-custom-skills --apply # 清空已安装选择，保留 rainy-skills/ 源目录
+rainy skill install --yes # --apply 的兼容别名
 rainy skill status
 rainy skill doctor
 rainy skill update --dry-run
@@ -373,7 +454,7 @@ rainy skill uninstall --dry-run
 rainy skill uninstall --apply
 ```
 
-目前项目 scope 支持始终启用的 `universal`，以及可选的 `codex`、`claude`、`cursor`、`github-copilot`、`gemini`、`opencode`。交互终端可多选平台，脚本使用重复的 `--target` 或逗号分隔值。三个上游包均使用精确版本，`skills.lock` 记录 Rainy 及上游 Skill 内容摘要；检测到任何 Rainy 管理的 Skill 被手工修改时会拒绝覆盖或卸载，审阅后才能使用 `--force`。全局宿主安装暂不由 Rainy 管理。每个子命令都提供独立说明和可执行示例，例如 `rainy skill update --help`。命令输出规范见 [`docs/cli-output-style.md`](docs/cli-output-style.md)。
+目前项目 scope 支持始终启用的 `universal`，以及可选的 `codex`、`claude`、`cursor`、`github-copilot`、`gemini`、`opencode`。交互终端可多选平台和项目 Skill，脚本使用重复或逗号分隔的 `--target`、`--skill`。三个上游包均使用精确版本，`skills.lock` 记录 Rainy、上游和项目自定义 Skill 的内容摘要；检测到任何受管副本被手工修改时会拒绝覆盖或卸载，审阅后才能使用 `--force`。源目录 `rainy-skills/` 始终保留并由项目维护。全局宿主安装暂不由 Rainy 管理。每个子命令都提供独立说明和可执行示例，例如 `rainy skill install --help`。命令输出规范见 [`docs/cli-output-style.md`](docs/cli-output-style.md)。
 
 版本检查和更新：
 
@@ -405,7 +486,9 @@ Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this versi
 
 ## 发布流程
 
-面向 `main` 的 pull request 会运行 CI，依赖相关变更还会运行安全检查；合并后的普通 `main` push 不重复运行。安全检查另有每周定时扫描和手动触发。仓库应启用 `main` 分支保护并将 PR 检查设为 required checks。
+普通 `main` push 和 pull request 不会自动触发构建。完整质量检查、跨平台构建和发布只在推送
+`vX.Y.Z` tag 时运行；开发者应在打 tag 前本地执行 `make production-check`。安全扫描保留每周定时
+和手动触发入口。
 
 GitHub Release 由 `.github/workflows/release.yml` 负责。发版前建议本地先跑：
 
@@ -449,7 +532,7 @@ release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和
 - 返回安装后二进制的绝对路径，因此当前模型会话不需要重启 shell 就能继续。
 - 安装或校验失败时停止后续工程操作，不会绕过 Rainy 的 policy gate。
 
-也可以由 Rainy 以项目 scope 安装两个 Skill 和上游组合：`rainy skill init --profile comet --target codex --apply`。该命令生成可提交的 `rainy-skills.yaml` 和 `skills.lock`，调用固定版本 Comet 的官方初始化入口，并强制 `.comet/config.yaml` 中 `auto_transition: false`。Comet 阶段前进不等于批准 Rainy `--apply`。
+也可以由 Rainy 以项目 scope 安装两个 Skill 和上游组合：`rainy skill install --profile comet --target codex --apply`。该命令在缺少配置时自动生成可提交的 `rainy-skills.yaml` 和 `skills.lock`，调用固定版本 Comet 的官方初始化入口，并强制 `.comet/config.yaml` 中 `auto_transition: false`。Comet 阶段前进不等于批准 Rainy `--apply`。
 
 可以独立验证 bootstrap：
 
@@ -465,9 +548,9 @@ Windows PowerShell：
 
 Rainy 的核心使用方式是“先计划，再应用”：
 
-1. `rainy add capability ... --dry-run` 生成计划、diff 和策略检查结果。
+1. `rainy capability add ... --dry-run` 生成计划、diff 和策略检查结果。
 2. 人或 Agent 审阅计划。
-3. `rainy add capability ... --apply` 或 `rainy apply --plan ... --apply` 写入文件。
+3. `rainy capability add ... --apply` 或 `rainy apply --plan ... --apply` 写入文件。
 4. CLI 在 apply 前执行 policy gate。
 5. 写入失败时回滚已应用文件，避免部分落地。
 6. `rainy doctor` 检查项目健康。

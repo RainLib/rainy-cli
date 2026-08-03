@@ -235,6 +235,7 @@ policy:
     - .github/skills/**
     - .gemini/skills/**
     - .opencode/skills/**
+    - rainy-skills/**
     - .rainy/plugins/**
     - .rainy/registry.lock
     - apps/backend/src/**

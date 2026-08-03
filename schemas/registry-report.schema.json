@@ -8,7 +8,20 @@
     "protocolVersion": { "const": "rainy.registry-report.v1" },
     "status": { "enum": ["dry-run", "applied", "passed", "failed"] },
     "operation": { "enum": ["list", "add", "install", "sync", "update", "remove", "doctor"] },
-    "registries": { "type": "array" },
+    "registries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "installedSkills": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
     "checks": { "type": "array" }
   },
   "additionalProperties": true

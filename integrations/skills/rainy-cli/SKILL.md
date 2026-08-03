@@ -35,9 +35,11 @@ Stop immediately when bootstrap fails. Use the returned absolute path for every 
 
 ## Discover Project State
 
-Locate the workspace containing `rainy.yaml`. Do not initialize or overwrite a project unless the user explicitly requested initialization.
+Locate the intended repository root. A Skill-only repository may not contain `rainy.yaml`; do not
+initialize a full Rainy capability project unless the user explicitly requested it. When `rainy.yaml`
+exists, use the full project inspection commands below.
 
-Start with read-only JSON commands:
+For a complete Rainy project, start with read-only JSON commands:
 
 ```sh
 "$RAINY_BIN" defaults status --json
@@ -60,11 +62,23 @@ When `rainy-skills.yaml` exists, also run:
 
 If it selects the `comet` profile, load the sibling `rainy-comet` Skill and follow its ownership and phase rules.
 
+When only `rainy-skills.yaml` exists, use `skill status` and `skill doctor`; do not run the top-level
+project doctor, which validates Rainy capability project files.
+
 Read [references/commands.md](references/commands.md) when selecting commands. Read [references/safety.md](references/safety.md) before any mutating workflow or plugin operation.
 
 Agents must not rely on terminal selectors. Pass `--profile`, `--language`, every `--target`,
-`--workspace`, and `--json` explicitly. Universal `.agents/skills` is always added; request platform
-copies only for hosts the user actually selected.
+every requested project `--skill`, `--workspace`, and `--json` explicitly on first install. Universal
+`.agents/skills` is always added; request platform copies only for hosts the user actually selected.
+If `rainy-skills.yaml` already exists, do not repeat profile or target setup options: pass only the
+reviewed `--skill` selection, use `--no-custom-skills` for an explicitly empty selection, or omit Skill
+flags to preserve the current selection. Never use `--all-custom-skills` without explicit user intent.
+
+Project-owned Skill sources live under `rainy-skills/<SKILL_ID>/`. Use `rainy skill create` only after
+the user asks to create one, then let the user or model edit `SKILL.md`, `references/`, and `scripts/`
+inside the reviewed project boundary. Rainy installs and hashes scripts but never executes them during
+Skill installation. Route reusable company Skills through Registry exports instead of duplicating them
+across project libraries.
 
 ## Change Capabilities
 

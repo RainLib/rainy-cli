@@ -3,6 +3,8 @@ SHELL := /bin/sh
 CARGO ?= cargo
 PYTHON ?= python3
 RAINY_BIN ?= target/debug/rainy
+INSTALL_DIR ?= $(HOME)/.rainy/bin
+LOCAL_INSTALL_BIN ?= target/release/rainy
 
 PROJECT ?= demo-saas
 PACKAGE ?= com.example.demo
@@ -24,6 +26,7 @@ help:
 	@printf '%s\n' '  make build              Build debug binary'
 	@printf '%s\n' '  make release            Build release binary'
 	@printf '%s\n' '  make install            Install rainy via cargo install --path'
+	@printf '%s\n' '  make install-local      Build and atomically replace $(INSTALL_DIR)/rainy'
 	@printf '%s\n' '  make install-script     Install from GitHub Release via scripts/install.sh'
 	@printf '%s\n' '  make uninstall          Uninstall rainy-cli cargo package'
 	@printf '%s\n' ''
@@ -76,6 +79,24 @@ release:
 .PHONY: install
 install:
 	$(CARGO) install --path crates/rainy-cli
+
+.PHONY: install-local
+install-local: release
+	@set -eu; \
+	source="$(LOCAL_INSTALL_BIN)"; \
+	destination="$(INSTALL_DIR)/rainy"; \
+	temporary="$(INSTALL_DIR)/.rainy-install-local.$$$$"; \
+	if [ ! -x "$$source" ]; then \
+		printf '%s\n' "local binary is not executable: $$source" >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(INSTALL_DIR)"; \
+	trap 'rm -f "$$temporary"' EXIT HUP INT TERM; \
+	install -m 755 "$$source" "$$temporary"; \
+	mv -f "$$temporary" "$$destination"; \
+	trap - EXIT HUP INT TERM; \
+	printf '%s\n' "Installed local Rainy binary: $$destination"; \
+	"$$destination" --version
 
 .PHONY: install-script
 install-script:
@@ -184,19 +205,19 @@ demo-dry-run: build
 
 .PHONY: demo
 demo: build
-	$(RAINY_BIN) new $(PROJECT) --golden-path spring-nextjs-saas --package $(PACKAGE)
+	$(RAINY_BIN) new $(PROJECT) --golden-path spring-nextjs-saas --package $(PACKAGE) --apply
 
 .PHONY: demo-add-plan
 demo-add-plan: build
-	cd $(PROJECT) && ../$(RAINY_BIN) add capability $(CAPABILITY) --provider $(PROVIDER) --output-plan $(PLAN)
+	cd $(PROJECT) && ../$(RAINY_BIN) capability add $(CAPABILITY) --provider $(PROVIDER) --output-plan $(PLAN)
 
 .PHONY: demo-add-dry-run
 demo-add-dry-run: build
-	cd $(PROJECT) && ../$(RAINY_BIN) add capability $(CAPABILITY) --provider $(PROVIDER) --dry-run
+	cd $(PROJECT) && ../$(RAINY_BIN) capability add $(CAPABILITY) --provider $(PROVIDER) --dry-run
 
 .PHONY: demo-add-apply
 demo-add-apply: build
-	cd $(PROJECT) && ../$(RAINY_BIN) add capability $(CAPABILITY) --provider $(PROVIDER) --apply
+	cd $(PROJECT) && ../$(RAINY_BIN) capability add $(CAPABILITY) --provider $(PROVIDER) --apply
 
 .PHONY: demo-doctor
 demo-doctor: build

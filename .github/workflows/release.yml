@@ -4,15 +4,9 @@ on:
   push:
     tags:
       - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Existing release tag in vX.Y.Z form
-        required: true
-        type: string
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -21,7 +15,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTUP_TOOLCHAIN: stable
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   verify:

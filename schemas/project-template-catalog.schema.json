@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/project-template-catalog.schema.json",
+  "title": "Rainy Project Template Catalog",
+  "type": "object",
+  "required": ["apiVersion", "kind", "templates"],
+  "properties": {
+    "apiVersion": { "const": "rainy.dev/v1" },
+    "kind": { "const": "ProjectTemplateCatalog" },
+    "templates": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["source"],
+        "properties": {
+          "description": { "type": "string" },
+          "source": {
+            "type": "object",
+            "required": ["type", "url", "ref"],
+            "properties": {
+              "type": { "const": "git" },
+              "url": { "type": "string", "minLength": 1 },
+              "ref": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          "subdirectory": { "type": "string", "minLength": 1 },
+          "repository": {
+            "type": "object",
+            "properties": {
+              "defaultBranch": { "type": "string", "minLength": 1, "default": "main" },
+              "remoteUrl": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

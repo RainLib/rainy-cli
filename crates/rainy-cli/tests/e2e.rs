@@ -61,7 +61,7 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
     assert!(progress.contains("Validating workspace and requested Skill profile"));
     assert!(progress.contains("Building the Skill installation preview"));
 
-    let failed = rainy()
+    let automatic = rainy()
         .args([
             "--workspace",
             &workspace,
@@ -71,10 +71,32 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
             "install",
         ])
         .output()
-        .expect("run failed Skill install");
+        .expect("run automatic Skill initialization preview");
+    assert!(automatic.status.success());
+    let automatic_progress =
+        String::from_utf8(automatic.stderr).expect("automatic initialization progress");
+    assert!(
+        automatic_progress.contains("No Skill profile found; starting automatic initialization")
+    );
+    assert!(automatic_progress.contains("Building the Skill installation preview"));
+    assert!(automatic_progress.contains("[4/4] Completed in"));
+
+    let failed = rainy()
+        .args([
+            "--workspace",
+            &workspace,
+            "--progress",
+            "always",
+            "skill",
+            "install",
+            "--skill",
+            "missing",
+        ])
+        .output()
+        .expect("run failed custom Skill install");
     assert!(!failed.status.success());
     let failed = String::from_utf8(failed.stderr).expect("structured error output");
-    assert_eq!(failed.matches("SKILL_PROFILE_NOT_FOUND").count(), 1);
+    assert_eq!(failed.matches("SKILL_CUSTOM_NOT_FOUND").count(), 1);
     assert!(failed.contains("[4/4] Failed in"));
     assert!(failed.contains("Next steps"));
     assert!(!failed.contains("config error:"));
@@ -85,11 +107,70 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
 }
 
 #[test]
+fn invalid_input_and_unknown_external_commands_use_the_error_contract() {
+    let unknown = rainy()
+        .args(["capabilty", "list"])
+        .output()
+        .expect("run unknown command");
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(unknown.stdout.is_empty());
+    let unknown_error = String::from_utf8(unknown.stderr).expect("unknown command error");
+    assert!(unknown_error.contains("EXTERNAL_COMMAND_NOT_FOUND"));
+    assert!(unknown_error.contains("unknown Rainy command or installed plugin: capabilty"));
+    assert!(unknown_error.contains("Next steps"));
+    assert!(!unknown_error.contains("PLUGIN_NATIVE_NOT_TRUSTED"));
+
+    let missing = rainy()
+        .args(["capability", "add"])
+        .output()
+        .expect("run missing argument command");
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(missing.stdout.is_empty());
+    let missing_error = String::from_utf8(missing.stderr).expect("missing argument error");
+    assert!(missing_error.contains("CLI_ARGUMENT_INVALID"));
+    assert!(missing_error.contains("<CAPABILITY_ID>"));
+    assert!(missing_error.contains("Usage"));
+    assert!(
+        missing_error.contains("rainy capability add <CAPABILITY_ID>"),
+        "unexpected missing-argument error:\n{missing_error}"
+    );
+    assert!(missing_error.contains("Next steps"));
+    assert!(!missing_error.contains("config error:"));
+
+    let json = rainy()
+        .args(["--json", "capability", "add"])
+        .output()
+        .expect("run JSON missing argument command");
+    assert_eq!(json.status.code(), Some(2));
+    assert!(json.stdout.is_empty());
+    let json_error: serde_json::Value =
+        serde_json::from_slice(&json.stderr).expect("structured JSON input error");
+    assert_eq!(json_error["status"], "error");
+    assert_eq!(json_error["error"]["code"], "CLI_ARGUMENT_INVALID");
+}
+
+#[test]
+fn missing_project_configuration_points_skill_only_repositories_to_skill_doctor() {
+    let temp = TempDir::new().expect("skill-only repository");
+    let output = rainy()
+        .args(["--workspace", &temp.path().to_string_lossy(), "doctor"])
+        .output()
+        .expect("run project doctor without configuration");
+
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8(output.stderr).expect("configuration error output");
+    assert!(error.contains("CONFIG_NOT_FOUND"));
+    assert!(error.contains("$ rainy skill doctor"));
+}
+
+#[test]
 fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples() {
     let help = String::from_utf8(run(&["--help"]).stdout).expect("top-level help");
     assert!(help.contains("Arguments shown as <VALUE> are required values"));
-    assert!(help.contains("init         Initialize a Rainy application"));
+    assert!(!help.contains("\n  init "));
+    assert!(!help.contains("\n  add "));
     assert!(help.contains("self         Check, install, or skip Rainy CLI updates"));
+    assert!(help.contains("completion   Generate shell completion scripts"));
     assert!(help.contains("--workspace <PROJECT_DIR>"));
     assert!(help.contains("QUICK START:"));
 
@@ -123,6 +204,7 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["init", "app"],
         &["new"],
         &["add", "capability"],
+        &["capability", "add"],
         &["apply"],
         &["capability", "list"],
         &["capability", "explain"],
@@ -160,6 +242,7 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["self", "check"],
         &["self", "update"],
         &["self", "skip"],
+        &["completion"],
     ];
     for path in leaves {
         let mut args = path.to_vec();
@@ -177,14 +260,45 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
     }
 
     let capability_help =
-        String::from_utf8(run(&["add", "capability", "--help"]).stdout).expect("add help");
+        String::from_utf8(run(&["capability", "add", "--help"]).stdout).expect("add help");
     assert!(capability_help.contains("<CAPABILITY_ID>"));
     assert!(capability_help.contains("--output-plan <PLAN_FILE>"));
+    assert!(capability_help.contains("Options:"));
+    assert!(capability_help.contains("Global Options:"));
 
     let self_help =
         String::from_utf8(run(&["self", "update", "--help"]).stdout).expect("self help");
     assert!(self_help.contains("--repo <OWNER/REPO>"));
     assert!(self_help.contains("--version <VERSION>"));
+
+    let temp = TempDir::new().expect("completion workspace");
+    fs::write(temp.path().join("rainy.yaml"), "apiVersion: rainy.dev/v1\n")
+        .expect("completion workspace marker");
+    let root = temp.path().to_string_lossy().to_string();
+    let completion = run(&[
+        "--workspace",
+        &root,
+        "--progress",
+        "always",
+        "completion",
+        "zsh",
+    ]);
+    assert!(completion.status.success());
+    assert!(completion.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&completion.stdout).starts_with("#compdef rainy\n"));
+    assert!(!temp.path().join(".rainy/audit.log").exists());
+
+    let completion = run(&["--json", "completion", "fish"]);
+    let completion: serde_json::Value =
+        serde_json::from_slice(&completion.stdout).expect("completion JSON");
+    assert_eq!(completion["type"], "completion");
+    assert_eq!(completion["shell"], "fish");
+    assert!(
+        completion["script"]
+            .as_str()
+            .expect("completion script")
+            .contains("complete -c rainy")
+    );
 }
 
 #[test]
@@ -230,14 +344,15 @@ fn human_output_uses_stable_sections_and_structured_error_details() {
 fn skill_help_explains_the_workflow_and_each_subcommand() {
     let help = String::from_utf8(run(&["skill", "--help"]).stdout).expect("skill help");
     assert!(help.contains("Manage a project-scoped AI Skill profile"));
-    assert!(help.contains("explicitly confirm installation"));
+    assert!(help.contains("explicitly confirms installation"));
     assert!(help.contains("preview unless --apply"));
-    assert!(help.contains("rainy skill init --apply"));
+    assert!(help.contains("rainy skill install --skill release-review --apply"));
     assert!(help.contains("Run 'rainy skill <COMMAND> --help'"));
 
     for command in [
         "init",
         "install",
+        "create",
         "sync",
         "status",
         "doctor",
@@ -260,6 +375,292 @@ fn skill_help_explains_the_workflow_and_each_subcommand() {
     assert!(init_help.contains("scripts default to"));
     assert!(init_help.contains("[default: zh]"));
     assert!(init_help.contains("multi-select"));
+
+    let install_help =
+        String::from_utf8(run(&["skill", "install", "--help"]).stdout).expect("install help");
+    assert!(install_help.contains("--no-custom-skills"));
+    assert!(install_help.contains("Remove all installed project-owned Skills"));
+
+    let registry_sync_help =
+        String::from_utf8(run(&["registry", "sync", "--help"]).stdout).expect("registry sync help");
+    assert!(registry_sync_help.contains("--skill <SKILL_ID>"));
+    assert!(registry_sync_help.contains("--all-skills"));
+    assert!(registry_sync_help.contains("Interactively select target hosts and exported Skills"));
+
+    let pack_install_help =
+        String::from_utf8(run(&["pack", "install", "--help"]).stdout).expect("pack install help");
+    assert!(pack_install_help.contains("--skill <SKILL_ID>"));
+    assert!(pack_install_help.contains("--all-skills"));
+}
+
+#[test]
+fn skill_install_auto_initializes_and_manages_selected_project_skills() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "custom-skill-app", "--apply"]);
+    let app = temp.path().join("custom-skill-app");
+    let app_path = app.to_string_lossy().to_string();
+
+    let preview = run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "create",
+        "release-review",
+        "--description",
+        "Review enterprise releases before delivery",
+        "--json",
+    ]);
+    let preview: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("custom Skill create preview");
+    assert_eq!(preview["status"], "dry-run");
+    assert!(!app.join("rainy-skills/release-review").exists());
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "create",
+        "release-review",
+        "--description",
+        "Review enterprise releases before delivery",
+        "--apply",
+        "--json",
+    ]);
+    for path in [
+        "rainy-skills/release-review/SKILL.md",
+        "rainy-skills/release-review/references/README.md",
+        "rainy-skills/release-review/scripts/README.md",
+    ] {
+        assert!(app.join(path).is_file(), "missing {path}");
+    }
+    write(
+        &app.join("rainy-skills/company-java/SKILL.md"),
+        "---\nname: company-java\ndescription: Apply company Java service rules.\n---\n\n# Company Java\n",
+    );
+    write(
+        &app.join("rainy-skills/company-java/scripts/check.sh"),
+        "#!/bin/sh\nexit 0\n",
+    );
+
+    let automatic_preview = run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "install",
+        "--profile",
+        "rainy",
+        "--target",
+        "codex",
+        "--skill",
+        "release-review",
+        "--json",
+    ]);
+    let automatic_preview: serde_json::Value =
+        serde_json::from_slice(&automatic_preview.stdout).expect("automatic install preview");
+    assert_eq!(automatic_preview["report"]["operation"], "install");
+    assert_eq!(automatic_preview["report"]["profile"], "rainy");
+    assert_eq!(
+        automatic_preview["report"]["customSkills"],
+        serde_json::json!(["release-review"])
+    );
+    assert!(!app.join("rainy-skills.yaml").exists());
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "install",
+        "--profile",
+        "rainy",
+        "--target",
+        "codex",
+        "--skill",
+        "release-review",
+        "--apply",
+        "--json",
+    ]);
+    assert!(app.join("rainy-skills.yaml").is_file());
+    assert!(app.join("skills.lock").is_file());
+    assert!(app.join(".agents/skills/release-review/SKILL.md").is_file());
+    assert!(!app.join(".agents/skills/company-java").exists());
+    let profile = fs::read_to_string(app.join("rainy-skills.yaml")).expect("Skill profile");
+    assert!(profile.contains("customSkills:\n- release-review"));
+    let lock = fs::read_to_string(app.join("skills.lock")).expect("Skill lock");
+    assert!(lock.contains("name: release-review"));
+    let doctor = run(&["--workspace", &app_path, "skill", "doctor", "--json"]);
+    let doctor: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("custom Skill doctor report");
+    let check_ids = doctor["report"]["checks"]
+        .as_array()
+        .expect("doctor checks")
+        .iter()
+        .map(|check| check["id"].as_str().expect("check ID"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        check_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        check_ids.len(),
+        "doctor emitted duplicate checks for a shared target directory"
+    );
+
+    write(
+        &app.join(".agents/skills/release-review/local-change.md"),
+        "local change\n",
+    );
+    let rejected = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "skill",
+            "install",
+            "--skill",
+            "company-java",
+            "--apply",
+            "--json",
+        ])
+        .output()
+        .expect("reject deselecting modified custom Skill");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("SKILL_MANAGED_FILES_MODIFIED"));
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "install",
+        "--skill",
+        "company-java",
+        "--force",
+        "--apply",
+        "--json",
+    ]);
+    assert!(!app.join(".agents/skills/release-review").exists());
+    assert!(
+        app.join(".agents/skills/company-java/scripts/check.sh")
+            .is_file()
+    );
+    assert!(
+        app.join("rainy-skills/release-review/SKILL.md").is_file(),
+        "project-owned Skill source was removed"
+    );
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "install",
+        "--no-custom-skills",
+        "--apply",
+        "--json",
+    ]);
+    assert!(!app.join(".agents/skills/company-java").exists());
+    assert!(app.join("rainy-skills/company-java/SKILL.md").is_file());
+    let profile = fs::read_to_string(app.join("rainy-skills.yaml")).expect("Skill profile");
+    assert!(profile.contains("customSkills: []"));
+
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "uninstall",
+        "--apply",
+        "--json",
+    ]);
+    assert!(!app.join(".agents/skills/company-java").exists());
+    assert!(app.join("rainy-skills/company-java/SKILL.md").is_file());
+}
+
+#[test]
+fn skill_commands_work_without_a_rainy_project_config() {
+    let temp = TempDir::new().expect("tempdir");
+    let workspace = temp.path().to_string_lossy().to_string();
+
+    run(&[
+        "--workspace",
+        &workspace,
+        "skill",
+        "create",
+        "release-review",
+        "--description",
+        "Review releases in a standard repository",
+        "--apply",
+        "--json",
+    ]);
+    assert!(!temp.path().join("rainy.yaml").exists());
+    assert!(!temp.path().join("capability.lock").exists());
+
+    let preview = run(&[
+        "--workspace",
+        &workspace,
+        "skill",
+        "install",
+        "--profile",
+        "rainy",
+        "--target",
+        "codex",
+        "--skill",
+        "release-review",
+        "--json",
+    ]);
+    let preview: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("standalone Skill preview");
+    assert_eq!(preview["report"]["operation"], "install");
+    assert!(
+        preview["report"]["changedFiles"]
+            .as_array()
+            .expect("planned files")
+            .iter()
+            .any(|path| path == "AGENTS.md")
+    );
+    assert!(
+        !preview["report"]["changedFiles"]
+            .as_array()
+            .expect("planned files")
+            .iter()
+            .any(|path| path == ".enterprise-agent/context.md")
+    );
+
+    run(&[
+        "--workspace",
+        &workspace,
+        "skill",
+        "install",
+        "--profile",
+        "rainy",
+        "--target",
+        "codex",
+        "--skill",
+        "release-review",
+        "--apply",
+        "--json",
+    ]);
+    for path in [
+        "rainy-skills.yaml",
+        "skills.lock",
+        "AGENTS.md",
+        ".agents/skills/rainy-cli/SKILL.md",
+        ".agents/skills/release-review/SKILL.md",
+    ] {
+        assert!(temp.path().join(path).is_file(), "missing {path}");
+    }
+    assert!(!temp.path().join("rainy.yaml").exists());
+    assert!(!temp.path().join("capability.lock").exists());
+    assert!(!temp.path().join(".enterprise-agent").exists());
+    let agents = fs::read_to_string(temp.path().join("AGENTS.md")).expect("standalone AGENTS");
+    assert!(agents.contains("Project Skills: `release-review`"));
+
+    run(&["--workspace", &workspace, "skill", "status", "--json"]);
+    run(&["--workspace", &workspace, "skill", "doctor", "--json"]);
+    let sync = run(&["--workspace", &workspace, "skill", "sync", "--json"]);
+    let sync: serde_json::Value =
+        serde_json::from_slice(&sync.stdout).expect("standalone Skill sync");
+    assert_eq!(
+        sync["report"]["changedFiles"],
+        serde_json::json!(["AGENTS.md"])
+    );
 }
 
 fn rainy() -> Command {
@@ -328,7 +729,7 @@ fn self_check_reuses_the_persisted_release_mirror() {
 fn rainy_skill_profile_has_a_safe_project_lifecycle() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "skill-app"]);
+    run(&["--workspace", &root, "new", "skill-app", "--apply"]);
     let app = temp.path().join("skill-app");
     let app_path = app.to_string_lossy().to_string();
 
@@ -360,6 +761,7 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
             "zh",
             "--target",
             "codex,universal",
+            "--no-custom-skills",
             "--apply"
         ])
     );
@@ -483,7 +885,7 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
 fn rainy_skill_profile_installs_supported_hosts_and_universal_target() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "skill-hosts-app"]);
+    run(&["--workspace", &root, "new", "skill-hosts-app", "--apply"]);
     let app = temp.path().join("skill-hosts-app");
     let app_path = app.to_string_lossy().to_string();
 
@@ -535,7 +937,7 @@ fn comet_skill_profile_uses_pinned_upstream_and_detects_drift() {
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "comet-app"]);
+    run(&["--workspace", &root, "new", "comet-app", "--apply"]);
     let app = temp.path().join("comet-app");
     let app_path = app.to_string_lossy().to_string();
     let fake_comet = temp.path().join("fake-comet");
@@ -790,7 +1192,7 @@ fn comet_skill_init_failure_is_retryable_without_force() {
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "retry-app"]);
+    run(&["--workspace", &root, "new", "retry-app", "--apply"]);
     let app = temp.path().join("retry-app");
     let app_path = app.to_string_lossy().to_string();
     let fake_comet = temp.path().join("fake-comet-retry");
@@ -915,7 +1317,13 @@ fn comet_skill_init_rejects_superpowers_installer_failure() {
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "superpowers-failure-app"]);
+    run(&[
+        "--workspace",
+        &root,
+        "new",
+        "superpowers-failure-app",
+        "--apply",
+    ]);
     let app = temp.path().join("superpowers-failure-app");
     let app_path = app.to_string_lossy().to_string();
     let comet_marker = temp.path().join("comet-ran");
@@ -987,7 +1395,7 @@ fn native_plugins_require_explicit_trust() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("PLUGIN_NATIVE_AUDIT_REQUIRED"));
 
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let config_path = app.join("rainy.yaml");
     let config = fs::read_to_string(&config_path).expect("config");
@@ -1021,6 +1429,7 @@ fn golden_path_add_minio_verify_and_evidence() {
         "spring-nextjs-saas",
         "--package",
         "com.example.demo",
+        "--apply",
     ]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
@@ -1036,8 +1445,8 @@ fn golden_path_add_minio_verify_and_evidence() {
     run(&[
         "--workspace",
         &app_path,
-        "add",
         "capability",
+        "add",
         "minio-file-storage",
         "--dry-run",
         "--json",
@@ -1050,8 +1459,8 @@ fn golden_path_add_minio_verify_and_evidence() {
     run(&[
         "--workspace",
         &app_path,
-        "add",
         "capability",
+        "add",
         "minio-file-storage",
         "--apply",
     ]);
@@ -1060,7 +1469,7 @@ fn golden_path_add_minio_verify_and_evidence() {
     assert!(audit_log.exists());
     let audit = fs::read_to_string(&audit_log).expect("audit log");
     assert!(audit.contains("\"protocolVersion\":\"rainy.audit.v1\""));
-    assert!(audit.contains("\"command\":\"add capability\""));
+    assert!(audit.contains("\"command\":\"capability add\""));
     assert!(audit.contains("\"status\":\"applied\""));
     let first_audit: serde_json::Value =
         serde_json::from_str(audit.lines().next().expect("audit record"))
@@ -1126,7 +1535,7 @@ fn golden_path_add_minio_verify_and_evidence() {
 }
 
 #[test]
-fn new_dry_run_json_does_not_create_project() {
+fn new_defaults_to_preview_and_does_not_create_project() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
     let output = run(&[
@@ -1136,7 +1545,6 @@ fn new_dry_run_json_does_not_create_project() {
         "demo-saas",
         "--golden-path",
         "spring-nextjs-saas",
-        "--dry-run",
         "--json",
     ]);
 
@@ -1152,6 +1560,176 @@ fn new_dry_run_json_does_not_create_project() {
             .iter()
             .any(|file| file == "rainy.yaml")
     );
+}
+
+#[test]
+fn new_from_enterprise_git_template_removes_source_git_and_prints_repository_setup() {
+    let temp = TempDir::new().expect("tempdir");
+    let source = temp.path().join("enterprise-template");
+    write(
+        &source.join("rainy.yaml.hbs"),
+        r#"apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: "{{ project.name }}"
+  type: service
+  owner: platform-engineering
+paths:
+  backend: apps/backend
+  frontend: apps/frontend
+  generated: generated
+  evidence: evidence
+package:
+  java: "{{ package.java }}"
+  npmScope: "@company"
+capabilityRegistry:
+  sources: []
+policy:
+  allowNativePlugins: false
+  allowEdit:
+    - capability.lock
+    - generated/**
+    - evidence/**
+  denyEdit:
+    - "**/.env*"
+    - "**/secrets/**"
+  requireApproval:
+    - deploy.production
+verify:
+  profiles:
+    local: [doctor]
+    ci: [doctor, security-basic]
+"#,
+    );
+    write(
+        &source.join("capability.lock.hbs"),
+        r#"lockfileVersion: 1
+project:
+  name: "{{ project.name }}"
+rainy:
+  version: 0.4.0
+capabilities: {}
+skills: []
+"#,
+    );
+    write(
+        &source.join("src/{{ project.name }}/package.txt.hbs"),
+        "{{ package.java }}\n{{ packagePath }}\n",
+    );
+    write(&source.join("literal.txt"), "{{ not-a-rainy-variable }}\n");
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "rainy-test@example.com"],
+        vec!["config", "user.name", "Rainy Test"],
+        vec!["add", "."],
+        vec!["commit", "--quiet", "-m", "enterprise template"],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(args)
+            .status()
+            .expect("run template git");
+        assert!(status.success());
+    }
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&source)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("resolve template commit");
+    let commit = String::from_utf8(commit.stdout)
+        .expect("template commit UTF-8")
+        .trim()
+        .to_string();
+    let catalog = temp.path().join("project-templates.yaml");
+    write(
+        &catalog,
+        &format!(
+            r#"apiVersion: rainy.dev/v1
+kind: ProjectTemplateCatalog
+templates:
+  enterprise-java-service:
+    description: Enterprise Java service
+    source:
+      type: git
+      url: "file://{}"
+      ref: "{}"
+    repository:
+      defaultBranch: main
+      remoteUrl: "git@git.example.com:apps/{{{{ project.name }}}}.git"
+"#,
+            source.display(),
+            commit
+        ),
+    );
+    let root = temp.path().to_string_lossy().to_string();
+    let catalog_path = catalog.to_string_lossy().to_string();
+    let preview = run(&[
+        "--workspace",
+        &root,
+        "new",
+        "orders",
+        "--template",
+        "enterprise-java-service",
+        "--template-config",
+        &catalog_path,
+        "--package",
+        "com.company.orders",
+        "--json",
+    ]);
+    let preview: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("template preview JSON");
+    assert_eq!(preview["type"], "project-template");
+    assert_eq!(preview["status"], "dry-run");
+    assert_eq!(preview["requested_ref"], commit);
+    assert_eq!(preview["source_git_removed"], false);
+    assert_eq!(preview["remote_url"], "git@git.example.com:apps/orders.git");
+    assert!(!temp.path().join("orders").exists());
+
+    let output = rainy()
+        .args([
+            "--workspace",
+            &root,
+            "new",
+            "orders",
+            "--template",
+            "enterprise-java-service",
+            "--package",
+            "com.company.orders",
+            "--git-url",
+            "git@git.example.com:teams/orders.git",
+            "--apply",
+        ])
+        .env("RAINY_TEMPLATE_CONFIG", &catalog)
+        .output()
+        .expect("create project from template");
+    assert!(
+        output.status.success(),
+        "template creation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("template output UTF-8");
+    assert!(stdout.contains("Source Git metadata  Removed"));
+    assert!(stdout.contains("git init -b main"));
+    assert!(stdout.contains("git remote add origin git@git.example.com:teams/orders.git"));
+
+    let project = temp.path().join("orders");
+    assert!(!project.join(".git").exists());
+    assert!(!project.join("rainy.yaml.hbs").exists());
+    assert!(project.join("rainy.yaml").exists());
+    assert!(project.join("capability.lock").exists());
+    assert_eq!(
+        fs::read_to_string(project.join("src/orders/package.txt")).expect("rendered package"),
+        "com.company.orders\ncom/company/orders\n"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("literal.txt")).expect("literal template file"),
+        "{{ not-a-rainy-variable }}\n"
+    );
+    let project_config = fs::read_to_string(project.join("rainy.yaml")).expect("rainy config");
+    assert!(project_config.contains("name: \"orders\""));
+    assert!(project_config.contains("java: \"com.company.orders\""));
 }
 
 #[test]
@@ -1294,7 +1872,7 @@ paths:
         );
     }
     let output = rainy()
-        .args(["new", "standalone-app"])
+        .args(["new", "standalone-app", "--apply"])
         .current_dir(temp.path())
         .env("RAINY_FORCE_EMBEDDED_ASSETS", "1")
         .env("RAINY_ASSET_CACHE", &schema_cache)
@@ -1354,7 +1932,7 @@ paths:
 fn doctor_fails_when_installed_capability_artifact_is_missing() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -1392,7 +1970,7 @@ fn doctor_fails_when_installed_capability_artifact_is_missing() {
 fn verify_ci_profile_rejects_unknown_steps() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
     let rainy_yaml = app.join("rainy.yaml");
@@ -1430,7 +2008,7 @@ fn verify_ci_profile_rejects_unknown_steps() {
 fn plan_file_apply_remove_upgrade_and_skill_sync() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
     let plan_path = app.join("plans/minio-plan.json");
@@ -1447,6 +2025,25 @@ fn plan_file_apply_remove_upgrade_and_skill_sync() {
         &plan,
     ]);
     assert!(plan_path.exists());
+    let legacy_plan_path = app.join("plans/minio-plan-legacy.json");
+    let legacy_plan = legacy_plan_path.to_string_lossy().to_string();
+    run(&[
+        "--workspace",
+        &app_path,
+        "add",
+        "capability",
+        "minio-file-storage",
+        "--dry-run",
+        "--output-plan",
+        &legacy_plan,
+    ]);
+    let canonical: serde_json::Value =
+        serde_json::from_slice(&fs::read(&plan_path).expect("canonical plan"))
+            .expect("canonical plan JSON");
+    let legacy: serde_json::Value =
+        serde_json::from_slice(&fs::read(&legacy_plan_path).expect("legacy plan"))
+            .expect("legacy plan JSON");
+    assert_eq!(canonical, legacy, "legacy add command changed behavior");
     run(&[
         "--workspace",
         &app_path,
@@ -1532,7 +2129,7 @@ fn plan_file_apply_remove_upgrade_and_skill_sync() {
 fn capability_dependencies_are_enforced() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -1673,7 +2270,7 @@ agentRules: []
 fn provider_resolution_is_explicit_and_validated() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -1889,7 +2486,7 @@ agentRules: []
 fn unknown_template_variables_fail_planning() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -1959,7 +2556,7 @@ agentRules: []
 fn template_render_conflicts_require_force() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2050,7 +2647,7 @@ agentRules: []
 fn mutating_commands_default_to_dry_run_and_reject_conflicting_modes() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
     let plan_path = app.join("plans/minio-plan.json");
@@ -2124,7 +2721,7 @@ fn mutating_commands_default_to_dry_run_and_reject_conflicting_modes() {
 fn apply_rolls_back_files_when_write_fails() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2207,7 +2804,7 @@ agentRules: []
 fn pack_install_and_plugin_external_forwarding() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2323,7 +2920,7 @@ agentRules: []
 fn plugin_install_rejects_builtin_command_shadowing() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2391,7 +2988,7 @@ fn plugin_install_rejects_builtin_command_shadowing() {
 fn plugin_install_respects_policy_gate() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2451,7 +3048,7 @@ fn plugin_install_respects_policy_gate() {
 fn plugin_list_warns_about_duplicate_plugin_names() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2538,7 +3135,7 @@ fn plugin_list_warns_about_duplicate_plugin_names() {
 fn community_pack_matrix_installs_extended_golden_path_capabilities() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2589,7 +3186,7 @@ fn community_pack_matrix_installs_extended_golden_path_capabilities() {
 fn extended_builtin_actions_and_conformance_are_exercised() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -2744,7 +3341,7 @@ agentRules: []
 fn http_registry_install_and_pack_signing_work() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
     let rainy_home = temp.path().join("rainy-home");
@@ -2871,7 +3468,7 @@ packs:
 fn registry_uses_global_cache_and_installs_only_selected_enterprise_skills() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "registry-demo"]);
+    run(&["--workspace", &root, "new", "registry-demo", "--apply"]);
     let app = temp.path().join("registry-demo");
     let app_path = app.to_string_lossy().to_string();
     let rainy_home = temp.path().join("rainy-home");
@@ -2890,12 +3487,17 @@ exports:
   validators: []
   skills:
     - skills/company-platform
+    - skills/company-security
   plugins: []
 "#,
     );
     write(
         &source.join("platform/skills/company-platform/SKILL.md"),
         "---\nname: company-platform\ndescription: Enterprise platform workflow.\n---\n\nUse the approved platform workflow.\n",
+    );
+    write(
+        &source.join("platform/skills/company-security/SKILL.md"),
+        "---\nname: company-security\ndescription: Enterprise security workflow.\n---\n\nUse the approved security workflow.\n",
     );
     write(
         &source.join("security/pack.yaml"),
@@ -2933,6 +3535,29 @@ exports:
         String::from_utf8_lossy(&add.stderr)
     );
 
+    let unknown = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "sync",
+            "company",
+            "--module",
+            "platform",
+            "--install-skills",
+            "--target",
+            "cursor",
+            "--skill",
+            "missing-skill",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("reject unknown registry Skill");
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("REGISTRY_SKILL_NOT_FOUND"));
+    assert!(!app.join(".cursor/skills").exists());
+
     let sync = rainy()
         .args([
             "--workspace",
@@ -2945,6 +3570,8 @@ exports:
             "--install-skills",
             "--target",
             "cursor",
+            "--skill",
+            "company-platform",
             "--apply",
         ])
         .env("RAINY_HOME", &rainy_home)
@@ -2960,7 +3587,10 @@ exports:
         app.join(".cursor/skills/company-platform/SKILL.md")
             .is_file()
     );
+    assert!(!app.join(".cursor/skills/company-security").exists());
     assert!(!app.join(".agents/skills/company-platform").exists());
+    let sync_output = String::from_utf8(sync.stdout).expect("registry sync output");
+    assert!(sync_output.contains("skills   company-platform (cursor)"));
 
     let cache_name = rainy_home.join("registries/company");
     let cache = first_directory(&cache_name);
@@ -2982,6 +3612,59 @@ exports:
     assert!(!update.status.success());
     assert!(String::from_utf8_lossy(&update.stderr).contains("REGISTRY_SKILL_CONFLICT"));
 
+    let switch = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "sync",
+            "company",
+            "--module",
+            "platform",
+            "--install-skills",
+            "--target",
+            "cursor",
+            "--skill",
+            "company-security",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("switch selected registry Skill");
+    assert!(!switch.status.success());
+    assert!(String::from_utf8_lossy(&switch.stderr).contains("before deselecting it"));
+
+    let switch = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "sync",
+            "company",
+            "--module",
+            "platform",
+            "--install-skills",
+            "--target",
+            "cursor",
+            "--skill",
+            "company-security",
+            "--force",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("force switch selected registry Skill");
+    assert!(
+        switch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&switch.stderr)
+    );
+    assert!(!app.join(".cursor/skills/company-platform").exists());
+    assert!(
+        app.join(".cursor/skills/company-security/SKILL.md")
+            .is_file()
+    );
+
     let remove = rainy()
         .args([
             "--workspace",
@@ -3002,7 +3685,7 @@ exports:
 fn archive_registry_verifies_sidecar_and_extracts_selected_modules() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "archive-demo"]);
+    run(&["--workspace", &root, "new", "archive-demo", "--apply"]);
     let app = temp.path().join("archive-demo");
     let app_path = app.to_string_lossy().to_string();
     let rainy_home = temp.path().join("rainy-home");
@@ -3084,7 +3767,7 @@ fn archive_registry_verifies_sidecar_and_extracts_selected_modules() {
 fn git_registry_locks_exact_commit_and_selected_module() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "git-demo"]);
+    run(&["--workspace", &root, "new", "git-demo", "--apply"]);
     let app = temp.path().join("git-demo");
     let app_path = app.to_string_lossy().to_string();
     let rainy_home = temp.path().join("rainy-home");
@@ -3175,7 +3858,7 @@ fn git_registry_locks_exact_commit_and_selected_module() {
 fn schema_validation_org_policy_and_http_plugin_adapter_work() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -3385,7 +4068,7 @@ agentRules: []
 fn plugin_action_cannot_write_outside_manifest_permissions() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -3471,7 +4154,7 @@ fn plugin_action_cannot_write_outside_manifest_permissions() {
 fn wasm_plugin_action_returns_changeset_through_policy_apply() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
 
@@ -3593,7 +4276,7 @@ fn wasm_plugin_action_returns_changeset_through_policy_apply() {
 fn policy_blocks_denied_paths() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let malicious = app.join("malicious-packs/malicious");
     write(
@@ -3671,7 +4354,7 @@ agentRules: []
 fn capability_policy_denies_pack_declared_paths() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let pack = app.join("pack-policy-packs/policy-pack");
     write(
@@ -3753,7 +4436,7 @@ agentRules: []
 fn policy_requires_approval_for_gated_actions() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();
-    run(&["--workspace", &root, "new", "demo-saas"]);
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
     let app = temp.path().join("demo-saas");
     let gated = app.join("gated-packs/gated");
     write(

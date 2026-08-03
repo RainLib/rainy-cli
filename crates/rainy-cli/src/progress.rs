@@ -9,6 +9,8 @@ const COMMAND_STEPS: u64 = 4;
 const BAR_WIDTH: usize = 24;
 const SPINNER: &[char] = &['-', '\\', '|', '/'];
 
+static DYNAMIC_PROGRESS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ProgressMode {
     Auto,
@@ -40,10 +42,12 @@ impl ProgressReporter {
             return Self::hidden();
         }
 
-        let terminal = io::stderr().is_terminal();
+        let terminal = io::stderr().is_terminal()
+            && !std::env::var("TERM").is_ok_and(|term| term.eq_ignore_ascii_case("dumb"));
         if matches!(mode, ProgressMode::Auto) && !terminal {
             return Self::hidden();
         }
+        let dynamic_terminal = terminal && !no_color;
 
         let shared = Arc::new(SharedProgress {
             state: Mutex::new(ProgressState {
@@ -51,10 +55,11 @@ impl ProgressReporter {
                 message: String::new(),
                 started_at: Instant::now(),
             }),
-            running: AtomicBool::new(terminal),
+            running: AtomicBool::new(dynamic_terminal),
             no_color,
         });
-        let worker = terminal.then(|| {
+        let worker = dynamic_terminal.then(|| {
+            DYNAMIC_PROGRESS_ACTIVE.store(true, Ordering::Relaxed);
             let shared = Arc::clone(&shared);
             thread::spawn(move || {
                 let mut tick = 0;
@@ -69,7 +74,7 @@ impl ProgressReporter {
         Self {
             shared: Some(shared),
             worker,
-            plain: !terminal,
+            plain: !dynamic_terminal,
         }
     }
 
@@ -146,6 +151,7 @@ impl ProgressReporter {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        DYNAMIC_PROGRESS_ACTIVE.store(false, Ordering::Relaxed);
     }
 
     fn hidden() -> Self {
@@ -155,6 +161,20 @@ impl ProgressReporter {
             plain: false,
         }
     }
+}
+
+/// Clears a live progress line before the process exits because of Ctrl+C.
+///
+/// The main process owns the handler; child processes in the foreground group
+/// still receive the terminal interrupt from the operating system.
+pub fn install_interrupt_handler() -> Result<(), ctrlc::Error> {
+    ctrlc::set_handler(|| {
+        if DYNAMIC_PROGRESS_ACTIVE.swap(false, Ordering::Relaxed) {
+            clear_terminal_line();
+            eprintln!();
+        }
+        std::process::exit(130);
+    })
 }
 
 impl Drop for ProgressReporter {

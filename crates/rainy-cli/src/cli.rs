@@ -9,31 +9,36 @@ use std::path::PathBuf;
 #[command(
     about = "Orchestrate application capabilities, packs, plugins, and AI agent tooling",
     long_about = "Rainy manages capability-driven application projects from initialization through verification and evidence generation.\n\nArguments shown as <VALUE> are required values. Options shown in [brackets] are optional. Run 'rainy <COMMAND> --help' for command-specific arguments and examples.",
-    after_help = "QUICK START:\n  Create a project:\n    rainy new demo-saas --apply\n\n  Inspect available capabilities:\n    rainy capability list\n\n  Preview and apply a capability:\n    rainy add capability minio-file-storage --dry-run\n    rainy add capability minio-file-storage --apply\n\n  Validate the workspace:\n    rainy doctor\n    rainy verify --profile ci\n\nRun 'rainy <COMMAND> --help' for command-specific examples."
+    after_help = "QUICK START:\n  Create a project:\n    rainy new demo-saas --apply\n\n  Inspect available capabilities:\n    rainy capability list\n\n  Preview and apply a capability:\n    rainy capability add minio-file-storage --dry-run\n    rainy capability add minio-file-storage --apply\n\n  Validate the workspace:\n    rainy doctor\n    rainy verify --profile ci\n\nRun 'rainy <COMMAND> --help' for command-specific examples."
 )]
 pub struct Cli {
     /// Project root; defaults to the current directory.
-    #[arg(long, global = true, value_name = "PROJECT_DIR")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "PROJECT_DIR",
+        help_heading = "Global Options"
+    )]
     pub workspace: Option<PathBuf>,
 
     /// Emit machine-readable JSON output.
-    #[arg(long, global = true, value_name = "TRACE_ID")]
+    #[arg(long, global = true, help_heading = "Global Options")]
     pub json: bool,
 
-    /// Disable ANSI color output.
-    #[arg(long, global = true)]
+    /// Disable ANSI color output. NO_COLOR and TERM=dumb are also honored.
+    #[arg(long, global = true, help_heading = "Global Options")]
     pub no_color: bool,
 
     /// Attach a caller-provided trace identifier to audit records.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global Options")]
     pub trace_id: Option<String>,
 
     /// Enable verbose diagnostic output.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global Options")]
     pub verbose: bool,
 
     /// Suppress non-essential output.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global Options")]
     pub quiet: bool,
 
     /// Progress display mode: auto uses an interactive terminal only.
@@ -43,7 +48,8 @@ pub struct Cli {
         value_enum,
         value_name = "MODE",
         default_value = "auto",
-        env = "RAINY_PROGRESS"
+        env = "RAINY_PROGRESS",
+        help_heading = "Global Options"
     )]
     pub progress: ProgressMode,
 
@@ -52,7 +58,8 @@ pub struct Cli {
         long,
         global = true,
         env = "RAINY_ALLOW_NATIVE_PLUGIN",
-        value_parser = clap::builder::BoolishValueParser::new()
+        value_parser = clap::builder::BoolishValueParser::new(),
+        help_heading = "Global Options"
     )]
     pub allow_native_plugin: bool,
 
@@ -62,11 +69,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Initialize a Rainy application using a preset.
+    /// Legacy alias for built-in project initialization; use `rainy new`.
+    #[command(hide = true)]
     Init(InitCommand),
-    /// Create a new Golden Path application workspace.
+    /// Create a new built-in or enterprise-template application workspace.
     New(NewCommand),
-    /// Add a capability and generate or execute its change plan.
+    /// Legacy alias for `rainy capability add`.
+    #[command(hide = true)]
     Add(AddCommand),
     /// Apply a previously generated change plan.
     Apply(ApplyCommand),
@@ -96,6 +105,8 @@ pub enum Commands {
     /// Check, install, or skip Rainy CLI updates.
     #[command(name = "self")]
     SelfCommand(SelfCommand),
+    /// Generate shell completion scripts from the current command tree.
+    Completion(CompletionCommand),
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -144,9 +155,9 @@ pub struct InitAppArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    about = "Create a new Golden Path application workspace",
-    long_about = "Create a new application from a Golden Path template. The command previews the generated workspace unless --apply is supplied.",
-    after_help = "EXAMPLES:\n  Preview the default Golden Path:\n    rainy new demo-saas --dry-run\n\n  Create the application:\n    rainy new demo-saas --golden-path spring-nextjs-saas --package com.example.demo --apply\n\n  Inspect the plan as JSON:\n    rainy new demo-saas --dry-run --json"
+    about = "Create a new built-in or enterprise-template application workspace",
+    long_about = "Create a new application from the built-in Golden Path or a Git-backed enterprise project template. Enterprise templates are declared in a ProjectTemplateCatalog file. Rainy clones into a temporary directory, excludes every .git entry, renders project variables, and leaves destination repository initialization as an explicit next step.",
+    after_help = "EXAMPLES:\n  Preview the default Golden Path:\n    rainy new demo-saas --dry-run\n\n  Create the built-in application:\n    rainy new demo-saas --golden-path spring-nextjs-saas --package com.example.demo --apply\n\n  Preview an enterprise Git template:\n    rainy new order-service --template enterprise-java-service --template-config ./project-templates.yaml --dry-run\n\n  Create it and print the exact target remote setup:\n    rainy new order-service --template enterprise-java-service --template-config ./project-templates.yaml --git-url git@git.example.com:apps/order-service.git --apply\n\n  Inspect the result as JSON:\n    rainy new order-service --template enterprise-java-service --template-config ./project-templates.yaml --dry-run --json"
 )]
 pub struct NewCommand {
     /// Application directory and project name.
@@ -154,8 +165,20 @@ pub struct NewCommand {
     pub name: String,
 
     /// Golden Path template identifier.
-    #[arg(long, value_name = "GOLDEN_PATH", default_value = "spring-nextjs-saas")]
-    pub golden_path: String,
+    #[arg(long, value_name = "GOLDEN_PATH", conflicts_with = "template")]
+    pub golden_path: Option<String>,
+
+    /// Enterprise template identifier declared in the template catalog.
+    #[arg(long, value_name = "TEMPLATE_ID", conflicts_with = "golden_path")]
+    pub template: Option<String>,
+
+    /// ProjectTemplateCatalog YAML. Defaults to RAINY_TEMPLATE_CONFIG or RAINY_HOME/templates.yaml.
+    #[arg(long, value_name = "CATALOG_FILE", requires = "template")]
+    pub template_config: Option<PathBuf>,
+
+    /// Target repository URL shown in the generated Git setup commands.
+    #[arg(long, value_name = "GIT_URL", requires = "template")]
+    pub git_url: Option<String>,
 
     /// Base application package or namespace.
     #[arg(long, value_name = "PACKAGE")]
@@ -246,7 +269,7 @@ pub struct ApplyCommand {
 #[derive(Debug, Args)]
 #[command(
     about = "Discover and manage application capabilities",
-    after_help = "EXAMPLES:\n  List available capabilities:\n    rainy capability list\n\n  Explain one capability:\n    rainy capability explain minio-file-storage\n\n  Show installed capabilities:\n    rainy capability installed\n\nRun 'rainy capability <COMMAND> --help' for more examples."
+    after_help = "EXAMPLES:\n  List available capabilities:\n    rainy capability list\n\n  Preview adding a capability:\n    rainy capability add minio-file-storage --dry-run\n\n  Explain one capability:\n    rainy capability explain minio-file-storage\n\n  Show installed capabilities:\n    rainy capability installed\n\nRun 'rainy capability <COMMAND> --help' for more examples."
 )]
 pub struct CapabilityCommand {
     #[command(subcommand)]
@@ -255,6 +278,11 @@ pub struct CapabilityCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CapabilitySubcommand {
+    #[command(
+        about = "Add a capability to the workspace",
+        after_help = "EXAMPLES:\n  Preview a provider selection:\n    rainy capability add minio-file-storage --provider minio --dry-run\n\n  Save the generated plan for review:\n    rainy capability add minio-file-storage --output-plan plans/minio.json\n\n  Apply a reviewed plan:\n    rainy capability add minio-file-storage --plan plans/minio.json --apply"
+    )]
+    Add(AddCapabilityArgs),
     #[command(
         about = "List capabilities available from loaded packs",
         after_help = "EXAMPLES:\n  List capabilities:\n    rainy capability list\n\n  Return structured output:\n    rainy capability list --json"
@@ -289,6 +317,27 @@ pub enum CapabilitySubcommand {
         after_help = "EXAMPLES:\n  Preview capability removal:\n    rainy capability remove minio-file-storage --dry-run\n\n  Apply capability removal:\n    rainy capability remove minio-file-storage --apply"
     )]
     Remove(CapabilityChangeArgs),
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Elvish,
+    Fish,
+    Powershell,
+    Zsh,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    about = "Generate a shell completion script",
+    long_about = "Generate a completion script from Rainy's current command definition. The script is written directly to stdout so it can be redirected or evaluated without filtering progress or presentation text.",
+    after_help = "EXAMPLES:\n  Load completions in the current Zsh session:\n    source <(rainy completion zsh)\n\n  Install Bash completions for the current user:\n    rainy completion bash > ~/.local/share/bash-completion/completions/rainy\n\n  Generate Fish completions:\n    rainy completion fish > ~/.config/fish/completions/rainy.fish"
+)]
+pub struct CompletionCommand {
+    /// Shell whose completion syntax should be generated.
+    #[arg(value_enum, value_name = "SHELL")]
+    pub shell: CompletionShell,
 }
 
 #[derive(Debug, Args)]
@@ -342,7 +391,7 @@ pub enum PackSubcommand {
     },
     #[command(
         about = "Install a pack from a directory, Git repository, or HTTPS source",
-        after_help = "EXAMPLES:\n  Preview a local pack installation:\n    rainy pack install ./community-packs/minio-file-storage --dry-run\n\n  Install the pack:\n    rainy pack install ./community-packs/minio-file-storage --apply"
+        after_help = "EXAMPLES:\n  Preview a local pack installation:\n    rainy pack install ./community-packs/minio-file-storage --dry-run\n\n  Install the pack:\n    rainy pack install ./community-packs/minio-file-storage --apply\n\n  Interactively select target hosts and exported Skills:\n    rainy pack install ./enterprise-packs --module company-skills --install-skills --apply\n\n  Install named Skills without prompting:\n    rainy pack install ./enterprise-packs --module company-skills --install-skills --target codex,cursor --skill company-service --apply"
     )]
     Install(PackInstallArgs),
     #[command(
@@ -402,6 +451,21 @@ pub struct PackInstallArgs {
     )]
     pub target: Vec<SkillTarget>,
 
+    /// Exported Skill IDs to install. Repeat or pass comma-separated values. Interactive
+    /// terminals prompt when neither this option nor --all-skills is supplied.
+    #[arg(
+        long,
+        value_name = "SKILL_ID",
+        value_delimiter = ',',
+        requires = "install_skills",
+        conflicts_with = "all_skills"
+    )]
+    pub skill: Vec<String>,
+
+    /// Install every Skill exported by the selected pack modules without prompting.
+    #[arg(long, requires = "install_skills", conflicts_with = "skill")]
+    pub all_skills: bool,
+
     /// Replace only reviewed enterprise Skill drift.
     #[arg(long)]
     pub force: bool,
@@ -458,7 +522,7 @@ pub enum RegistrySubcommand {
     Add(RegistryAddArgs),
     #[command(
         about = "Synchronize one or all configured registries",
-        after_help = "EXAMPLES:\n  Preview one registry synchronization:\n    rainy registry sync company --all --dry-run\n\n  Pull selected modules:\n    rainy registry sync company --module service-baseline,company-skills --apply\n\n  Install exported Skills for selected agent hosts:\n    rainy registry sync company --module company-skills --install-skills --target codex,cursor --apply\n\n  Pull every configured registry:\n    rainy registry sync --all-registries --all --apply"
+        after_help = "EXAMPLES:\n  Preview one registry synchronization:\n    rainy registry sync company --all --dry-run\n\n  Pull selected modules:\n    rainy registry sync company --module service-baseline,company-skills --apply\n\n  Interactively select target hosts and exported Skills:\n    rainy registry sync company --module company-skills --install-skills --apply\n\n  Install named Skills without prompting:\n    rainy registry sync company --module company-skills --install-skills --target codex,cursor --skill company-service,company-security --apply\n\n  Install every exported Skill without prompting:\n    rainy registry sync company --module company-skills --install-skills --target universal --all-skills --apply\n\n  Pull every configured registry:\n    rainy registry sync --all-registries --all --apply"
     )]
     Sync(RegistrySyncArgs),
     #[command(
@@ -593,6 +657,21 @@ pub struct RegistrySyncArgs {
         requires = "install_skills"
     )]
     pub target: Vec<SkillTarget>,
+
+    /// Exported Skill IDs to install from this registry. Repeat or pass comma-separated values.
+    /// Interactive terminals prompt when neither this option nor --all-skills is supplied.
+    #[arg(
+        long,
+        value_name = "SKILL_ID",
+        value_delimiter = ',',
+        requires = "install_skills",
+        conflicts_with_all = ["all_skills", "all_registries"]
+    )]
+    pub skill: Vec<String>,
+
+    /// Install every Skill exported by the selected modules without prompting.
+    #[arg(long, requires = "install_skills", conflicts_with = "skill")]
+    pub all_skills: bool,
 
     /// Replace only reviewed enterprise Skill drift.
     #[arg(long)]
@@ -796,8 +875,8 @@ pub enum AgentSubcommand {
 #[derive(Debug, Args)]
 #[command(
     about = "Manage project-scoped AI agent skills",
-    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts.\n\nUniversal .agents/skills is always included. Interactive terminals can select one or more additional target hosts, then explicitly confirm installation. Non-interactive callers default to the comet bundle for Codex plus Universal and preview unless --apply or --yes is supplied.",
-    after_help = "QUICK START:\n  Interactively select a bundle and target hosts:\n    rainy skill init\n\n  Apply the previewed profile:\n    rainy skill init --apply\n\n  Install only the Rainy Skill (no Node.js required):\n    rainy skill init --profile rainy --target codex --apply\n\n  Check an installed profile:\n    rainy skill status\n    rainy skill doctor\n\nRun 'rainy skill <COMMAND> --help' for command-specific examples."
+    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts. A standalone Git repository does not need rainy.yaml or capability.lock.\n\nUse rainy skill install as the normal entry point: it initializes missing Skill profile files, lets terminal users select the workflow, target hosts, and project-owned Skills, then explicitly confirms installation. Universal .agents/skills is always included. Non-interactive callers preview unless --apply or --yes is supplied.",
+    after_help = "QUICK START:\n  Initialize when needed and select Skills interactively:\n    rainy skill install\n\n  Create a project-owned rule and optional command package:\n    rainy skill create release-review --description \"Review enterprise releases\" --apply\n\n  Install selected project-owned Skills without prompting:\n    rainy skill install --skill release-review --apply\n\n  Install only the Rainy Skill (no Node.js required):\n    rainy skill install --profile rainy --target codex --apply\n\n  Check an installed profile:\n    rainy skill status\n    rainy skill doctor\n\nRun 'rainy skill <COMMAND> --help' for command-specific examples."
 )]
 pub struct SkillCommand {
     #[command(subcommand)]
@@ -808,16 +887,22 @@ pub struct SkillCommand {
 pub enum SkillSubcommand {
     #[command(
         about = "Create and install a project Skill profile",
-        long_about = "Create rainy-skills.yaml and install the selected project-scoped Skills.\n\nWhen --profile or --target is omitted in a terminal, Rainy opens keyboard-driven selectors and asks whether to install the reviewed selection now. Choosing no, using --dry-run, or running non-interactively without --apply only previews the plan. The comet profile requires Node.js 20+, npx, and Git; the rainy profile has no Node.js dependency.",
-        after_help = "EXAMPLES:\n  Interactively select the Skill bundle and target hosts:\n    rainy skill init\n\n  Apply the interactive selection:\n    rainy skill init --apply\n\n  --yes is an alias for --apply:\n    rainy skill init --yes\n\n  Install only Rainy's Skill for Codex:\n    rainy skill init --profile rainy --target codex --apply\n\n  Install for multiple hosts without prompting:\n    rainy skill init --profile comet --target codex,claude,cursor --language zh --apply\n\n  Inspect the machine-readable non-interactive preview:\n    rainy skill init --dry-run --json"
+        long_about = "Explicitly create rainy-skills.yaml and install the selected project-scoped Skills.\n\nWhen the profile, target hosts, or project-owned Skills are omitted in a terminal, Rainy opens keyboard-driven selectors and asks whether to install the reviewed selection now. Choosing no, using --dry-run, or running non-interactively without --apply only previews the plan. Most users should run rainy skill install, which invokes this initialization automatically when the profile is missing.",
+        after_help = "EXAMPLES:\n  Explicitly initialize with interactive selectors:\n    rainy skill init\n\n  Apply the interactive selection:\n    rainy skill init --apply\n\n  --yes is an alias for --apply:\n    rainy skill init --yes\n\n  Install Rainy plus one project-owned Skill for Codex:\n    rainy skill init --profile rainy --target codex --skill release-review --apply\n\n  Install the full workflow for multiple hosts without prompting:\n    rainy skill init --profile comet --target codex,claude,cursor --language zh --all-custom-skills --apply\n\n  Explicitly install no project-owned Skills:\n    rainy skill init --profile rainy --target codex --no-custom-skills --apply\n\n  Inspect the machine-readable non-interactive preview:\n    rainy skill init --dry-run --json"
     )]
     Init(SkillInitArgs),
     #[command(
-        about = "Install or repair the configured Skill profile",
-        long_about = "Install the profile already declared in rainy-skills.yaml and refresh skills.lock.\n\nInteractive terminals display the configured bundle and ask for installation confirmation. Non-interactive callers preview unless --apply or --yes is supplied. Use --force only after reviewing local changes reported as drift.",
-        after_help = "EXAMPLES:\n  Preview installation:\n    rainy skill install\n\n  Apply installation:\n    rainy skill install --apply\n\n  Repair reviewed managed-file drift:\n    rainy skill install --force --apply"
+        about = "Initialize, select, install, or repair project Skills",
+        long_about = "Install the configured profile and selected project-owned Skills, or automatically initialize the profile when rainy-skills.yaml is missing. This command works in a standalone repository without rainy.yaml.\n\nWith no selection flags in an interactive terminal, Rainy selects the initial workflow and target hosts when needed, then opens a multi-select for valid Skills found under rainy-skills/ and asks for confirmation. On an existing profile, workflow and hosts remain fixed while project Skill selections may change. Non-interactive callers preview unless --apply or --yes is supplied. Use --force only after reviewing local changes reported as drift.",
+        after_help = "EXAMPLES:\n  Auto-initialize when needed and select Skills interactively:\n    rainy skill install\n\n  Apply the non-interactive default setup when no profile exists:\n    rainy skill install --apply\n\n  Install selected project-owned Skills without prompting:\n    rainy skill install --skill company-java,release-review --apply\n\n  Install every Skill from rainy-skills/ without prompting:\n    rainy skill install --all-custom-skills --apply\n\n  Remove all installed project-owned Skills but keep their sources:\n    rainy skill install --no-custom-skills --apply\n\n  Repair reviewed managed-file drift:\n    rainy skill install --force --apply"
     )]
-    Install(SkillChangeArgs),
+    Install(SkillInstallArgs),
+    #[command(
+        about = "Create a project-specific Skill scaffold",
+        long_about = "Create a project-owned Agent Skill under rainy-skills/<SKILL_ID>. The generated directory includes SKILL.md for rules, references/ for supporting guidance, and scripts/ for optional commands. It works without rainy.yaml, observes configured system/user/repository policy, and Rainy never executes those scripts during installation.",
+        after_help = "EXAMPLES:\n  Preview a custom Skill scaffold:\n    rainy skill create release-review --description \"Review enterprise releases\"\n\n  Create the scaffold:\n    rainy skill create release-review --description \"Review enterprise releases\" --apply\n\n  Then select and install it:\n    rainy skill install --skill release-review --apply"
+    )]
+    Create(SkillCreateArgs),
     #[command(
         about = "Refresh Rainy-managed agent context files",
         long_about = "Refresh the Rainy-managed blocks in AGENTS.md and enterprise agent context files while preserving user-authored content outside those blocks.",
@@ -902,6 +987,24 @@ pub struct SkillInitArgs {
     #[arg(long, value_name = "VERSION", default_value = "5.1.0")]
     pub superpowers_version: String,
 
+    /// Project-library Skill IDs from rainy-skills/. Repeat or pass comma-separated values.
+    /// Interactive terminals show a multi-select when omitted.
+    #[arg(
+        long,
+        value_name = "SKILL_ID",
+        value_delimiter = ',',
+        conflicts_with_all = ["all_custom_skills", "no_custom_skills"]
+    )]
+    pub skill: Vec<String>,
+
+    /// Select every valid project-library Skill from rainy-skills/ without prompting.
+    #[arg(long, conflicts_with_all = ["skill", "no_custom_skills"])]
+    pub all_custom_skills: bool,
+
+    /// Select no project-library Skills without prompting.
+    #[arg(long, conflicts_with_all = ["skill", "all_custom_skills"])]
+    pub no_custom_skills: bool,
+
     /// Preview managed paths without writing files (this is the default mode).
     #[arg(long)]
     pub dry_run: bool,
@@ -913,6 +1016,82 @@ pub struct SkillInitArgs {
     /// Repair reviewed managed-file drift or an incomplete prior installation.
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillInstallArgs {
+    /// Initial Skill bundle when rainy-skills.yaml does not exist.
+    #[arg(long, value_enum, value_name = "PROFILE")]
+    pub profile: Option<SkillProfile>,
+
+    /// Initial language when rainy-skills.yaml does not exist.
+    #[arg(long, value_enum, value_name = "LANGUAGE")]
+    pub language: Option<SkillLanguage>,
+
+    /// Initial agent hosts when rainy-skills.yaml does not exist. Repeat or use comma-separated values.
+    #[arg(long, value_enum, value_name = "AGENT_HOST", value_delimiter = ',')]
+    pub target: Vec<SkillTarget>,
+
+    /// Initial exact Comet package version when rainy-skills.yaml does not exist.
+    #[arg(long, value_name = "VERSION")]
+    pub comet_version: Option<String>,
+
+    /// Initial exact npm skills CLI version when rainy-skills.yaml does not exist.
+    #[arg(long, value_name = "VERSION")]
+    pub skills_version: Option<String>,
+
+    /// Initial exact Superpowers release when rainy-skills.yaml does not exist.
+    #[arg(long, value_name = "VERSION")]
+    pub superpowers_version: Option<String>,
+
+    /// Project-library Skill IDs from rainy-skills/. Repeat or pass comma-separated values.
+    /// Interactive terminals show a multi-select when omitted.
+    #[arg(
+        long,
+        value_name = "SKILL_ID",
+        value_delimiter = ',',
+        conflicts_with_all = ["all_custom_skills", "no_custom_skills"]
+    )]
+    pub skill: Vec<String>,
+
+    /// Select every valid project-library Skill from rainy-skills/ without prompting.
+    #[arg(long, conflicts_with_all = ["skill", "no_custom_skills"])]
+    pub all_custom_skills: bool,
+
+    /// Select no project-library Skills without prompting.
+    #[arg(long, conflicts_with_all = ["skill", "all_custom_skills"])]
+    pub no_custom_skills: bool,
+
+    /// Preview managed paths without writing files (this is the default mode).
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Apply the planned changes; --yes is a compatibility alias.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
+
+    /// Continue only after reviewing reported managed-file drift.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillCreateArgs {
+    /// Lowercase Skill identifier used for the directory and frontmatter name.
+    #[arg(value_name = "SKILL_ID")]
+    pub id: String,
+
+    /// One-line explanation of what the Skill does and when an agent should use it.
+    #[arg(long, value_name = "TEXT")]
+    pub description: Option<String>,
+
+    /// Preview the scaffold without writing files (this is the default mode).
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Create the Skill scaffold.
+    #[arg(long)]
+    pub apply: bool,
 }
 
 #[derive(Debug, Args)]

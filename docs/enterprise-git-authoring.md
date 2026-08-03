@@ -6,15 +6,54 @@
 
 ## 1. 先选择正确的仓库类型
 
-Rainy 支持两类用途不同的 Git 仓库。
+Rainy 支持三类用途不同的 Git 仓库。
 
 | 仓库类型 | 用途 | 消费入口 | 是否推荐日常业务使用 |
 | --- | --- | --- | --- |
 | 企业 Capability Registry | 业务能力、团队 Skill、可选 Plugin | `rainy registry add/sync` | 是 |
 | 企业 Defaults 镜像 | 替换官方基础 Packs、Rainy Skills、Golden Path 模板 | `rainy defaults install/update` | 仅平台团队维护 |
+| 企业项目模板仓库 | 拉取完整 starter，渲染后移除源 `.git` | `rainy new --template` | 新项目创建时使用 |
 
-普通业务团队应该制作 Capability Registry。只有需要内网镜像、统一修改官方基础能力或完全隔离公网时，
-才制作 Defaults 镜像。企业不需要 fork Rainy CLI，也不需要重新编译自己的 `rainy` 命令。
+普通业务团队应该制作 Capability Registry。完整 starter 放项目模板仓库；只有需要内网镜像、统一修改
+官方基础能力或完全隔离公网时，才制作 Defaults 镜像。企业不需要 fork Rainy CLI，也不需要重新编译
+自己的 `rainy` 命令。
+
+### 企业项目模板目录
+
+项目创建发生在项目级 `rainy.yaml` 出现之前，因此模板 Git 地址不能声明在目标项目中。平台团队应分发
+`~/.rainy/templates.yaml`，或通过 `RAINY_TEMPLATE_CONFIG`/`--template-config` 指定目录文件：
+
+```yaml
+apiVersion: rainy.dev/v1
+kind: ProjectTemplateCatalog
+templates:
+  enterprise-java-service:
+    description: Standard enterprise Java service
+    source:
+      type: git
+      url: ssh://git@git.example.com/platform/project-templates.git
+      ref: v1.2.0
+    subdirectory: java-service
+    repository:
+      defaultBranch: main
+      remoteUrl: "git@git.example.com:apps/{{ project.name }}.git"
+```
+
+模板目录中以 `.hbs` 结尾的 UTF-8 文件内容和路径可使用 `project.name`、`package.java`、
+`packagePath`，其他文件原样复制。必须包含渲染后可解析的 `rainy.yaml` 和 `capability.lock`。创建流程为：
+临时 clone 固定 ref、记录解析 commit、检查危险条目、渲染到临时目录、校验 Rainy 项目、原子移动到
+目标目录；源 `.git` 永远不会被复制。
+
+```bash
+rainy new order-service --template enterprise-java-service \
+  --package com.company.orders --dry-run
+rainy new order-service --template enterprise-java-service \
+  --package com.company.orders \
+  --git-url git@git.example.com:apps/order-service.git --apply
+```
+
+Rainy 不替用户创建远程仓库，也不自动推送。成功后输出新仓库所需的 `git init`、`remote add`、commit
+和 push 命令；未声明 remote 时使用明确的 `<PROJECT_GIT_URL>` 占位符。
 
 ## 2. 推荐的企业 Registry 仓库结构
 
@@ -121,7 +160,7 @@ rainy conformance check --path . --json
 cd tests/fixtures/sample-service
 rainy registry add company-dev /absolute/path/company-rainy-registry --apply
 rainy registry sync company-dev --all --apply
-rainy add capability service-baseline --dry-run
+rainy capability add service-baseline --dry-run
 ```
 
 ## 4. Capability 定义
@@ -282,7 +321,7 @@ description: Manage company service baselines through reviewed Rainy plans.
 # Company Service
 
 1. Run `rainy defaults status --json` and `rainy doctor --json`.
-2. Use `rainy add capability service-baseline --dry-run --json` first.
+2. Use `rainy capability add service-baseline --dry-run --json` first.
 3. Never infer approval for `--apply`.
 4. After approval, apply the saved plan and run CI verification and evidence generation.
 5. Stop on policy, checksum, lock, or local-drift errors.
@@ -291,12 +330,26 @@ description: Manage company service baselines through reviewed Rainy plans.
 安装企业 Skill：
 
 ```bash
+# 人工终端：先选择平台，再选择该模块导出的具体 Skill
+rainy registry sync company \
+  --module service-baseline \
+  --install-skills \
+  --apply
+
+# CI / Agent：显式参数，无交互且可复现
 rainy registry sync company \
   --module service-baseline \
   --install-skills \
   --target codex,claude,cursor \
+  --skill company-service \
   --apply
 ```
+
+每个 `exports.skills` 路径的末级目录名就是稳定 `SKILL_ID`，在同一次同步的所有 Pack 中必须唯一。
+可以重复 `--skill` 或使用逗号分隔；`--all-skills` 明确选择全部。`.rainy/registry.lock` 只锁定最终
+选择的 Skill 与目标平台，因此后续更新只刷新已选项，新发布的 Skill 必须由用户再次选择后才会进入
+项目。取消选择时 Rainy 仅删除 digest 未变化的旧受管目录，本地漂移会触发
+`REGISTRY_SKILL_CONFLICT`。
 
 目标目录：
 
@@ -446,7 +499,7 @@ rainy defaults doctor
 
 Defaults 缓存位于 `~/.rainy/defaults/rainy-official/<SOURCE_HASH>`，锁位于
 `~/.rainy/defaults.lock`。`RAINY_OFFLINE=1` 禁止网络回源。企业镜像必须保留 `rainy-cli` 和
-`rainy-comet` 两个 Rainy 管理的 Skill，否则 `rainy skill init` 会失败。
+`rainy-comet` 两个 Rainy 管理的 Skill，否则 `rainy skill install` 初始化组合 profile 时会失败。
 
 ## 10. Git 发布和版本策略
 
@@ -600,7 +653,7 @@ rainy registry sync --all-registries --all --apply
 
 ```bash
 rainy capability list --json
-rainy add capability service-baseline --provider standard \
+rainy capability add service-baseline --provider standard \
   --output-plan plans/service-baseline.json --dry-run
 rainy apply --plan plans/service-baseline.json --dry-run
 rainy apply --plan plans/service-baseline.json --apply

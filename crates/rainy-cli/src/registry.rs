@@ -7,6 +7,10 @@ use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
 use crate::patch::{self, ChangeSet};
 use crate::policy;
+use dialoguer::{
+    MultiSelect,
+    theme::{ColorfulTheme, SimpleTheme, Theme},
+};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -79,7 +83,26 @@ pub struct RegistryInfo {
     pub digest: Option<String>,
     pub cache_path: Option<String>,
     pub modules: Vec<String>,
+    pub installed_skills: Vec<String>,
     pub synced: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RegistrySkillExport {
+    id: String,
+    pack: String,
+    source: PathBuf,
+}
+
+struct RegistrySkillInstallOptions<'a> {
+    targets: &'a [SkillTarget],
+    requested_skills: &'a [String],
+    all_skills: bool,
+    previous: &'a [config::InstalledRegistrySkill],
+    force: bool,
+    interactive: bool,
+    no_color: bool,
+    registry_name: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -318,7 +341,12 @@ pub fn capability_graph(workspace: &Path) -> RainyResult<CommandOutput> {
     })
 }
 
-pub fn handle_pack_command(workspace: &Path, command: PackCommand) -> RainyResult<CommandOutput> {
+pub fn handle_pack_command(
+    workspace: &Path,
+    command: PackCommand,
+    interactive: bool,
+    no_color: bool,
+) -> RainyResult<CommandOutput> {
     match command.command {
         PackSubcommand::List => {
             let registry = RegistryClient::load(workspace)?;
@@ -355,7 +383,7 @@ pub fn handle_pack_command(workspace: &Path, command: PackCommand) -> RainyResul
             }
             Ok(CommandOutput::Packs { packs })
         }
-        PackSubcommand::Install(args) => install_pack(workspace, args),
+        PackSubcommand::Install(args) => install_pack(workspace, args, interactive, no_color),
         PackSubcommand::Update(args) => update_packs(workspace, args),
         PackSubcommand::Sign(args) => sign_pack(&args.path),
         PackSubcommand::Verify(args) => verify_pack_signature(&args.path),
@@ -365,11 +393,13 @@ pub fn handle_pack_command(workspace: &Path, command: PackCommand) -> RainyResul
 pub fn handle_registry_command(
     workspace: &Path,
     command: RegistryCommand,
+    interactive: bool,
+    no_color: bool,
 ) -> RainyResult<CommandOutput> {
     match command.command {
         RegistrySubcommand::List => registry_list(workspace),
         RegistrySubcommand::Add(args) => registry_add(workspace, args),
-        RegistrySubcommand::Sync(args) => registry_sync(workspace, args),
+        RegistrySubcommand::Sync(args) => registry_sync(workspace, args, interactive, no_color),
         RegistrySubcommand::Remove(args) => registry_remove(workspace, args),
         RegistrySubcommand::Doctor(args) => registry_doctor(workspace, args),
     }
@@ -435,7 +465,12 @@ fn registry_add(workspace: &Path, args: RegistryAddArgs) -> RainyResult<CommandO
     })
 }
 
-fn registry_sync(workspace: &Path, args: RegistrySyncArgs) -> RainyResult<CommandOutput> {
+fn registry_sync(
+    workspace: &Path,
+    args: RegistrySyncArgs,
+    interactive: bool,
+    no_color: bool,
+) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     if !args.all && args.module.is_empty() {
         return Err(RainyError::registry(
@@ -443,12 +478,24 @@ fn registry_sync(workspace: &Path, args: RegistrySyncArgs) -> RainyResult<Comman
             "select one or more --module values or pass --all",
         ));
     }
-    if args.install_skills && args.target.is_empty() {
+    if args.install_skills
+        && args.all_registries
+        && interactive
+        && args.skill.is_empty()
+        && !args.all_skills
+    {
         return Err(RainyError::registry(
-            "REGISTRY_SKILL_TARGET_REQUIRED",
-            "--install-skills requires at least one --target",
+            "REGISTRY_SKILL_SELECTION_AMBIGUOUS",
+            "interactive Skill selection operates on one registry at a time; name a registry or pass --all-skills",
         ));
     }
+    let skill_targets = resolve_registry_skill_targets(
+        workspace,
+        args.install_skills,
+        &args.target,
+        interactive,
+        no_color,
+    )?;
     let project = config::load_config(workspace)?;
     let selected = project
         .capability_registry
@@ -513,9 +560,16 @@ fn registry_sync(workspace: &Path, args: RegistrySyncArgs) -> RainyResult<Comman
             install_registry_skills(
                 workspace,
                 &registry_root,
-                &args.target,
-                &previous_skills,
-                args.force,
+                RegistrySkillInstallOptions {
+                    targets: &skill_targets,
+                    requested_skills: &args.skill,
+                    all_skills: args.all_skills,
+                    previous: &previous_skills,
+                    force: args.force,
+                    interactive,
+                    no_color,
+                    registry_name: &name,
+                },
             )?
         } else {
             previous_skills
@@ -584,6 +638,7 @@ fn registry_remove(workspace: &Path, args: RegistryRemoveArgs) -> RainyResult<Co
                 digest: None,
                 cache_path: None,
                 modules: Vec::new(),
+                installed_skills: Vec::new(),
                 synced: false,
             }],
             Vec::new(),
@@ -761,6 +816,15 @@ fn registry_info(
         cache_path: locked.and_then(|locked| locked.cache_path.clone()),
         modules: locked
             .map(|locked| locked.modules.clone())
+            .unwrap_or_default(),
+        installed_skills: locked
+            .map(|locked| {
+                locked
+                    .installed_skills
+                    .iter()
+                    .map(|skill| format!("{} ({})", skill.id, skill.target))
+                    .collect()
+            })
             .unwrap_or_default(),
         synced: locked.is_some(),
     }
@@ -1352,29 +1416,140 @@ fn copy_directory_secure(source: &Path, target: &Path) -> RainyResult<()> {
     Ok(())
 }
 
+fn resolve_registry_skill_targets(
+    workspace: &Path,
+    install_skills: bool,
+    requested: &[SkillTarget],
+    interactive: bool,
+    no_color: bool,
+) -> RainyResult<Vec<SkillTarget>> {
+    if !install_skills {
+        return Ok(Vec::new());
+    }
+    if !requested.is_empty() {
+        return Ok(requested.to_vec());
+    }
+    if !interactive {
+        return Err(RainyError::registry(
+            "REGISTRY_SKILL_TARGET_REQUIRED",
+            "--install-skills requires at least one --target outside an interactive terminal",
+        ));
+    }
+
+    let targets = [
+        SkillTarget::Universal,
+        SkillTarget::Codex,
+        SkillTarget::Claude,
+        SkillTarget::Cursor,
+        SkillTarget::GithubCopilot,
+        SkillTarget::Gemini,
+        SkillTarget::Opencode,
+    ];
+    let labels = [
+        "Universal        (.agents/skills)",
+        "Codex            (.agents/skills; Universal-compatible)",
+        "Claude Code      (.claude/skills)",
+        "Cursor           (.cursor/skills)",
+        "GitHub Copilot   (.github/skills)",
+        "Gemini CLI       (.gemini/skills)",
+        "OpenCode         (.opencode/skills)",
+    ];
+    let detected = targets
+        .iter()
+        .map(|target| registry_skill_target_detected(workspace, target))
+        .collect::<Vec<_>>();
+    let defaults = if detected.iter().any(|detected| *detected) {
+        detected
+    } else {
+        targets
+            .iter()
+            .map(|target| matches!(target, SkillTarget::Universal))
+            .collect()
+    };
+    let colorful = ColorfulTheme::default();
+    let simple = SimpleTheme;
+    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+    eprintln!();
+    eprintln!("Enterprise Skill targets");
+    eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
+    let selected = MultiSelect::with_theme(theme)
+        .with_prompt("Select target agent hosts")
+        .items(&labels)
+        .defaults(&defaults)
+        .interact()
+        .map_err(|error| {
+            RainyError::registry(
+                "REGISTRY_SKILL_SELECTION_FAILED",
+                format!("could not read the target platform selection: {error}"),
+            )
+        })?;
+    if selected.is_empty() {
+        return Err(RainyError::registry(
+            "REGISTRY_SKILL_TARGET_REQUIRED",
+            "select at least one target agent host",
+        ));
+    }
+    Ok(selected.into_iter().map(|index| targets[index]).collect())
+}
+
+fn registry_skill_target_detected(workspace: &Path, target: &SkillTarget) -> bool {
+    match target {
+        SkillTarget::Universal => workspace.join(".agents").exists(),
+        SkillTarget::Codex => workspace.join(".codex").exists(),
+        SkillTarget::Claude => {
+            workspace.join(".claude").exists() || workspace.join("CLAUDE.md").exists()
+        }
+        SkillTarget::Cursor => workspace.join(".cursor").exists(),
+        SkillTarget::GithubCopilot => {
+            workspace.join(".github/copilot-instructions.md").exists()
+                || workspace.join(".github/instructions").exists()
+                || workspace.join(".github/skills").exists()
+        }
+        SkillTarget::Gemini => workspace.join(".gemini").exists(),
+        SkillTarget::Opencode => workspace.join(".opencode").exists(),
+    }
+}
+
 fn install_registry_skills(
     workspace: &Path,
     registry_root: &Path,
-    targets: &[SkillTarget],
-    previous: &[config::InstalledRegistrySkill],
-    force: bool,
+    options: RegistrySkillInstallOptions<'_>,
 ) -> RainyResult<Vec<config::InstalledRegistrySkill>> {
-    let target_names = targets
+    let target_names = options
+        .targets
         .iter()
         .map(skill_target_name)
         .map(str::to_string)
         .collect::<Vec<_>>();
-    install_registry_skills_for_targets(workspace, registry_root, &target_names, previous, force)
+    let exports = discover_registry_skills(registry_root)?;
+    if exports.is_empty() {
+        return Err(RainyError::registry(
+            "REGISTRY_SKILL_EXPORTS_EMPTY",
+            "the selected pack modules do not export any Skills",
+        ));
+    }
+    let selected = select_registry_skill_ids(
+        &exports,
+        options.requested_skills,
+        options.all_skills,
+        options.previous,
+        options.interactive,
+        options.no_color,
+        options.registry_name,
+    )?;
+    install_discovered_registry_skills(
+        workspace,
+        &exports,
+        &selected,
+        &target_names,
+        options.previous,
+        options.force,
+    )
 }
 
-fn install_registry_skills_for_targets(
-    workspace: &Path,
-    registry_root: &Path,
-    targets: &[String],
-    previous: &[config::InstalledRegistrySkill],
-    force: bool,
-) -> RainyResult<Vec<config::InstalledRegistrySkill>> {
+fn discover_registry_skills(registry_root: &Path) -> RainyResult<Vec<RegistrySkillExport>> {
     let mut exports = Vec::new();
+    let mut ids = BTreeMap::new();
     for pack_root in pack_roots(registry_root)? {
         let pack: CapabilityPack =
             serde_yaml::from_str(&std::fs::read_to_string(pack_root.join("pack.yaml"))?)?;
@@ -1401,23 +1576,162 @@ fn install_registry_skills_for_targets(
                     )
                 })?
                 .to_string();
-            exports.push((id, source));
+            if let Some(existing_pack) = ids.insert(id.clone(), pack.metadata.name.clone()) {
+                return Err(RainyError::registry(
+                    "REGISTRY_SKILL_DUPLICATE",
+                    format!(
+                        "Skill ID {id} is exported by both {existing_pack} and {}; enterprise Skill IDs must be unique",
+                        pack.metadata.name
+                    ),
+                ));
+            }
+            exports.push(RegistrySkillExport {
+                id,
+                pack: pack.metadata.name.clone(),
+                source,
+            });
         }
     }
+    exports.sort_by(|left, right| (&left.id, &left.pack).cmp(&(&right.id, &right.pack)));
+    Ok(exports)
+}
 
+#[allow(clippy::too_many_arguments)]
+fn select_registry_skill_ids(
+    exports: &[RegistrySkillExport],
+    requested: &[String],
+    all_skills: bool,
+    previous: &[config::InstalledRegistrySkill],
+    interactive: bool,
+    no_color: bool,
+    registry_name: &str,
+) -> RainyResult<BTreeSet<String>> {
+    let available = exports
+        .iter()
+        .map(|export| export.id.clone())
+        .collect::<BTreeSet<_>>();
+    if !requested.is_empty() {
+        let selected = requested
+            .iter()
+            .map(|id| id.trim().to_string())
+            .collect::<BTreeSet<_>>();
+        let unknown = selected.difference(&available).cloned().collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(RainyError::registry(
+                "REGISTRY_SKILL_NOT_FOUND",
+                format!(
+                    "requested Skill IDs were not exported by the selected modules: {}; available Skills: {}",
+                    unknown.join(", "),
+                    available.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+            ));
+        }
+        return Ok(selected);
+    }
+    if all_skills || !interactive {
+        return Ok(available);
+    }
+
+    let previous_ids = previous
+        .iter()
+        .map(|skill| skill.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let labels = exports
+        .iter()
+        .map(|export| format!("{:<28} from {}", export.id, export.pack))
+        .collect::<Vec<_>>();
+    let defaults = if previous_ids.is_empty() {
+        vec![true; exports.len()]
+    } else {
+        exports
+            .iter()
+            .map(|export| previous_ids.contains(export.id.as_str()))
+            .collect()
+    };
+    let colorful = ColorfulTheme::default();
+    let simple = SimpleTheme;
+    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+    eprintln!();
+    eprintln!("Enterprise Skill selection");
+    eprintln!("  Registry  {registry_name}");
+    eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
+    let selected = MultiSelect::with_theme(theme)
+        .with_prompt("Select Skills to install")
+        .items(&labels)
+        .defaults(&defaults)
+        .interact()
+        .map_err(|error| {
+            RainyError::registry(
+                "REGISTRY_SKILL_SELECTION_FAILED",
+                format!("could not read the Skill selection: {error}"),
+            )
+        })?;
+    if selected.is_empty() {
+        return Err(RainyError::registry(
+            "REGISTRY_SKILL_SELECTION_REQUIRED",
+            "select at least one Skill, or rerun without --install-skills",
+        ));
+    }
+    Ok(selected
+        .into_iter()
+        .map(|index| exports[index].id.clone())
+        .collect())
+}
+
+fn install_selected_registry_skills_for_targets(
+    workspace: &Path,
+    registry_root: &Path,
+    targets: &[String],
+    selected: &BTreeSet<String>,
+    previous: &[config::InstalledRegistrySkill],
+    force: bool,
+) -> RainyResult<Vec<config::InstalledRegistrySkill>> {
+    let exports = discover_registry_skills(registry_root)?;
+    let available = exports
+        .iter()
+        .map(|export| export.id.clone())
+        .collect::<BTreeSet<_>>();
+    let retained = selected.intersection(&available).cloned().collect();
+    install_discovered_registry_skills(workspace, &exports, &retained, targets, previous, force)
+}
+
+fn install_discovered_registry_skills(
+    workspace: &Path,
+    exports: &[RegistrySkillExport],
+    selected: &BTreeSet<String>,
+    targets: &[String],
+    previous: &[config::InstalledRegistrySkill],
+    force: bool,
+) -> RainyResult<Vec<config::InstalledRegistrySkill>> {
+    for item in previous {
+        validate_installed_registry_skill(item)?;
+    }
     let mut planned = Vec::new();
     let mut destinations = BTreeSet::new();
     for target in targets {
         let root = registry_skill_target_root(target)?;
-        for (id, source) in &exports {
-            let relative = root.join(id);
+        for export in exports
+            .iter()
+            .filter(|export| selected.contains(&export.id))
+        {
+            let relative = root.join(&export.id);
             let relative_text = relative.to_string_lossy().replace('\\', "/");
             if !destinations.insert(relative_text.clone()) {
                 continue;
             }
             let destination = workspace.join(&relative);
-            let incoming_digest = registry_digest(source)?;
+            let incoming_digest = registry_digest(&export.source)?;
             if destination.exists() {
+                if !destination.is_dir() {
+                    return Err(RainyError::registry(
+                        "REGISTRY_SKILL_CONFLICT",
+                        format!(
+                            "Skill {} cannot be installed because {} is not a directory",
+                            export.id,
+                            destination.display()
+                        ),
+                    ));
+                }
                 let existing_digest = registry_digest(&destination)?;
                 if existing_digest != incoming_digest {
                     let managed_digest = previous
@@ -1429,7 +1743,7 @@ fn install_registry_skills_for_targets(
                             "REGISTRY_SKILL_CONFLICT",
                             format!(
                                 "Skill {} has local changes at {}; review them and rerun with --force to replace",
-                                id,
+                                export.id,
                                 destination.display()
                             ),
                         ));
@@ -1438,15 +1752,51 @@ fn install_registry_skills_for_targets(
             }
             planned.push((
                 config::InstalledRegistrySkill {
-                    id: id.clone(),
+                    id: export.id.clone(),
                     target: target.clone(),
                     path: relative_text,
                     digest: incoming_digest,
                 },
-                source.clone(),
+                export.source.clone(),
                 destination,
             ));
         }
+    }
+
+    let planned_paths = planned
+        .iter()
+        .map(|(item, _, _)| item.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut removals = Vec::new();
+    for item in previous
+        .iter()
+        .filter(|item| !planned_paths.contains(item.path.as_str()))
+    {
+        validate_relative_registry_file(&item.path)?;
+        let destination = workspace.join(&item.path);
+        if destination.exists() {
+            if !destination.is_dir() {
+                return Err(RainyError::registry(
+                    "REGISTRY_SKILL_CONFLICT",
+                    format!(
+                        "managed Skill path is no longer a directory: {}; inspect it before changing the selection",
+                        destination.display()
+                    ),
+                ));
+            }
+            let actual = registry_digest(&destination)?;
+            if actual != item.digest && !force {
+                return Err(RainyError::registry(
+                    "REGISTRY_SKILL_CONFLICT",
+                    format!(
+                        "Skill {} has local changes at {}; review them and rerun with --force before deselecting it",
+                        item.id,
+                        destination.display()
+                    ),
+                ));
+            }
+        }
+        removals.push((item.clone(), destination));
     }
 
     let mut policy_changes = ChangeSet::new();
@@ -1465,8 +1815,23 @@ fn install_registry_skills_for_targets(
                 && registry_digest(destination).is_ok_and(|digest| digest == item.digest),
         });
     }
+    for (item, destination) in &removals {
+        policy_changes.push(crate::patch::Change {
+            kind: crate::patch::ChangeKind::Delete,
+            path: item.path.clone(),
+            before: Some(format!("enterprise Skill {}", item.id)),
+            after: None,
+            summary: format!("remove deselected enterprise Skill {}", item.id),
+            noop: !destination.exists(),
+        });
+    }
     policy::check_changes(workspace, &policy_changes)?;
 
+    for (_, destination) in &removals {
+        if destination.exists() {
+            std::fs::remove_dir_all(destination)?;
+        }
+    }
     for (item, source, destination) in &planned {
         if destination.exists()
             && registry_digest(destination).is_ok_and(|digest| digest == item.digest)
@@ -1479,6 +1844,24 @@ fn install_registry_skills_for_targets(
         atomic_replace_directory(&staging, destination)?;
     }
     Ok(planned.into_iter().map(|(item, _, _)| item).collect())
+}
+
+fn validate_installed_registry_skill(skill: &config::InstalledRegistrySkill) -> RainyResult<()> {
+    validate_relative_registry_file(&skill.path)?;
+    let expected = registry_skill_target_root(&skill.target)?
+        .join(&skill.id)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if skill.path != expected {
+        return Err(RainyError::registry(
+            "REGISTRY_SKILL_LOCK_INVALID",
+            format!(
+                "locked Skill path does not match its target and ID: {}",
+                skill.path
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn pack_roots(root: &Path) -> RainyResult<Vec<PathBuf>> {
@@ -1768,14 +2151,20 @@ fn load_pack_at(
     Ok(())
 }
 
-fn install_pack(workspace: &Path, args: crate::cli::PackInstallArgs) -> RainyResult<CommandOutput> {
+fn install_pack(
+    workspace: &Path,
+    args: crate::cli::PackInstallArgs,
+    interactive: bool,
+    no_color: bool,
+) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
-    if args.install_skills && args.target.is_empty() {
-        return Err(RainyError::registry(
-            "REGISTRY_SKILL_TARGET_REQUIRED",
-            "--install-skills requires at least one --target",
-        ));
-    }
+    let skill_targets = resolve_registry_skill_targets(
+        workspace,
+        args.install_skills,
+        &args.target,
+        interactive,
+        no_color,
+    )?;
     let name = args
         .name
         .unwrap_or_else(|| generated_registry_name(&args.source));
@@ -1816,9 +2205,16 @@ fn install_pack(workspace: &Path, args: crate::cli::PackInstallArgs) -> RainyRes
             install_registry_skills(
                 workspace,
                 &registry_root,
-                &args.target,
-                &previous_skills,
-                args.force,
+                RegistrySkillInstallOptions {
+                    targets: &skill_targets,
+                    requested_skills: &args.skill,
+                    all_skills: args.all_skills,
+                    previous: &previous_skills,
+                    force: args.force,
+                    interactive,
+                    no_color,
+                    registry_name: &name,
+                },
             )?
         } else {
             previous_skills
@@ -1923,10 +2319,15 @@ fn update_packs(workspace: &Path, args: crate::cli::PackUpdateArgs) -> RainyResu
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
-            locked.installed_skills = install_registry_skills_for_targets(
+            let selected = previous_skills
+                .iter()
+                .map(|skill| skill.id.clone())
+                .collect::<BTreeSet<_>>();
+            locked.installed_skills = install_selected_registry_skills_for_targets(
                 workspace,
                 &locked_registry_path(workspace, source, &locked)?,
                 &targets,
+                &selected,
                 &previous_skills,
                 false,
             )?;
@@ -2303,10 +2704,10 @@ fn validate_network_url(url: &str, code: &'static str) -> RainyResult<()> {
 
 fn validate_relative_registry_file(path: &str) -> RainyResult<()> {
     let path = Path::new(path);
-    if path.is_absolute()
+    if path.as_os_str().is_empty()
         || path
             .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
     {
         return Err(RainyError::registry(
             "HTTP_REGISTRY_INVALID",

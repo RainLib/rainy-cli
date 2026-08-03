@@ -66,6 +66,16 @@ pub fn check_changes(workspace: &Path, changes: &ChangeSet) -> RainyResult<()> {
     check_changes_with_policy(changes, layered_policy)
 }
 
+pub fn check_skill_changes(workspace: &Path, changes: &ChangeSet) -> RainyResult<()> {
+    let project_policy = if workspace.join("rainy.yaml").is_file() {
+        config::load_config(workspace)?.policy
+    } else {
+        config::PolicySection::default()
+    };
+    let layered_policy = load_layered_policy(workspace, project_policy)?;
+    check_changes_with_policy(changes, layered_policy)
+}
+
 fn check_changes_with_policy(
     changes: &ChangeSet,
     policy: config::PolicySection,

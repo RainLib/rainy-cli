@@ -10,17 +10,22 @@
 
 ## Workspace Boundary
 
-- Pass an explicit workspace rooted at the intended `rainy.yaml`.
+- Pass an explicit repository root. Capability workflows require its `rainy.yaml`; standalone Skill
+  workflows require only their `rainy-skills.yaml` after installation.
 - Do not scan unrelated home or system directories for Rainy projects.
 - Do not initialize a missing project implicitly.
 - Preserve `capability.lock` and `.rainy/audit.log` as managed records.
 - Preserve `rainy-skills.yaml` as desired state and `skills.lock` as installed state.
+- Preserve `rainy-skills/` as project-owned source; install and uninstall may change host copies but
+  must not remove the source library.
 
 ## Composed Skills
 
 - Keep Comet `auto_transition` disabled in Rainy-managed profiles.
 - Treat OpenSpec as intent, Superpowers as engineering method, Comet as phase state, and Rainy as the execution boundary.
 - Do not edit locked Rainy Skill copies or Comet-managed upstream Skills in place.
+- Review custom `SKILL.md` rules and every file under `scripts/` before selecting the Skill. Installation
+  must copy and hash scripts without executing them.
 - Do not treat Comet phase advancement as approval for Rainy apply, native plugins, deployment, migration, or secret writes.
 
 ## Plugins

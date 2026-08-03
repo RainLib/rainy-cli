@@ -29,6 +29,14 @@
       "uniqueItems": true,
       "items": { "type": "string" }
     },
+    "customSkills": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      }
+    },
     "rainyVersion": { "type": "string", "minLength": 1 },
     "comet": {
       "type": "object",
@@ -66,7 +74,7 @@
         "type": "object",
         "required": ["name", "target", "path", "digest"],
         "properties": {
-          "name": { "enum": ["rainy-cli", "rainy-comet"] },
+          "name": { "type": "string", "minLength": 1 },
           "target": { "type": "string" },
           "path": { "type": "string", "minLength": 1 },
           "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }

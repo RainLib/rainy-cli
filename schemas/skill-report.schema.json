@@ -11,6 +11,7 @@
     "scope",
     "language",
     "targets",
+    "customSkills",
     "changedFiles",
     "applyCommand",
     "command",
@@ -24,6 +25,11 @@
     "scope": { "const": "project" },
     "language": { "enum": ["en", "zh"] },
     "targets": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "customSkills": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string" }
+    },
     "changedFiles": { "type": "array", "items": { "type": "string" } },
     "applyCommand": { "type": "array", "items": { "type": "string" } },
     "command": { "type": "array", "items": { "type": "string" } },

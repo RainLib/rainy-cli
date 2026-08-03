@@ -1,11 +1,12 @@
 use crate::agent;
 use crate::cli::{
-    SkillChangeArgs, SkillCommand, SkillInitArgs, SkillLanguage, SkillProfile, SkillSubcommand,
-    SkillTarget, SkillUpdateArgs,
+    SkillChangeArgs, SkillCommand, SkillCreateArgs, SkillInitArgs, SkillInstallArgs, SkillLanguage,
+    SkillProfile, SkillSubcommand, SkillTarget, SkillUpdateArgs,
 };
-use crate::config;
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
+use crate::patch::{self, ChangeSet};
+use crate::policy;
 use crate::progress::ProgressReporter;
 use chrono::{DateTime, Utc};
 use dialoguer::{
@@ -24,6 +25,7 @@ use walkdir::WalkDir;
 
 const PROFILE_PATH: &str = "rainy-skills.yaml";
 const LOCK_PATH: &str = "skills.lock";
+const CUSTOM_SKILLS_ROOT: &str = "rainy-skills";
 const COMET_PACKAGE: &str = "@rpamis/comet";
 const SKILLS_PACKAGE: &str = "skills";
 const SUPERPOWERS_PACKAGE: &str = "obra/superpowers";
@@ -39,6 +41,8 @@ pub struct SkillProfileConfig {
     pub scope: String,
     pub language: String,
     pub targets: Vec<String>,
+    #[serde(default)]
+    pub custom_skills: Vec<String>,
     pub packages: SkillPackages,
     pub policy: SkillPolicy,
 }
@@ -72,6 +76,8 @@ pub struct SkillLock {
     pub scope: String,
     pub language: String,
     pub targets: Vec<String>,
+    #[serde(default)]
+    pub custom_skills: Vec<String>,
     pub rainy_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comet: Option<LockedPackage>,
@@ -124,6 +130,7 @@ pub struct SkillReport {
     pub scope: String,
     pub language: String,
     pub targets: Vec<String>,
+    pub custom_skills: Vec<String>,
     pub changed_files: Vec<String>,
     pub apply_command: Vec<String>,
     pub command: Vec<String>,
@@ -137,6 +144,19 @@ pub struct SkillCheck {
     pub message: String,
 }
 
+#[derive(Debug, Clone)]
+struct CustomSkill {
+    id: String,
+    description: String,
+    source: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CustomSkillMetadata {
+    name: String,
+    description: String,
+}
+
 pub fn handle_skill_command(
     workspace: &Path,
     command: SkillCommand,
@@ -147,6 +167,7 @@ pub fn handle_skill_command(
     match command.command {
         SkillSubcommand::Init(args) => init(workspace, args, progress, interactive, no_color),
         SkillSubcommand::Install(args) => install(workspace, args, progress, interactive, no_color),
+        SkillSubcommand::Create(args) => create(workspace, args, progress),
         SkillSubcommand::Sync => sync(workspace, progress),
         SkillSubcommand::Status => status(workspace, progress),
         SkillSubcommand::Doctor => doctor(workspace, progress),
@@ -174,8 +195,85 @@ pub fn context_summary(workspace: &Path) -> RainyResult<Option<String>> {
             "- Comet transitions never approve Rainy `--apply`; keep `auto_transition` disabled.\n",
         );
     }
+    if !profile.custom_skills.is_empty() {
+        summary.push_str(&format!(
+            "- Project Skills: {}.\n",
+            profile
+                .custom_skills
+                .iter()
+                .map(|skill| format!("`{skill}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     summary.push_str("- Check with `rainy skill status` and `rainy skill doctor`.\n");
     Ok(Some(summary))
+}
+
+fn create(
+    workspace: &Path,
+    args: SkillCreateArgs,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
+    progress.detail("Validating the custom Skill scaffold request");
+    let apply = resolve_apply_flags(args.dry_run, args.apply)?;
+    validate_custom_skill_id(&args.id)?;
+    let root = workspace.join(CUSTOM_SKILLS_ROOT).join(&args.id);
+    if root.exists() {
+        return Err(RainyError::config(
+            "SKILL_CUSTOM_EXISTS",
+            format!(
+                "{} already exists; edit the project Skill directly or choose another ID",
+                relative_string(workspace, &root)
+            ),
+        ));
+    }
+    let description = args
+        .description
+        .unwrap_or_else(|| format!("Project-specific guidance for {} workflows.", args.id));
+    let description = description.trim();
+    if description.is_empty() || description.contains(['\n', '\r']) {
+        return Err(RainyError::config(
+            "SKILL_CUSTOM_DESCRIPTION_INVALID",
+            "--description must be a non-empty single line",
+        ));
+    }
+    let metadata = serde_yaml::to_string(&CustomSkillMetadata {
+        name: args.id.clone(),
+        description: description.to_string(),
+    })?;
+    let skill = format!(
+        "---\n{}---\n\n# {}\n\n## Rules\n\n- Define project-specific constraints here.\n- Require explicit approval before mutating protected resources.\n\n## Workflow\n\n1. Inspect the current project state.\n2. Present the intended action and validation plan.\n3. Execute only approved commands.\n4. Report verification results and unresolved risks.\n\n## Commands\n\nPlace optional helper commands in `scripts/`. Installation copies them but never executes them.\n",
+        metadata, args.id
+    );
+    let mut changes = ChangeSet::new();
+    changes.push(patch::change_for_file(
+        workspace,
+        format!("{CUSTOM_SKILLS_ROOT}/{}/SKILL.md", args.id),
+        skill,
+        format!("create custom Skill {}", args.id),
+    )?);
+    changes.push(patch::change_for_file(
+        workspace,
+        format!("{CUSTOM_SKILLS_ROOT}/{}/references/README.md", args.id),
+        "# References\n\nAdd project policies, terminology, examples, and supporting guidance here.\n"
+            .to_string(),
+        format!("create references for custom Skill {}", args.id),
+    )?);
+    changes.push(patch::change_for_file(
+        workspace,
+        format!("{CUSTOM_SKILLS_ROOT}/{}/scripts/README.md", args.id),
+        "# Scripts\n\nAdd optional reviewed helper commands here. Rainy does not execute them during Skill installation.\n"
+            .to_string(),
+        format!("create scripts directory for custom Skill {}", args.id),
+    )?);
+    if !apply {
+        return Ok(CommandOutput::change_dry_run("skill create", changes));
+    }
+    progress.detail("Checking project policy and creating the Skill scaffold");
+    policy::check_skill_changes(workspace, &changes)?;
+    patch::apply_changes(workspace, &changes)?;
+    Ok(CommandOutput::change_applied("skill create", changes))
 }
 
 fn init(
@@ -185,12 +283,28 @@ fn init(
     interactive: bool,
     no_color: bool,
 ) -> RainyResult<CommandOutput> {
+    initialize(workspace, args, progress, interactive, no_color, "init")
+}
+
+fn initialize(
+    workspace: &Path,
+    args: SkillInitArgs,
+    progress: &ProgressReporter,
+    interactive: bool,
+    no_color: bool,
+    operation: &str,
+) -> RainyResult<CommandOutput> {
     progress.detail("Validating workspace and requested Skill profile");
-    config::load_config(workspace)?;
     let mut apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let profile_path = workspace.join(PROFILE_PATH);
     let profile_exists = profile_path.exists();
-    let desired = if profile_exists && args.profile.is_none() && args.target.is_empty() {
+    let desired = if profile_exists
+        && args.profile.is_none()
+        && args.target.is_empty()
+        && args.skill.is_empty()
+        && !args.all_custom_skills
+        && !args.no_custom_skills
+    {
         load_profile(workspace)?
     } else {
         profile_from_args(workspace, &args, interactive, no_color)?
@@ -213,7 +327,7 @@ fn init(
     if profile_exists && !apply {
         return Ok(CommandOutput::Skill {
             report: report(
-                "init",
+                operation,
                 "configured",
                 &desired,
                 Vec::new(),
@@ -233,9 +347,10 @@ fn init(
         progress.detail("Building the Skill installation preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
-                "init",
+                workspace,
+                operation,
                 &desired,
-                init_apply_command(&desired, args.force),
+                setup_apply_command(operation, &desired, args.force),
                 comet_display(&desired, CometAction::Install),
             ),
         });
@@ -252,26 +367,76 @@ fn init(
     changed_files.push(LOCK_PATH.to_string());
     progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
-    changed_files.push("AGENTS.md".to_string());
+    changed_files.extend(agent::skill_sync_paths(workspace));
     changed_files.sort();
     changed_files.dedup();
 
     Ok(CommandOutput::Skill {
-        report: completed_report("init", &desired, changed_files),
+        report: completed_report(operation, &desired, changed_files),
     })
 }
 
 fn install(
     workspace: &Path,
-    args: SkillChangeArgs,
+    args: SkillInstallArgs,
     progress: &ProgressReporter,
     interactive: bool,
     no_color: bool,
 ) -> RainyResult<CommandOutput> {
     progress.detail("Loading and validating rainy-skills.yaml");
-    config::load_config(workspace)?;
+    if !workspace.join(PROFILE_PATH).is_file() {
+        progress.detail("No Skill profile found; starting automatic initialization");
+        return initialize(
+            workspace,
+            SkillInitArgs {
+                profile: args.profile,
+                language: args.language.unwrap_or(SkillLanguage::Zh),
+                target: args.target,
+                comet_version: args
+                    .comet_version
+                    .unwrap_or_else(|| "0.4.0-beta.6".to_string()),
+                skills_version: args
+                    .skills_version
+                    .unwrap_or_else(|| DEFAULT_SKILLS_VERSION.to_string()),
+                superpowers_version: args
+                    .superpowers_version
+                    .unwrap_or_else(|| DEFAULT_SUPERPOWERS_VERSION.to_string()),
+                skill: args.skill,
+                all_custom_skills: args.all_custom_skills,
+                no_custom_skills: args.no_custom_skills,
+                dry_run: args.dry_run,
+                apply: args.apply,
+                force: args.force,
+            },
+            progress,
+            interactive,
+            no_color,
+            "install",
+        );
+    }
+    if args.profile.is_some()
+        || args.language.is_some()
+        || !args.target.is_empty()
+        || args.comet_version.is_some()
+        || args.skills_version.is_some()
+        || args.superpowers_version.is_some()
+    {
+        return Err(RainyError::config(
+            "SKILL_INSTALL_SETUP_ALREADY_CONFIGURED",
+            "--profile, --language, --target, and package version options are only used when rainy-skills.yaml is missing; uninstall before changing the configured setup",
+        ));
+    }
     let mut apply = resolve_apply_flags(args.dry_run, args.apply)?;
-    let profile = load_profile(workspace)?;
+    let mut profile = load_profile(workspace)?;
+    profile.custom_skills = resolve_custom_skill_selection(
+        workspace,
+        &args.skill,
+        args.all_custom_skills,
+        args.no_custom_skills,
+        &profile.custom_skills,
+        interactive,
+        no_color,
+    )?;
     if interactive && !args.dry_run && !args.apply {
         apply = prompt_install_confirmation(&profile, true, no_color)?;
     }
@@ -279,9 +444,10 @@ fn install(
         progress.detail("Building the Skill installation preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
+                workspace,
                 "install",
                 &profile,
-                change_apply_command("install", args.force),
+                install_apply_command(&profile, args.force),
                 comet_display(&profile, CometAction::Install),
             ),
         });
@@ -297,7 +463,7 @@ fn install(
     changed_files.push(LOCK_PATH.to_string());
     progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
-    changed_files.push("AGENTS.md".to_string());
+    changed_files.extend(agent::skill_sync_paths(workspace));
     changed_files.sort();
     changed_files.dedup();
 
@@ -314,16 +480,7 @@ fn sync(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandOut
     let profile = load_profile(workspace)?;
     agent::sync_skills_command(workspace)?;
     Ok(CommandOutput::Skill {
-        report: completed_report(
-            "sync",
-            &profile,
-            vec![
-                "AGENTS.md".to_string(),
-                ".enterprise-agent/context.md".to_string(),
-                ".enterprise-agent/capabilities.md".to_string(),
-                ".enterprise-agent/commands.md".to_string(),
-            ],
-        ),
+        report: completed_report("sync", &profile, agent::skill_sync_paths(workspace)),
     })
 }
 
@@ -390,7 +547,6 @@ fn update(
     progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
     progress.detail("Loading and validating the configured Skill profile");
-    config::load_config(workspace)?;
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let mut profile = load_profile(workspace)?;
     if let Some(version) = args.comet_version {
@@ -417,6 +573,7 @@ fn update(
         progress.detail("Building the Skill update preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
+                workspace,
                 "update",
                 &profile,
                 update_apply_command(&profile, args.force),
@@ -435,7 +592,7 @@ fn update(
     changed_files.push(LOCK_PATH.to_string());
     progress.detail("Refreshing Rainy-managed agent context");
     agent::sync_skills_command(workspace)?;
-    changed_files.push("AGENTS.md".to_string());
+    changed_files.extend(agent::skill_sync_paths(workspace));
     changed_files.sort();
     changed_files.dedup();
 
@@ -450,13 +607,13 @@ fn uninstall(
     progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
     progress.detail("Loading and validating the configured Skill profile");
-    config::load_config(workspace)?;
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let profile = load_profile(workspace)?;
     if !apply {
         progress.detail("Building the Skill removal preview");
         return Ok(CommandOutput::Skill {
             report: planned_report(
+                workspace,
                 "uninstall",
                 &profile,
                 change_apply_command("uninstall", args.force),
@@ -479,11 +636,12 @@ fn uninstall(
 
     progress.detail("Removing Rainy-managed Skill files");
     let mut changed_files = Vec::new();
-    let names = if profile.profile == "comet" {
+    let mut names = if profile.profile == "comet" {
         vec!["rainy-cli", "rainy-comet"]
     } else {
         vec!["rainy-cli"]
     };
+    names.extend(profile.custom_skills.iter().map(String::as_str));
     for target in &profile.targets {
         for name in &names {
             let path = skills_root(workspace, target)?.join(name);
@@ -558,6 +716,15 @@ fn profile_from_args(
             "at least one skill target is required",
         ));
     }
+    let custom_skills = resolve_custom_skill_selection(
+        workspace,
+        &args.skill,
+        args.all_custom_skills,
+        args.no_custom_skills,
+        &[],
+        interactive,
+        no_color,
+    )?;
     Ok(SkillProfileConfig {
         api_version: "rainy.dev/v1".to_string(),
         kind: "SkillProfile".to_string(),
@@ -565,6 +732,7 @@ fn profile_from_args(
         scope: "project".to_string(),
         language: language_name(&args.language).to_string(),
         targets,
+        custom_skills,
         packages: SkillPackages {
             comet: (profile == "comet").then(|| format!("{COMET_PACKAGE}@{}", args.comet_version)),
             skills: (profile == "comet")
@@ -658,6 +826,235 @@ fn prompt_targets(workspace: &Path, no_color: bool) -> RainyResult<Vec<SkillTarg
     Ok(selected.into_iter().map(|index| targets[index]).collect())
 }
 
+fn resolve_custom_skill_selection(
+    workspace: &Path,
+    requested: &[String],
+    all_custom_skills: bool,
+    no_custom_skills: bool,
+    current: &[String],
+    interactive: bool,
+    no_color: bool,
+) -> RainyResult<Vec<String>> {
+    if no_custom_skills {
+        return Ok(Vec::new());
+    }
+    let available = discover_custom_skills(workspace)?;
+    let available_ids = available
+        .iter()
+        .map(|skill| skill.id.clone())
+        .collect::<BTreeSet<_>>();
+    if !requested.is_empty() {
+        let selected = requested
+            .iter()
+            .map(|id| id.trim().to_string())
+            .collect::<BTreeSet<_>>();
+        let unknown = selected
+            .difference(&available_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(RainyError::config(
+                "SKILL_CUSTOM_NOT_FOUND",
+                format!(
+                    "project-library Skills were not found: {}; available Skills: {}",
+                    unknown.join(", "),
+                    display_available_custom_skills(&available_ids)
+                ),
+            ));
+        }
+        return Ok(selected.into_iter().collect());
+    }
+    if all_custom_skills {
+        return Ok(available_ids.into_iter().collect());
+    }
+    if !interactive {
+        return Ok(current.to_vec());
+    }
+
+    let missing = current
+        .iter()
+        .filter(|id| !available_ids.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(RainyError::config(
+            "SKILL_CUSTOM_SOURCE_MISSING",
+            format!(
+                "configured project-library Skills are missing from {CUSTOM_SKILLS_ROOT}/: {}",
+                missing.join(", ")
+            ),
+        ));
+    }
+    if available.is_empty() {
+        return Ok(Vec::new());
+    }
+    prompt_custom_skills(&available, current, no_color)
+}
+
+fn display_available_custom_skills(available: &BTreeSet<String>) -> String {
+    if available.is_empty() {
+        "none; create one with `rainy skill create <SKILL_ID> --apply`".to_string()
+    } else {
+        available.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
+
+fn prompt_custom_skills(
+    available: &[CustomSkill],
+    current: &[String],
+    no_color: bool,
+) -> RainyResult<Vec<String>> {
+    let selected = current.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let labels = available
+        .iter()
+        .map(|skill| {
+            let description = skill.description.chars().take(72).collect::<String>();
+            format!("{:<28} {}", skill.id, description)
+        })
+        .collect::<Vec<_>>();
+    let defaults = available
+        .iter()
+        .map(|skill| selected.contains(skill.id.as_str()))
+        .collect::<Vec<_>>();
+    let colorful = ColorfulTheme::default();
+    let simple = SimpleTheme;
+    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+    eprintln!();
+    eprintln!("Project Skill library");
+    eprintln!("  Source  {CUSTOM_SKILLS_ROOT}/");
+    eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
+    let selected = MultiSelect::with_theme(theme)
+        .with_prompt("Select project Skills")
+        .items(&labels)
+        .defaults(&defaults)
+        .interact()
+        .map_err(|error| {
+            RainyError::config(
+                "SKILL_SELECTION_FAILED",
+                format!("could not read the project Skill selection: {error}"),
+            )
+        })?;
+    Ok(selected
+        .into_iter()
+        .map(|index| available[index].id.clone())
+        .collect())
+}
+
+fn discover_custom_skills(workspace: &Path) -> RainyResult<Vec<CustomSkill>> {
+    let root = workspace.join(CUSTOM_SKILLS_ROOT);
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    if !root.is_dir() || std::fs::symlink_metadata(&root)?.file_type().is_symlink() {
+        return Err(RainyError::config(
+            "SKILL_CUSTOM_LIBRARY_INVALID",
+            format!("{CUSTOM_SKILLS_ROOT} must be a real directory"),
+        ));
+    }
+    let mut skills = Vec::new();
+    for entry in std::fs::read_dir(&root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_dir() || file_type.is_symlink() {
+            return Err(RainyError::config(
+                "SKILL_CUSTOM_LIBRARY_INVALID",
+                format!(
+                    "every entry in {CUSTOM_SKILLS_ROOT}/ must be a Skill directory: {}",
+                    entry.path().display()
+                ),
+            ));
+        }
+        let id = entry.file_name().to_string_lossy().to_string();
+        validate_custom_skill_id(&id)?;
+        let skill_path = entry.path().join("SKILL.md");
+        if !skill_path.is_file() {
+            return Err(RainyError::config(
+                "SKILL_CUSTOM_INVALID",
+                format!("custom Skill {id} must contain SKILL.md"),
+            ));
+        }
+        let metadata = parse_custom_skill_metadata(&std::fs::read_to_string(&skill_path)?)?;
+        if metadata.name != id {
+            return Err(RainyError::config(
+                "SKILL_CUSTOM_NAME_MISMATCH",
+                format!(
+                    "custom Skill directory {id} must match SKILL.md frontmatter name {}",
+                    metadata.name
+                ),
+            ));
+        }
+        if metadata.description.trim().is_empty() {
+            return Err(RainyError::config(
+                "SKILL_CUSTOM_DESCRIPTION_REQUIRED",
+                format!("custom Skill {id} must declare a non-empty description"),
+            ));
+        }
+        directory_digest(&entry.path())?;
+        skills.push(CustomSkill {
+            id,
+            description: metadata.description.trim().to_string(),
+            source: entry.path(),
+        });
+    }
+    skills.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(skills)
+}
+
+fn parse_custom_skill_metadata(content: &str) -> RainyResult<CustomSkillMetadata> {
+    let mut lines = content.lines();
+    if lines.next() != Some("---") {
+        return Err(RainyError::config(
+            "SKILL_CUSTOM_FRONTMATTER_REQUIRED",
+            "custom SKILL.md must start with YAML frontmatter delimited by ---",
+        ));
+    }
+    let mut yaml = Vec::new();
+    let mut closed = false;
+    for line in lines {
+        if line == "---" {
+            closed = true;
+            break;
+        }
+        yaml.push(line);
+    }
+    if !closed {
+        return Err(RainyError::config(
+            "SKILL_CUSTOM_FRONTMATTER_REQUIRED",
+            "custom SKILL.md frontmatter is missing its closing --- delimiter",
+        ));
+    }
+    serde_yaml::from_str(&yaml.join("\n")).map_err(|error| {
+        RainyError::config(
+            "SKILL_CUSTOM_FRONTMATTER_INVALID",
+            format!("custom SKILL.md frontmatter is invalid: {error}"),
+        )
+    })
+}
+
+fn validate_custom_skill_id(id: &str) -> RainyResult<()> {
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && id
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && id
+            .bytes()
+            .last()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && !matches!(id, "rainy-cli" | "rainy-comet");
+    if valid {
+        return Ok(());
+    }
+    Err(RainyError::config(
+        "SKILL_CUSTOM_ID_INVALID",
+        "custom Skill IDs must use 1-64 lowercase letters, digits, or internal hyphens and must not use Rainy-reserved names",
+    ))
+}
+
 fn prompt_install_confirmation(
     profile: &SkillProfileConfig,
     existing: bool,
@@ -674,6 +1071,14 @@ fn prompt_install_confirmation(
             "Complete workflow"
         } else {
             "Rainy only"
+        }
+    );
+    eprintln!(
+        "  Project  {}",
+        if profile.custom_skills.is_empty() {
+            "none".to_string()
+        } else {
+            profile.custom_skills.join(", ")
         }
     );
     eprintln!("  Targets  {}", profile.targets.join(", "));
@@ -788,6 +1193,15 @@ fn validate_profile(profile: &SkillProfileConfig) -> RainyResult<()> {
     }
     for target in &profile.targets {
         target_relative_root(target)?;
+    }
+    if profile.custom_skills.iter().collect::<BTreeSet<_>>().len() != profile.custom_skills.len() {
+        return Err(RainyError::config(
+            "SKILL_CUSTOM_DUPLICATE",
+            "customSkills entries must be unique",
+        ));
+    }
+    for id in &profile.custom_skills {
+        validate_custom_skill_id(id)?;
     }
     if profile.profile == "comet" {
         let package = profile.packages.comet.as_deref().ok_or_else(|| {
@@ -981,6 +1395,13 @@ fn apply_install(
     };
     progress.detail("Consolidating managed Skills into each platform's canonical directory");
     changed_files.extend(normalize_skill_layout(workspace, profile, force)?);
+    progress.detail("Installing selected project-library Skills");
+    changed_files.extend(install_custom_skills(
+        workspace,
+        profile,
+        lock.as_ref(),
+        force,
+    )?);
 
     Ok((changed_files, output_digest))
 }
@@ -1030,6 +1451,81 @@ fn install_rainy_skills(
             }
             replace_directory(&source, &destination)?;
             changed_files.push(relative_string(workspace, &destination));
+        }
+    }
+    Ok(changed_files)
+}
+
+fn install_custom_skills(
+    workspace: &Path,
+    profile: &SkillProfileConfig,
+    lock: Option<&SkillLock>,
+    force: bool,
+) -> RainyResult<Vec<String>> {
+    let available = discover_custom_skills(workspace)?
+        .into_iter()
+        .map(|skill| (skill.id.clone(), skill))
+        .collect::<BTreeMap<_, _>>();
+    let mut expected_paths = BTreeSet::new();
+    let mut planned = Vec::new();
+    for target in &profile.targets {
+        let root = skills_root(workspace, target)?;
+        for id in &profile.custom_skills {
+            let skill = available.get(id).ok_or_else(|| {
+                RainyError::config(
+                    "SKILL_CUSTOM_SOURCE_MISSING",
+                    format!(
+                        "configured project-library Skill is missing: {CUSTOM_SKILLS_ROOT}/{id}"
+                    ),
+                )
+            })?;
+            let destination = root.join(id);
+            let relative = relative_string(workspace, &destination);
+            if !expected_paths.insert(relative.clone()) {
+                continue;
+            }
+            if destination.exists() && !force {
+                let owned_by_lock = lock.is_some_and(|lock| {
+                    lock.managed_skills
+                        .iter()
+                        .any(|managed| managed.path == relative && managed.name == *id)
+                });
+                let matches_source =
+                    directory_digest(&destination)? == directory_digest(&skill.source)?;
+                if !owned_by_lock && !matches_source {
+                    return Err(RainyError::config(
+                        "SKILL_CUSTOM_TARGET_CONFLICT",
+                        format!(
+                            "{relative} already exists and is not owned by the Rainy Skill lock; inspect it or rerun with --force"
+                        ),
+                    ));
+                }
+            }
+            planned.push((skill.source.clone(), destination, relative));
+        }
+    }
+
+    let mut changed_files = Vec::new();
+    if let Some(lock) = lock {
+        for managed in &lock.managed_skills {
+            if matches!(managed.name.as_str(), "rainy-cli" | "rainy-comet")
+                || expected_paths.contains(&managed.path)
+            {
+                continue;
+            }
+            let path = workspace.join(&managed.path);
+            if path.exists() {
+                std::fs::remove_dir_all(&path)?;
+                changed_files.push(managed.path.clone());
+            }
+        }
+    }
+    for (source, destination, relative) in planned {
+        let noop =
+            destination.is_dir() && directory_digest(&destination)? == directory_digest(&source)?;
+        if !noop {
+            replace_directory(&source, &destination)?;
+            changed_files.push(relative);
         }
     }
     Ok(changed_files)
@@ -1111,11 +1607,12 @@ fn build_lock(
 ) -> RainyResult<SkillLock> {
     let mut managed_skills = Vec::new();
     let mut upstream_skills = Vec::new();
-    let expected_rainy = if profile.profile == "comet" {
+    let mut expected_rainy = if profile.profile == "comet" {
         vec!["rainy-cli", "rainy-comet"]
     } else {
         vec!["rainy-cli"]
     };
+    expected_rainy.extend(profile.custom_skills.iter().map(String::as_str));
     for target in &profile.targets {
         let root = skills_root(workspace, target)?;
         for name in &expected_rainy {
@@ -1197,6 +1694,7 @@ fn build_lock(
         scope: profile.scope.clone(),
         language: profile.language.clone(),
         targets: profile.targets.clone(),
+        custom_skills: profile.custom_skills.clone(),
         rainy_version: env!("CARGO_PKG_VERSION").to_string(),
         comet,
         skills,
@@ -1229,6 +1727,7 @@ fn validate_lock(lock: &SkillLock) -> RainyResult<()> {
             "skills.lock has an unsupported identity or lockfileVersion",
         ));
     }
+    let mut managed_paths = BTreeMap::new();
     for skill in &lock.managed_skills {
         validate_locked_path(&skill.path)?;
         let expected = Path::new(target_relative_root(&skill.target)?).join(&skill.name);
@@ -1244,6 +1743,23 @@ fn validate_lock(lock: &SkillLock) -> RainyResult<()> {
             ));
         }
         validate_digest(&skill.digest)?;
+        if let Some((name, digest)) = managed_paths.insert(
+            skill.path.clone(),
+            (skill.name.clone(), skill.digest.clone()),
+        ) {
+            if name != skill.name || digest != skill.digest {
+                return Err(RainyError::config(
+                    "SKILL_LOCK_DUPLICATE_PATH",
+                    format!(
+                        "managed Skill path {} has conflicting lock entries",
+                        skill.path
+                    ),
+                ));
+            }
+        }
+    }
+    for id in &lock.custom_skills {
+        validate_custom_skill_id(id)?;
     }
     for skill in &lock.upstream_skills {
         let roots = upstream_relative_roots(&skill.target)?;
@@ -1438,6 +1954,7 @@ fn inspect(
         if lock.profile != profile.profile
             || lock.language != profile.language
             || lock.targets != profile.targets
+            || lock.custom_skills != profile.custom_skills
             || !locked_packages_match(lock, profile)?
         {
             checks.push(fail(
@@ -1447,7 +1964,11 @@ fn inspect(
         } else {
             checks.push(pass("lock.profile", "profile and lock agree"));
         }
+        let mut checked_paths = BTreeSet::new();
         for skill in &lock.managed_skills {
+            if !checked_paths.insert(skill.path.clone()) {
+                continue;
+            }
             let path = workspace.join(&skill.path);
             if !path.is_dir() {
                 checks.push(fail(
@@ -1518,6 +2039,23 @@ fn inspect(
             }
         }
         checks.push(check_comet_policy(workspace)?);
+    }
+    let available_custom = discover_custom_skills(workspace)?
+        .into_iter()
+        .map(|skill| skill.id)
+        .collect::<BTreeSet<_>>();
+    for id in &profile.custom_skills {
+        if available_custom.contains(id) {
+            checks.push(pass(
+                format!("custom-source.{id}"),
+                format!("{CUSTOM_SKILLS_ROOT}/{id} is available"),
+            ));
+        } else {
+            checks.push(fail(
+                format!("custom-source.{id}"),
+                format!("{CUSTOM_SKILLS_ROOT}/{id} is missing"),
+            ));
+        }
     }
     Ok(checks)
 }
@@ -2188,6 +2726,7 @@ fn resolve_apply_flags(dry_run: bool, apply: bool) -> RainyResult<bool> {
 }
 
 fn planned_report(
+    workspace: &Path,
     operation: &str,
     profile: &SkillProfileConfig,
     apply_command: Vec<String>,
@@ -2200,10 +2739,16 @@ fn planned_report(
             if profile.profile == "comet" {
                 changed_files.push(format!("{root}/rainy-comet"));
             }
+            for id in &profile.custom_skills {
+                changed_files.push(format!("{root}/{id}"));
+            }
         }
     }
     if profile.profile == "comet" {
         changed_files.push(".comet/config.yaml".to_string());
+    }
+    if operation != "uninstall" {
+        changed_files.extend(agent::skill_sync_paths(workspace));
     }
     report(
         operation,
@@ -2249,6 +2794,7 @@ fn report(
         scope: profile.scope.clone(),
         language: profile.language.clone(),
         targets: profile.targets.clone(),
+        custom_skills: profile.custom_skills.clone(),
         changed_files,
         apply_command,
         command,
@@ -2256,11 +2802,11 @@ fn report(
     }
 }
 
-fn init_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> {
+fn setup_apply_command(operation: &str, profile: &SkillProfileConfig, force: bool) -> Vec<String> {
     let mut command = vec![
         "rainy".to_string(),
         "skill".to_string(),
-        "init".to_string(),
+        operation.to_string(),
         "--profile".to_string(),
         profile.profile.clone(),
         "--language".to_string(),
@@ -2275,8 +2821,29 @@ fn init_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> 
         command.push(version.to_string());
     }
     append_upstream_version_flags(&mut command, profile);
+    append_custom_skill_flags(&mut command, profile);
     append_apply_flags(&mut command, force);
     command
+}
+
+fn install_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> {
+    let mut command = vec![
+        "rainy".to_string(),
+        "skill".to_string(),
+        "install".to_string(),
+    ];
+    append_custom_skill_flags(&mut command, profile);
+    append_apply_flags(&mut command, force);
+    command
+}
+
+fn append_custom_skill_flags(command: &mut Vec<String>, profile: &SkillProfileConfig) {
+    if profile.custom_skills.is_empty() {
+        command.push("--no-custom-skills".to_string());
+    } else {
+        command.push("--skill".to_string());
+        command.push(profile.custom_skills.join(","));
+    }
 }
 
 fn update_apply_command(profile: &SkillProfileConfig, force: bool) -> Vec<String> {

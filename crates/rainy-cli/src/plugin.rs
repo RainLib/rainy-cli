@@ -99,7 +99,6 @@ pub fn run_external(
     args: Vec<OsString>,
     allow_native_plugin: bool,
 ) -> RainyResult<CommandOutput> {
-    ensure_native_plugin_allowed(workspace, allow_native_plugin)?;
     let Some(command) = args.first() else {
         return Err(RainyError::plugin(
             "PLUGIN_COMMAND_INVALID",
@@ -113,10 +112,11 @@ pub fn run_external(
         .find(|plugin| plugin.name == plugin_name)
         .ok_or_else(|| {
             RainyError::plugin(
-                "PLUGIN_NOT_FOUND",
-                format!("plugin not found for external command: {command}"),
+                "EXTERNAL_COMMAND_NOT_FOUND",
+                format!("unknown Rainy command or installed plugin: {command}"),
             )
         })?;
+    ensure_native_plugin_allowed(workspace, allow_native_plugin)?;
     let manifest = load_manifest(workspace, plugin.name.trim_start_matches("rainy-")).ok();
     if let Some(manifest) = &manifest {
         ensure_plugin_command_allowed(manifest, &args)?;

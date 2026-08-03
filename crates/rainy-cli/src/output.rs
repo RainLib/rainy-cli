@@ -18,6 +18,20 @@ pub enum CommandOutput {
         path: String,
         files: Vec<String>,
     },
+    ProjectTemplate {
+        status: &'static str,
+        project: String,
+        path: String,
+        template: String,
+        source: String,
+        requested_ref: String,
+        resolved_ref: Option<String>,
+        source_git_removed: bool,
+        files: Vec<String>,
+        default_branch: String,
+        remote_url: Option<String>,
+        next_commands: Vec<String>,
+    },
     DryRun {
         status: &'static str,
         capability: String,
@@ -96,6 +110,10 @@ pub enum CommandOutput {
     Update {
         report: crate::update::UpdateReport,
     },
+    Completion {
+        shell: String,
+        script: String,
+    },
 }
 
 impl CommandOutput {
@@ -151,6 +169,7 @@ impl CommandOutput {
         match self {
             Self::Message { .. } => "message",
             Self::Init { .. } => "init",
+            Self::ProjectTemplate { .. } => "project-template",
             Self::DryRun { .. } => "dry-run",
             Self::Applied { .. } => "applied",
             Self::ChangeDryRun { .. } => "change-dry-run",
@@ -173,6 +192,7 @@ impl CommandOutput {
             Self::AgentContext { .. } => "agent-context",
             Self::Skill { .. } => "skill",
             Self::Update { .. } => "update",
+            Self::Completion { .. } => "completion",
         }
     }
 
@@ -180,6 +200,7 @@ impl CommandOutput {
         match self {
             Self::Message { status, .. }
             | Self::Init { status, .. }
+            | Self::ProjectTemplate { status, .. }
             | Self::DryRun { status, .. }
             | Self::Applied { status, .. }
             | Self::ChangeDryRun { status, .. }
@@ -193,6 +214,7 @@ impl CommandOutput {
             Self::Registry { report } => &report.status,
             Self::Defaults { report } => &report.status,
             Self::Update { .. } => "ok",
+            Self::Completion { .. } => "ok",
             _ => "ok",
         }
     }
@@ -202,6 +224,9 @@ impl CommandOutput {
             Self::DryRun { .. }
             | Self::ChangeDryRun { .. }
             | Self::Init {
+                status: "dry-run", ..
+            }
+            | Self::ProjectTemplate {
                 status: "dry-run", ..
             } => true,
             Self::Skill { report } => report.status == "dry-run",
@@ -215,6 +240,15 @@ impl CommandOutput {
             Self::Init { project, files, .. } => {
                 format!("initialized {project} with {} files", files.len())
             }
+            Self::ProjectTemplate {
+                project,
+                template,
+                files,
+                ..
+            } => format!(
+                "created {project} from template {template} with {} files",
+                files.len()
+            ),
             Self::DryRun { capability, .. } => format!("planned capability {capability}"),
             Self::Applied {
                 capability,
@@ -268,6 +302,7 @@ impl CommandOutput {
                     format!("rainy is up to date at {}", report.current_version)
                 }
             }
+            Self::Completion { shell, .. } => format!("generated {shell} completion"),
         }
     }
 
@@ -308,6 +343,77 @@ impl CommandOutput {
                     );
                     print_paths("Planned locations", files);
                 } else {
+                    print_paths("Affected locations", files);
+                }
+            }
+            Self::ProjectTemplate {
+                status,
+                project,
+                path,
+                template,
+                source,
+                requested_ref,
+                resolved_ref,
+                source_git_removed,
+                files,
+                default_branch,
+                remote_url,
+                next_commands,
+            } => {
+                print_title("Enterprise project template");
+                print_summary(&[
+                    ("Status", result_status_label(status).to_string()),
+                    ("Project", project.clone()),
+                    ("Template", template.clone()),
+                    ("Location", path.clone()),
+                    ("Source ref", requested_ref.clone()),
+                    (
+                        "Resolved commit",
+                        resolved_ref
+                            .clone()
+                            .unwrap_or_else(|| "Not fetched".to_string()),
+                    ),
+                    (
+                        "Source Git metadata",
+                        if *source_git_removed {
+                            "Removed".to_string()
+                        } else {
+                            "Will be excluded".to_string()
+                        },
+                    ),
+                    ("Target branch", default_branch.clone()),
+                    (
+                        "Target remote",
+                        remote_url
+                            .clone()
+                            .unwrap_or_else(|| "Not configured".to_string()),
+                    ),
+                    (
+                        "Files",
+                        if *status == "dry-run" {
+                            "Not fetched".to_string()
+                        } else {
+                            files.len().to_string()
+                        },
+                    ),
+                ]);
+                print_details(&format!("Template source: {source}"));
+                if *status == "dry-run" {
+                    print_next_step(
+                        "Review the source, ref, destination, and repository settings, then rerun with --apply.",
+                    );
+                } else {
+                    println!();
+                    println!("Git repository setup");
+                    println!("  Default branch  {default_branch}");
+                    println!(
+                        "  Remote URL      {}",
+                        remote_url.as_deref().unwrap_or("Not configured")
+                    );
+                    print_next_step("Create the destination Git repository, then run:");
+                    for command in next_commands {
+                        println!("  $ {command}");
+                    }
                     print_paths("Affected locations", files);
                 }
             }
@@ -484,6 +590,9 @@ impl CommandOutput {
                         }
                         if !registry.modules.is_empty() {
                             println!("    modules  {}", registry.modules.join(", "));
+                        }
+                        if !registry.installed_skills.is_empty() {
+                            println!("    skills   {}", registry.installed_skills.join(", "));
                         }
                         if verbose {
                             if let Some(cache_path) = &registry.cache_path {
@@ -680,6 +789,9 @@ impl CommandOutput {
                     println!("  Superpowers      engineering methods and delivery workflow");
                     println!("  Comet            phase orchestration and recovery state");
                 }
+                for skill in &report.custom_skills {
+                    println!("  {skill:<16} project-owned Skill");
+                }
 
                 if !report.apply_command.is_empty() {
                     println!();
@@ -793,6 +905,7 @@ impl CommandOutput {
                     print_details(&format!("Install command: {}", report.install_command));
                 }
             }
+            Self::Completion { script, .. } => print!("{script}"),
         }
     }
 }
@@ -804,8 +917,14 @@ fn print_title(title: &str) {
 
 fn print_summary(rows: &[(&str, String)]) {
     println!("Summary");
+    let width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(12)
+        + 2;
     for (label, value) in rows {
-        println!("  {label:<14}{value}");
+        println!("  {label:<width$}{value}");
     }
 }
 
@@ -1036,7 +1155,23 @@ fn summarize_skill_paths(paths: &[String]) -> Vec<(String, usize)> {
 
 fn error_next_steps(code: &str) -> Option<&'static [&'static str]> {
     match code {
-        "CONFIG_NOT_FOUND" => Some(&["rainy new --help", "rainy --workspace <PROJECT_DIR> doctor"]),
+        "CONFIG_NOT_FOUND" => Some(&[
+            "rainy skill doctor",
+            "rainy new --help",
+            "rainy --workspace <PROJECT_DIR> doctor",
+        ]),
+        "PROJECT_TEMPLATE_CONFIG_NOT_FOUND"
+        | "PROJECT_TEMPLATE_CONFIG_INVALID"
+        | "PROJECT_TEMPLATE_NOT_FOUND" => Some(&[
+            "rainy schema validate --schema project-template-catalog --file <CATALOG_FILE>",
+            "rainy new --help",
+        ]),
+        "PROJECT_TEMPLATE_GIT_FAILED"
+        | "PROJECT_TEMPLATE_GIT_NOT_AVAILABLE"
+        | "PROJECT_TEMPLATE_SOURCE_INVALID" => Some(&[
+            "git ls-remote <TEMPLATE_GIT_URL> <GIT_REF>",
+            "rainy new --help",
+        ]),
         "LOCK_NOT_FOUND" => Some(&["rainy doctor --verbose", "rainy new --help"]),
         "CAPABILITY_NOT_FOUND" | "CAPABILITY_PROVIDER_INVALID" => Some(&[
             "rainy capability list",
@@ -1063,6 +1198,10 @@ fn error_next_steps(code: &str) -> Option<&'static [&'static str]> {
         "PLUGIN_NOT_FOUND" | "PLUGIN_MANIFEST_INVALID" => {
             Some(&["rainy plugin list", "rainy plugin inspect <PLUGIN_ID>"])
         }
+        "EXTERNAL_COMMAND_NOT_FOUND" => {
+            Some(&["rainy --help", "rainy plugin list", "rainy plugin --help"])
+        }
+        "CLI_ARGUMENT_INVALID" => Some(&["rainy --help", "rainy <COMMAND> --help"]),
         "UPDATE_CHECK_FAILED" | "UPDATE_VERIFY_FAILED" => {
             Some(&["rainy self check --verbose", "rainy self update --help"])
         }
@@ -1071,7 +1210,19 @@ fn error_next_steps(code: &str) -> Option<&'static [&'static str]> {
             "rainy skill install",
             "rainy skill install --apply",
         ]),
-        "SKILL_PROFILE_NOT_FOUND" => Some(&["rainy skill init", "rainy skill init --help"]),
+        "SKILL_PROFILE_NOT_FOUND" => Some(&["rainy skill install", "rainy skill install --help"]),
+        "SKILL_CUSTOM_NOT_FOUND"
+        | "SKILL_CUSTOM_INVALID"
+        | "SKILL_CUSTOM_FRONTMATTER_REQUIRED"
+        | "SKILL_CUSTOM_FRONTMATTER_INVALID" => Some(&[
+            "rainy skill create <SKILL_ID> --description <TEXT> --apply",
+            "rainy skill install --help",
+        ]),
+        "SKILL_INSTALL_SETUP_ALREADY_CONFIGURED" => Some(&[
+            "rainy skill status",
+            "rainy skill install --help",
+            "rainy skill uninstall",
+        ]),
         "SKILL_DOCTOR_FAILED" | "SKILL_UPSTREAM_INCOMPLETE" => Some(&[
             "rainy skill status",
             "rainy skill install --apply",
@@ -1086,7 +1237,7 @@ fn error_next_steps(code: &str) -> Option<&'static [&'static str]> {
         "SKILL_PROFILE_CHANGE_REQUIRES_UNINSTALL" => Some(&[
             "rainy skill uninstall",
             "rainy skill uninstall --apply",
-            "rainy skill init",
+            "rainy skill install",
         ]),
         _ => None,
     }

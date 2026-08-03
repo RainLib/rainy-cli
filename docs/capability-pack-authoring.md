@@ -127,8 +127,8 @@ Install and test locally:
 
 ```bash
 rainy pack install path/to/packs --apply
-rainy add capability example-capability --dry-run
-rainy add capability example-capability --apply
+rainy capability add example-capability --dry-run
+rainy capability add example-capability --apply
 rainy doctor --capability example-capability
 rainy verify --profile local --capability example-capability
 ```

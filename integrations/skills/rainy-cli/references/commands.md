@@ -19,7 +19,7 @@ Only initialize when explicitly requested:
 
 ```sh
 "$RAINY_BIN" --workspace "$PARENT" new <name> --golden-path spring-nextjs-saas --package <java-package> --dry-run --json
-"$RAINY_BIN" --workspace "$PARENT" new <name> --golden-path spring-nextjs-saas --package <java-package> --json
+"$RAINY_BIN" --workspace "$PARENT" new <name> --golden-path spring-nextjs-saas --package <java-package> --apply --json
 ```
 
 ## Plan And Apply
@@ -27,7 +27,7 @@ Only initialize when explicitly requested:
 Create and review a stable plan file:
 
 ```sh
-"$RAINY_BIN" --workspace "$WORKSPACE" --trace-id "$TRACE_ID" add capability <id> --provider <provider> --dry-run --output-plan "$PLAN" --json
+"$RAINY_BIN" --workspace "$WORKSPACE" --trace-id "$TRACE_ID" capability add <id> --provider <provider> --dry-run --output-plan "$PLAN" --json
 ```
 
 After explicit approval, apply that exact file:
@@ -60,30 +60,46 @@ These commands synchronize project context and installed capability information.
 
 ## Manage Skill Profiles
 
-Preview and install the default project-scoped OpenSpec + Superpowers + Comet profile:
+Create a project-owned Skill only when requested:
 
 ```sh
-"$RAINY_BIN" --workspace "$WORKSPACE" skill init --profile comet --target codex,claude,cursor --language zh --dry-run --json
-"$RAINY_BIN" --workspace "$WORKSPACE" skill init --profile comet --target codex,claude,cursor --language zh --apply --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill create <skill-id> --description <text> --dry-run --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill create <skill-id> --description <text> --apply --json
+```
+
+When `rainy-skills.yaml` is missing, preview and install the default project-scoped OpenSpec +
+Superpowers + Comet profile with an explicit project Skill selection:
+
+```sh
+"$RAINY_BIN" --workspace "$WORKSPACE" skill install --profile comet --target codex,claude,cursor --language zh --skill <skill-id> --dry-run --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill install --profile comet --target codex,claude,cursor --language zh --skill <skill-id> --apply --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill status --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill doctor --json
 ```
 
 `init`, `install`, `update`, and `uninstall` preview by default. In a JSON dry-run report, present `report.applyCommand` for approval and execute that exact Rainy command only after approval. `report.command` is the upstream command Rainy will invoke internally during apply; never execute it as a substitute for `report.applyCommand`. `--yes` is accepted as an explicit alias for `--apply`, but generated automation should prefer the canonical `--apply` spelling.
 
-The target list above is illustrative. Agents must pass only the hosts selected by the user and must not
-enter interactive selectors. Universal `.agents/skills` is added automatically.
+The target and Skill lists above are illustrative. Agents must pass only hosts and project Skills selected
+by the user and must not enter interactive selectors. Universal `.agents/skills` is added automatically.
+Use repeatable `--skill` or comma-separated IDs. Use `--all-custom-skills` only when the user explicitly
+approved every valid directory under `rainy-skills/`. Use `--no-custom-skills` when the user explicitly
+wants no project-owned Skills; do not use an omitted selection to infer removal.
 
 Manage an existing profile:
 
 ```sh
-"$RAINY_BIN" --workspace "$WORKSPACE" skill install --dry-run --json
-"$RAINY_BIN" --workspace "$WORKSPACE" skill install --apply --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill install --skill <skill-id> --dry-run --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill install --skill <skill-id> --apply --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill install --no-custom-skills --apply --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill update --dry-run --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill update --apply --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill uninstall --dry-run --json
 "$RAINY_BIN" --workspace "$WORKSPACE" skill uninstall --apply --json
 ```
+
+Do not pass `--profile`, `--language`, `--target`, or package version options when the profile already
+exists. Omit project Skill flags to preserve its current selection. Source directories under
+`rainy-skills/` remain user-owned and are not removed by uninstall.
 
 Never infer `--apply` approval from a Comet transition. Use `--force` only after reviewing modified managed Skill files.
 
