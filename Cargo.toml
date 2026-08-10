@@ -38,7 +38,7 @@ semver = "1.0"
 shell-words = "1.1"
 thiserror = "2.0"
 terminal_size = "0.4"
-toml = "0.9"
+toml = "1.1"
 tar = "0.4"
 ureq = { version = "2.12", default-features = true }
 url = "2.5"
