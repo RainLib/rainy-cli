@@ -22,6 +22,14 @@ try {
 }
 if (-not $InvalidVersionFailed) { throw "invalid installer version was accepted" }
 
+$CredentialUrlFailed = $false
+try {
+  & $Installer -Version "v0.5.0" -BaseUrl "https://rainy:hunter2@example.com/releases/v0.5.0"
+} catch {
+  $CredentialUrlFailed = $_.Exception.Message -match "embedded URL credentials are not allowed" -and $_.Exception.Message -notmatch "hunter2"
+}
+if (-not $CredentialUrlFailed) { throw "embedded installer URL credentials were accepted or leaked" }
+
 $Binary = if ($env:RAINY_TEST_BINARY) { $env:RAINY_TEST_BINARY } else { Join-Path $Root "target/debug/rainy.exe" }
 if (-not (Test-Path $Binary)) {
   throw "build rainy.exe before running the PowerShell installer test"

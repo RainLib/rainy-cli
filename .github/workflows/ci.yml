@@ -1,6 +1,7 @@
 name: ci
 
 on:
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -33,7 +34,7 @@ jobs:
             ~/.cargo/git
             target
           key: ci-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-      - run: make production-check
+      - run: make release-check
 
   native:
     name: native ${{ matrix.os }}
@@ -63,6 +64,11 @@ jobs:
           cargo build --locked --bin rainy
           target/debug/rainy --version
           target/debug/rainy capability list --json >/dev/null
+      - name: Cross-platform command contract E2E
+        run: |
+          cargo test --test e2e structured_verify_is_shell_free_and_definition_failures_are_reports --locked
+          cargo test --test e2e self_update_and_skip_preview_by_default_and_yes_applies --locked
+          cargo test --test e2e read_only_and_preview_commands_do_not_create_audit_or_managed_outputs --locked
       - name: PowerShell installer test
         if: runner.os == 'Windows'
         shell: pwsh
@@ -71,6 +77,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-skill.ps1
+
+  security:
+    name: dependency policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: security-tools-cargo-audit-0.22.2-cargo-deny-0.19.4
+      - name: Install security tools
+        run: |
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
+          command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.19.4 --locked
+      - run: cargo audit
+      - run: cargo deny check
 
   msrv:
     name: rust 1.88 MSRV

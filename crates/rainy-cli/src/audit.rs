@@ -37,7 +37,7 @@ pub fn record_success(
             status: output.status().to_string(),
             trace_id: trace_id.map(str::to_string),
             output_type: output.kind().to_string(),
-            summary: output.audit_summary(),
+            summary: crate::redaction::text(&output.audit_summary()),
         },
     )
 }
@@ -61,7 +61,7 @@ pub fn record_error(
             status: "error".to_string(),
             trace_id: trace_id.map(str::to_string),
             output_type: "error".to_string(),
-            summary: format!("{}: {}", body.code, body.message),
+            summary: format!("{} [{}]", body.code, body.category),
         },
     )
 }
@@ -99,7 +99,7 @@ fn append(workspace: &Path, record: AuditRecord) -> RainyResult<()> {
 }
 
 fn audit_error(error: std::io::Error) -> RainyError {
-    RainyError::config(
+    RainyError::action(
         "AUDIT_WRITE_FAILED",
         format!("audit log is not writable: {error}"),
     )

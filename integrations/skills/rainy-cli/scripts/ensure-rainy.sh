@@ -2,8 +2,11 @@
 set -eu
 
 REPO="${RAINY_REPO:-RainLib/rainy-cli}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.rainy/bin}"
-RELEASE_URL="${RAINY_SKILL_RELEASE_URL:-https://github.com/$REPO/releases/latest/download}"
+RAINY_HOME="${RAINY_HOME:-$HOME/.rainy}"
+INSTALL_DIR="${INSTALL_DIR:-$RAINY_HOME/bin}"
+RELEASE_URL="${RAINY_SKILL_RELEASE_URL:-}"
+RELEASE_BASE_URL="${RAINY_RELEASE_BASE_URL:-}"
+RELEASE_VERSION="${RAINY_SKILL_VERSION:-}"
 
 fail() {
   echo "rainy skill bootstrap: $1" >&2
@@ -51,6 +54,19 @@ download() {
     "$url" -o "$output"
 }
 
+validate_download_url() {
+  if printf '%s\n' "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9+.-]*://[^/]*@'; then
+    fail "embedded URL credentials are not allowed"
+  fi
+  if printf '%s\n' "$1" | grep -Eqi '(^|[?&])(access_key|api_?key|authorization|credential|password|secret|signature|token)='; then
+    fail "sensitive authentication query parameters are not allowed"
+  fi
+  case "$1" in
+    https://* | http://127.0.0.1:* | http://localhost:*) ;;
+    *) fail "release URL must use HTTPS or loopback HTTP" ;;
+  esac
+}
+
 if [ "${RAINY_SKILL_FORCE_INSTALL:-0}" != "1" ]; then
   if resolved="$(resolve_command "${RAINY_BIN:-}" 2>/dev/null)"; then
     printf '%s\n' "$resolved"
@@ -70,15 +86,28 @@ command -v curl >/dev/null 2>&1 || fail "curl is required to install Rainy CLI"
 if ! printf '%s\n' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
   fail "invalid repository; expected owner/repo, got $REPO"
 fi
-case "$RELEASE_URL" in
-  https://* | http://127.0.0.1:* | http://localhost:*) ;;
-  *) fail "release URL must use HTTPS or loopback HTTP: $RELEASE_URL" ;;
-esac
-
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 installer="$tmp_dir/install.sh"
 checksums="$tmp_dir/installers.sha256"
+
+if [ -z "$RELEASE_URL" ] && [ -n "$RELEASE_BASE_URL" ]; then
+  validate_download_url "$RELEASE_BASE_URL"
+  download "${RELEASE_BASE_URL%/}/latest.txt" "$tmp_dir/latest.txt"
+  RELEASE_VERSION="$(sed -n '1{s/\r$//;p;}' "$tmp_dir/latest.txt")"
+  RELEASE_URL="${RELEASE_BASE_URL%/}/$RELEASE_VERSION"
+elif [ -z "$RELEASE_URL" ]; then
+  latest_url="$(curl -fsSL --connect-timeout 20 --max-time 90 --retry 3 -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")"
+  RELEASE_VERSION="${latest_url##*/}"
+  RELEASE_URL="https://github.com/$REPO/releases/download/$RELEASE_VERSION"
+fi
+if [ -z "$RELEASE_VERSION" ]; then
+  RELEASE_VERSION="$(basename "${RELEASE_URL%/}")"
+fi
+if ! printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+  fail "release version is invalid: $RELEASE_VERSION"
+fi
+validate_download_url "$RELEASE_URL"
 
 echo "rainy command not found; installing the verified latest release" >&2
 download "$RELEASE_URL/install.sh" "$installer"
@@ -93,7 +122,12 @@ actual="$(checksum_digest "$installer")"
 [ "$(printf '%s' "$actual" | tr 'A-F' 'a-f')" = "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" ] \
   || fail "install.sh checksum verification failed"
 
-RAINY_REPO="$REPO" INSTALL_DIR="$INSTALL_DIR" sh "$installer" >&2
+RAINY_REPO="$REPO" \
+  RAINY_VERSION="$RELEASE_VERSION" \
+  RAINY_RELEASE_BASE_URL="$RELEASE_BASE_URL" \
+  RAINY_INSTALLER_BASE_URL="$RELEASE_URL" \
+  INSTALL_DIR="$INSTALL_DIR" \
+  sh "$installer" >&2
 resolved="$(resolve_command "$INSTALL_DIR/rainy")" \
   || fail "Rainy CLI was installed but its executable could not be verified"
 printf '%s\n' "$resolved"

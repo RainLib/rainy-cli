@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/defaults-lock.schema.json",
+  "title": "Rainy Defaults Lock",
+  "type": "object",
+  "required": [
+    "lockfileVersion",
+    "source",
+    "requestedRef",
+    "resolvedRef",
+    "cachePath",
+    "packageVersion",
+    "digest",
+    "installedAt"
+  ],
+  "properties": {
+    "lockfileVersion": { "const": 1 },
+    "source": { "type": "string", "minLength": 1 },
+    "requestedRef": { "type": "string", "minLength": 1 },
+    "resolvedRef": { "type": "string", "minLength": 1 },
+    "cachePath": { "type": "string", "minLength": 1 },
+    "packageVersion": { "type": "string", "minLength": 1 },
+    "digest": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "installedAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

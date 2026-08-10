@@ -25,11 +25,15 @@
               "type": "string",
               "pattern": "^[A-Fa-f0-9]{64}$"
             }
-          }
+          },
+          "extensions": { "type": "object" }
         },
-        "additionalProperties": true
+        "patternProperties": { "^x-[A-Za-z0-9._-]+$": true },
+        "additionalProperties": false
       }
-    }
+    },
+    "extensions": { "type": "object" }
   },
-  "additionalProperties": true
+  "patternProperties": { "^x-[A-Za-z0-9._-]+$": true },
+  "additionalProperties": false
 }

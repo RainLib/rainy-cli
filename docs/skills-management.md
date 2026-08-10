@@ -89,11 +89,12 @@ starts initialization. In a terminal, omitted values open three selection phases
 or Rainy-only bundle; one or more agent hosts; and zero or more valid project Skills discovered from
 `rainy-skills/`. Universal `.agents/skills` is always included. Detected hosts are preselected and Codex
 is selected when no host is detected. Rainy then displays the selected bundle, targets, project Skills,
-and effective Skills and asks for explicit installation confirmation. Enter accepts the default `yes`;
-choosing `no` returns the preview without writing files.
+and effective Skills. Confirming the final review installs immediately without another command; choosing
+`n` or passing `--dry-run` returns a preview. Non-interactive, redirected, and JSON callers still require
+`--apply` or `--yes` before any files are written.
 
 When a profile already exists, `skill install` keeps its workflow, language, targets, and package pins,
-then opens only the project Skill selector and confirmation. To change profile setup, uninstall first.
+then opens only the project Skill selector. Apply runs also show the final confirmation. To change profile setup, uninstall first.
 The explicit `skill init` command remains available for callers that need to distinguish initialization,
 but normal users do not need to invoke it.
 
@@ -103,7 +104,7 @@ as a comma-separated list, or use `--all-custom-skills`; on an existing profile,
 its current custom selection. Pass all initial options explicitly when the exact setup must be visible in
 automation.
 
-Human-readable previews show the result summary, enabled Skills, exact next Rainy command, and affected locations. Upstream commands and individual paths are available with `--verbose`. `--yes` is an explicit compatibility alias for `--apply`.
+Human-readable previews show the result summary, enabled Skills, exact next Rainy command, and affected locations. Upstream commands and individual paths are available with `--verbose`. In automation, `--yes` is an explicit compatibility alias for `--apply`.
 
 Supported targets are `universal`, `codex`, `claude`, `cursor`, `github-copilot`, `gemini`, and `opencode`. Universal is normalized into every profile even when it is omitted from explicit flags. Repeat `--target` or pass comma-separated values for multiple additional targets.
 
@@ -163,6 +164,7 @@ on the next install.
 
 ```bash
 rainy skill create <SKILL_ID> --description <TEXT> --apply
+rainy skill install
 rainy skill install --dry-run
 rainy skill install --skill <SKILL_ID> --dry-run
 rainy skill install --skill <SKILL_ID> --apply
@@ -179,9 +181,9 @@ rainy skill uninstall --dry-run
 rainy skill uninstall --apply
 ```
 
-Interactive `init` and `install` may mutate only after the user accepts the terminal confirmation.
-`--dry-run` always suppresses that confirmation and previews. Non-interactive `init`, `install`,
-`update`, and `uninstall` require `--apply` or its `--yes` alias for mutation. Rainy refuses to overwrite
+Interactive `skill install` applies after the final terminal confirmation and does not require
+`--apply`; selecting `n` or passing `--dry-run` returns a preview. Non-interactive `install` and every
+`init`, `sync`, `update`, and `uninstall` mutation require `--apply` or its `--yes` alias. Rainy refuses to overwrite
 or remove any locked Rainy-managed, upstream, or project Skill copy whose digest changed; use `--force`
 only after reviewing the local edits. Source directories under `rainy-skills/` are never removed by
 install, selection changes, or uninstall. Run `rainy skill <command> --help` for command-specific
@@ -192,10 +194,10 @@ the non-interactive equivalent of clearing every item in the project Skill selec
 copies are removed after drift validation, while the project-owned sources under `rainy-skills/` remain.
 
 If an older Rainy release left `rainy-skills.yaml` without `skills.lock` after an upstream failure, run
-`rainy skill install --apply`. Rainy treats that state as an interrupted installation and rebuilds the
+`rainy skill install` interactively, or use `rainy skill install --apply` in automation. Rainy treats that state as an interrupted installation and rebuilds the
 lock without requiring `--force`.
 
-Running `rainy skill init` again with the same configuration is idempotent. It reports `Already configured` and points to `rainy skill install --apply` instead of failing. Changing the bundle, language, targets, or package pins still requires an explicit uninstall first.
+Running `rainy skill init` again with the same configuration is idempotent. It reports `Already configured` and points to `rainy skill install` instead of failing. Changing the bundle, language, targets, or package pins still requires an explicit uninstall first.
 
 `update` runs the selected pinned Comet and Superpowers installers. It does not depend on mutable global installations.
 
@@ -203,7 +205,7 @@ Running `rainy skill init` again with the same configuration is idempotent. It r
 
 ## Agent Context
 
-`rainy agent init` and `rainy skill sync` update only the marked Rainy block in `AGENTS.md`:
+`rainy agent init --apply` and `rainy skill sync --apply` update only the marked Rainy block in `AGENTS.md`:
 
 ```text
 <!-- rainy:context:start -->
@@ -217,4 +219,4 @@ Comet-managed blocks and user-authored content outside this block are preserved.
 
 Comet phase completion never authorizes Rainy mutation. Commands containing `--apply`, native plugin trust, deployment, database migration, and secret writes retain their own explicit approval boundaries.
 
-Run `rainy doctor`, `rainy verify --profile ci`, and `rainy evidence generate` before Comet archive. Record the resulting evidence path in the verification artifact.
+Run `rainy doctor`, `rainy verify --profile ci`, and `rainy evidence generate --apply` before Comet archive. Record the resulting evidence path in the verification artifact.

@@ -18,7 +18,7 @@
           "name": { "type": "string" },
           "description": { "type": "string" }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     },
     "actions": {
@@ -33,7 +33,7 @@
           "runtime": { "enum": ["wasm"] },
           "wasm": { "type": "string" }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     },
     "permissions": {
@@ -51,7 +51,7 @@
               "items": { "type": "string" }
             }
           },
-          "additionalProperties": true
+          "additionalProperties": false
         },
         "network": {
           "type": ["string", "array"]
@@ -61,7 +61,7 @@
           "items": { "type": "string" }
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "adapter": {
       "type": "object",
@@ -70,8 +70,10 @@
         "type": { "enum": ["http"] },
         "url": { "type": "string" }
       },
-      "additionalProperties": true
-    }
+      "additionalProperties": false
+    },
+    "extensions": { "type": "object" }
   },
-  "additionalProperties": true
+  "patternProperties": { "^x-[A-Za-z0-9._-]+$": true },
+  "additionalProperties": false
 }

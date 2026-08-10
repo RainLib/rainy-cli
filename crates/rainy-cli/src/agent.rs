@@ -9,13 +9,26 @@ const RAINY_CONTEXT_END: &str = "<!-- rainy:context:end -->";
 
 pub fn handle_agent_command(workspace: &Path, command: AgentCommand) -> RainyResult<CommandOutput> {
     match command.command {
-        AgentSubcommand::Init => {
+        AgentSubcommand::Init(args) => {
+            if args.dry_run && args.apply {
+                return Err(crate::error::RainyError::config(
+                    "APPLY_MODE_CONFLICT",
+                    "--dry-run and --apply cannot be used together",
+                ));
+            }
             let context = build_context(workspace)?;
+            if !args.apply {
+                return Ok(CommandOutput::Message {
+                    status: "dry-run",
+                    message: format!("Would refresh {}", skill_sync_paths(workspace).join(", ")),
+                });
+            }
             write_agent_context(workspace, &context)?;
             write_enterprise_agent_files(workspace, &context)?;
-            Ok(CommandOutput::message(
-                "Generated AGENTS.md and .enterprise-agent context",
-            ))
+            Ok(CommandOutput::Message {
+                status: "applied",
+                message: "Generated AGENTS.md and .enterprise-agent context".to_string(),
+            })
         }
         AgentSubcommand::Context => Ok(CommandOutput::AgentContext {
             context: build_context(workspace)?,
@@ -88,7 +101,7 @@ fn build_context(workspace: &Path) -> RainyResult<String> {
     out.push_str("- `rainy doctor`\n");
     out.push_str("- `rainy verify --profile local`\n");
     out.push_str("- `rainy verify --profile ci`\n");
-    out.push_str("- `rainy evidence generate`\n\n");
+    out.push_str("- `rainy evidence generate --apply`\n\n");
     if let Some(summary) = crate::skills::context_summary(workspace)? {
         out.push_str("## Skill Workflow\n");
         out.push_str(&summary);
@@ -153,7 +166,7 @@ fn write_enterprise_agent_files(workspace: &Path, context: &str) -> RainyResult<
 - Project health: `rainy doctor`
 - Local verification: `rainy verify --profile local`
 - CI verification: `rainy verify --profile ci`
-- Evidence: `rainy evidence generate`
+- Evidence: `rainy evidence generate --apply`
 "#;
     std::fs::write(dir.join("commands.md"), commands)?;
     Ok(())

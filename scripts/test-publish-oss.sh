@@ -50,6 +50,7 @@ case "$last_line" in
 esac
 grep -F "oss://rainy-test/releases/v0.3.5/rainy-x86_64-apple-darwin.tar.gz --force" "$LOG_FILE" >/dev/null
 grep -F "oss://rainy-test/releases/install.sh --force" "$LOG_FILE" >/dev/null
+grep -F "oss://rainy-test/releases/installers.sha256 --force" "$LOG_FILE" >/dev/null
 
 if PATH="$BIN_DIR:$PATH" \
   OSSUTIL_TEST_LOG="$LOG_FILE" \

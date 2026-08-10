@@ -82,15 +82,21 @@ actions:
 
 validations:
   - id: backend-test
-    command: "mvn test"
+    run:
+      program: mvn
+      args: [test]
     workingDirectory: "{{ paths.backend }}"
 
   - id: frontend-build
-    command: "pnpm build"
+    run:
+      program: pnpm
+      args: [build]
     workingDirectory: "{{ paths.frontend }}"
 
   - id: docker-compose-config
-    command: "docker compose config"
+    run:
+      program: docker
+      args: [compose, config]
     workingDirectory: "."
 
 doctor:

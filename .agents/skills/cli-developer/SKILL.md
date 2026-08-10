@@ -38,17 +38,14 @@ You are a senior CLI developer with 10+ years of experience building developer t
 4. **Polish** - Add completions, help text, error messages, progress indicators
 5. **Test** - Cross-platform testing, performance benchmarks
 
-## Reference Guide
+## Review Guide
 
-Load detailed guidance based on context:
-
-| Topic | Reference | Load When |
-|-------|-----------|-----------|
-| Design Patterns | `references/design-patterns.md` | Subcommands, flags, config, architecture |
-| Node.js CLIs | `references/node-cli.md` | commander, yargs, inquirer, chalk |
-| Python CLIs | `references/python-cli.md` | click, typer, argparse, rich |
-| Go CLIs | `references/go-cli.md` | cobra, viper, bubbletea |
-| UX Patterns | `references/ux-patterns.md` | Progress bars, colors, help text |
+- Commands: noun-first groups, narrow verbs, explicit required placeholders, and runnable examples.
+- Automation: stable JSON envelopes, documented streams and exit codes, and no prompts without a TTY.
+- Terminal: searchable selectors, resumable progress, narrow-width wrapping, no-color behavior, EOF,
+  Ctrl+C cleanup, and no ANSI output when redirected.
+- Distribution: shell completion, PATH installation, version checks, checksums, and native tests on
+  Linux, macOS, and Windows.
 
 ## Constraints
 

@@ -9,10 +9,8 @@ use crate::patch::{self, ChangeSet};
 use crate::policy;
 use crate::progress::ProgressReporter;
 use chrono::{DateTime, Utc};
-use dialoguer::{
-    Confirm, MultiSelect, Select,
-    theme::{ColorfulTheme, SimpleTheme, Theme},
-};
+use inquire::ui::RenderConfig;
+use inquire::{Confirm, InquireError, MultiSelect, Select};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +19,7 @@ use std::ffi::OsString;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use walkdir::WalkDir;
 
 const PROFILE_PATH: &str = "rainy-skills.yaml";
@@ -33,7 +32,7 @@ const DEFAULT_SKILLS_VERSION: &str = "1.5.20";
 const DEFAULT_SUPERPOWERS_VERSION: &str = "5.1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillProfileConfig {
     pub api_version: String,
     pub kind: String,
@@ -48,7 +47,7 @@ pub struct SkillProfileConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillPackages {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comet: Option<String>,
@@ -59,7 +58,7 @@ pub struct SkillPackages {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillPolicy {
     pub auto_transition: bool,
     pub require_apply_approval: bool,
@@ -67,7 +66,7 @@ pub struct SkillPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillLock {
     pub api_version: String,
     pub kind: String,
@@ -94,7 +93,7 @@ pub struct SkillLock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LockedPackage {
     pub package: String,
     pub version: String,
@@ -102,7 +101,7 @@ pub struct LockedPackage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedSkill {
     pub name: String,
     pub target: String,
@@ -111,7 +110,7 @@ pub struct ManagedSkill {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpstreamSkill {
     pub name: String,
     pub target: String,
@@ -151,6 +150,14 @@ struct CustomSkill {
     source: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct CustomSkillSelectionMode {
+    all: bool,
+    none: bool,
+    interactive: bool,
+    no_color: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct CustomSkillMetadata {
     name: String,
@@ -168,7 +175,7 @@ pub fn handle_skill_command(
         SkillSubcommand::Init(args) => init(workspace, args, progress, interactive, no_color),
         SkillSubcommand::Install(args) => install(workspace, args, progress, interactive, no_color),
         SkillSubcommand::Create(args) => create(workspace, args, progress),
-        SkillSubcommand::Sync => sync(workspace, progress),
+        SkillSubcommand::Sync(args) => sync(workspace, args, progress),
         SkillSubcommand::Status => status(workspace, progress),
         SkillSubcommand::Doctor => doctor(workspace, progress),
         SkillSubcommand::Update(args) => update(workspace, args, progress),
@@ -298,45 +305,60 @@ fn initialize(
     let mut apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let profile_path = workspace.join(PROFILE_PATH);
     let profile_exists = profile_path.exists();
-    let desired = if profile_exists
-        && args.profile.is_none()
-        && args.target.is_empty()
-        && args.skill.is_empty()
-        && !args.all_custom_skills
-        && !args.no_custom_skills
-    {
-        load_profile(workspace)?
-    } else {
-        profile_from_args(workspace, &args, interactive, no_color)?
+    let desired = loop {
+        let desired = if profile_exists
+            && args.profile.is_none()
+            && args.target.is_empty()
+            && args.skill.is_empty()
+            && !args.all_custom_skills
+            && !args.no_custom_skills
+        {
+            load_profile(workspace)?
+        } else {
+            profile_from_args(workspace, &args, interactive, no_color, progress)?
+        };
+
+        if profile_exists {
+            let current = load_profile(workspace)?;
+            if current != desired {
+                return Err(RainyError::config(
+                    "SKILL_PROFILE_CHANGE_REQUIRES_UNINSTALL",
+                    "a different skill profile is already configured; use skill install to reconfigure it",
+                ));
+            }
+        }
+
+        if interactive && !args.dry_run && (args.apply || operation == "install") {
+            match prompt_install_confirmation(&desired, profile_exists, no_color, progress)? {
+                Some(true) => apply = true,
+                Some(false) => {
+                    apply = false;
+                }
+                None if profile_exists => {
+                    return Err(cancelled_selection("installation confirmation"));
+                }
+                None => continue,
+            }
+        }
+        break desired;
     };
 
-    if profile_exists {
-        let current = load_profile(workspace)?;
-        if current != desired {
-            return Err(RainyError::config(
-                "SKILL_PROFILE_CHANGE_REQUIRES_UNINSTALL",
-                "a different skill profile is already configured; uninstall it before changing profile, language, target, or pinned package versions",
-            ));
-        }
-    }
-
-    if interactive && !args.dry_run && !args.apply {
-        apply = prompt_install_confirmation(&desired, profile_exists, no_color)?;
-    }
-
     if profile_exists && !apply {
+        let mut install_command = vec![
+            "rainy".to_string(),
+            "skill".to_string(),
+            "install".to_string(),
+        ];
+        if !interactive {
+            install_command.push("--apply".to_string());
+        }
         return Ok(CommandOutput::Skill {
             report: report(
                 operation,
                 "configured",
                 &desired,
                 Vec::new(),
-                vec![
-                    "rainy".to_string(),
-                    "skill".to_string(),
-                    "install".to_string(),
-                    "--apply".to_string(),
-                ],
+                install_command,
                 Vec::new(),
                 Vec::new(),
             ),
@@ -414,32 +436,22 @@ fn install(
             "install",
         );
     }
-    if args.profile.is_some()
-        || args.language.is_some()
-        || !args.target.is_empty()
-        || args.comet_version.is_some()
-        || args.skills_version.is_some()
-        || args.superpowers_version.is_some()
-    {
-        return Err(RainyError::config(
-            "SKILL_INSTALL_SETUP_ALREADY_CONFIGURED",
-            "--profile, --language, --target, and package version options are only used when rainy-skills.yaml is missing; uninstall before changing the configured setup",
-        ));
-    }
     let mut apply = resolve_apply_flags(args.dry_run, args.apply)?;
-    let mut profile = load_profile(workspace)?;
-    profile.custom_skills = resolve_custom_skill_selection(
-        workspace,
-        &args.skill,
-        args.all_custom_skills,
-        args.no_custom_skills,
-        &profile.custom_skills,
-        interactive,
-        no_color,
-    )?;
-    if interactive && !args.dry_run && !args.apply {
-        apply = prompt_install_confirmation(&profile, true, no_color)?;
-    }
+    let current = load_profile(workspace)?;
+    let profile = loop {
+        let profile =
+            reconfigure_profile(workspace, &current, &args, interactive, no_color, progress)?;
+        if interactive && !args.dry_run {
+            match prompt_install_confirmation(&profile, true, no_color, progress)? {
+                Some(true) => apply = true,
+                Some(false) => {
+                    apply = false;
+                }
+                None => continue,
+            }
+        }
+        break profile;
+    };
     if !apply {
         progress.detail("Building the Skill installation preview");
         return Ok(CommandOutput::Skill {
@@ -472,12 +484,183 @@ fn install(
     })
 }
 
-fn sync(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandOutput> {
+fn reconfigure_profile(
+    workspace: &Path,
+    current: &SkillProfileConfig,
+    args: &SkillInstallArgs,
+    interactive: bool,
+    no_color: bool,
+    progress: &ProgressReporter,
+) -> RainyResult<SkillProfileConfig> {
+    let profile_is_prompted = interactive && args.profile.is_none();
+    'bundle: loop {
+        let selected_profile = match args.profile {
+            Some(profile) => profile,
+            None if interactive => {
+                let Some(profile) = prompt_profile(no_color, Some(&current.profile), progress)?
+                else {
+                    return Err(cancelled_selection("Skill bundle"));
+                };
+                profile
+            }
+            None if current.profile == "rainy" => SkillProfile::Rainy,
+            None => SkillProfile::Comet,
+        };
+        'targets: loop {
+            let selected_targets = if !args.target.is_empty() {
+                args.target.clone()
+            } else if interactive {
+                let Some(targets) =
+                    prompt_targets(workspace, no_color, &current.targets, progress)?
+                else {
+                    if profile_is_prompted {
+                        continue 'bundle;
+                    }
+                    return Err(cancelled_selection("target platform"));
+                };
+                targets
+            } else {
+                current
+                    .targets
+                    .iter()
+                    .filter(|target| target.as_str() != "universal")
+                    .map(|target| parse_skill_target(target))
+                    .collect::<RainyResult<Vec<_>>>()?
+            };
+            let custom_skills = match resolve_custom_skill_selection(
+                workspace,
+                &args.skill,
+                &current.custom_skills,
+                CustomSkillSelectionMode {
+                    all: args.all_custom_skills,
+                    none: args.no_custom_skills,
+                    interactive,
+                    no_color,
+                },
+                progress,
+            )? {
+                Some(skills) => skills,
+                None if interactive && args.target.is_empty() => continue 'targets,
+                None if profile_is_prompted => continue 'bundle,
+                None => return Err(cancelled_selection("project Skill")),
+            };
+            let profile_name = profile_name(&selected_profile).to_string();
+            let mut targets = selected_targets
+                .iter()
+                .map(|target| target_name(target).to_string())
+                .collect::<Vec<_>>();
+            targets.push("universal".to_string());
+            targets.sort();
+            targets.dedup();
+            let language = args
+                .language
+                .as_ref()
+                .map(language_name)
+                .unwrap_or(&current.language)
+                .to_string();
+            let comet = if profile_name == "comet" {
+                let version = args.comet_version.clone().unwrap_or_else(|| {
+                    comet_version(current).unwrap_or_else(|_| "0.4.0-beta.6".to_string())
+                });
+                validate_comet_version(&version)?;
+                Some(format!("{COMET_PACKAGE}@{version}"))
+            } else {
+                None
+            };
+            let skills = if profile_name == "comet" {
+                let version = args.skills_version.clone().unwrap_or_else(|| {
+                    skills_version(current).unwrap_or_else(|_| DEFAULT_SKILLS_VERSION.to_string())
+                });
+                validate_exact_version("skills CLI", &version)?;
+                Some(format!("{SKILLS_PACKAGE}@{version}"))
+            } else {
+                None
+            };
+            let superpowers = if profile_name == "comet" {
+                let version = args.superpowers_version.clone().unwrap_or_else(|| {
+                    superpowers_version(current)
+                        .unwrap_or_else(|_| DEFAULT_SUPERPOWERS_VERSION.to_string())
+                });
+                validate_exact_version("Superpowers", &version)?;
+                Some(format!("{SUPERPOWERS_PACKAGE}@{version}"))
+            } else {
+                None
+            };
+            let desired = SkillProfileConfig {
+                api_version: "rainy.dev/v1".to_string(),
+                kind: "SkillProfile".to_string(),
+                profile: profile_name,
+                scope: "project".to_string(),
+                language,
+                targets,
+                custom_skills,
+                packages: SkillPackages {
+                    comet,
+                    skills,
+                    superpowers,
+                },
+                policy: current.policy.clone(),
+            };
+            validate_profile(&desired)?;
+            return Ok(desired);
+        }
+    }
+}
+
+fn parse_skill_target(value: &str) -> RainyResult<SkillTarget> {
+    match value {
+        "universal" => Ok(SkillTarget::Universal),
+        "codex" => Ok(SkillTarget::Codex),
+        "claude" => Ok(SkillTarget::Claude),
+        "cursor" => Ok(SkillTarget::Cursor),
+        "github-copilot" => Ok(SkillTarget::GithubCopilot),
+        "gemini" => Ok(SkillTarget::Gemini),
+        "opencode" => Ok(SkillTarget::Opencode),
+        other => Err(RainyError::config(
+            "SKILL_TARGET_UNSUPPORTED",
+            format!("unsupported configured Skill target: {other}"),
+        )),
+    }
+}
+
+fn sync(
+    workspace: &Path,
+    args: crate::cli::SkillSyncArgs,
+    progress: &ProgressReporter,
+) -> RainyResult<CommandOutput> {
     progress.detail("Refreshing Rainy-managed agent context files");
+    let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     if !workspace.join(PROFILE_PATH).is_file() {
+        if !apply {
+            return Ok(CommandOutput::Message {
+                status: "dry-run",
+                message: format!(
+                    "Would refresh {}",
+                    agent::skill_sync_paths(workspace).join(", ")
+                ),
+            });
+        }
         return agent::sync_skills_command(workspace);
     }
     let profile = load_profile(workspace)?;
+    if !apply {
+        return Ok(CommandOutput::Skill {
+            report: report(
+                "sync",
+                "dry-run",
+                &profile,
+                agent::skill_sync_paths(workspace),
+                vec![
+                    "rainy".to_string(),
+                    "skill".to_string(),
+                    "sync".to_string(),
+                    "--apply".to_string(),
+                ],
+                Vec::new(),
+                Vec::new(),
+            ),
+        });
+    }
     agent::sync_skills_command(workspace)?;
     Ok(CommandOutput::Skill {
         report: completed_report("sync", &profile, agent::skill_sync_paths(workspace)),
@@ -508,9 +691,15 @@ fn status(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandO
 
 fn doctor(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandOutput> {
     progress.detail("Checking Skill files, tools, policy, and lock state");
+    Ok(CommandOutput::Skill {
+        report: doctor_report(workspace)?,
+    })
+}
+
+pub fn doctor_report(workspace: &Path) -> RainyResult<SkillReport> {
     let profile = load_profile(workspace)?;
     let checks = inspect(workspace, &profile, true)?;
-    let report = report(
+    Ok(report(
         "doctor",
         if checks.iter().any(|check| check.status == "fail") {
             "failed"
@@ -522,23 +711,7 @@ fn doctor(workspace: &Path, progress: &ProgressReporter) -> RainyResult<CommandO
         Vec::new(),
         Vec::new(),
         checks,
-    );
-    if report.status == "failed" {
-        let failures = report
-            .checks
-            .iter()
-            .filter(|check| check.status == "fail")
-            .map(|check| format!("{} ({})", check.id, check.message))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(RainyError::doctor(
-            "SKILL_DOCTOR_FAILED",
-            format!(
-                "Skill diagnostics failed: {failures}; run `rainy skill status` for detailed checks"
-            ),
-        ));
-    }
-    Ok(CommandOutput::Skill { report })
+    ))
 }
 
 fn update(
@@ -686,101 +859,128 @@ fn profile_from_args(
     args: &SkillInitArgs,
     interactive: bool,
     no_color: bool,
+    progress: &ProgressReporter,
 ) -> RainyResult<SkillProfileConfig> {
     validate_comet_version(&args.comet_version)?;
     validate_exact_version("skills CLI", &args.skills_version)?;
     validate_exact_version("Superpowers", &args.superpowers_version)?;
-    let selected_profile = match args.profile {
-        Some(profile) => profile,
-        None if interactive => prompt_profile(no_color)?,
-        None => SkillProfile::Comet,
-    };
-    let selected_targets = if !args.target.is_empty() {
-        args.target.clone()
-    } else if interactive {
-        prompt_targets(workspace, no_color)?
-    } else {
-        vec![SkillTarget::Codex]
-    };
-    let profile = profile_name(&selected_profile).to_string();
-    let mut targets = selected_targets
-        .iter()
-        .map(|target| target_name(target).to_string())
-        .collect::<Vec<_>>();
-    targets.push("universal".to_string());
-    targets.sort();
-    targets.dedup();
-    if targets.is_empty() {
-        return Err(RainyError::config(
-            "SKILL_TARGET_REQUIRED",
-            "at least one skill target is required",
-        ));
+    let profile_is_prompted = interactive && args.profile.is_none();
+    'bundle: loop {
+        let selected_profile = match args.profile {
+            Some(profile) => profile,
+            None if interactive => {
+                let Some(profile) = prompt_profile(no_color, None, progress)? else {
+                    return Err(cancelled_selection("Skill bundle"));
+                };
+                profile
+            }
+            None => SkillProfile::Comet,
+        };
+        'targets: loop {
+            let selected_targets = if !args.target.is_empty() {
+                args.target.clone()
+            } else if interactive {
+                let Some(targets) = prompt_targets(workspace, no_color, &[], progress)? else {
+                    if profile_is_prompted {
+                        continue 'bundle;
+                    }
+                    return Err(cancelled_selection("target platform"));
+                };
+                targets
+            } else {
+                vec![SkillTarget::Codex]
+            };
+            let custom_skills = match resolve_custom_skill_selection(
+                workspace,
+                &args.skill,
+                &[],
+                CustomSkillSelectionMode {
+                    all: args.all_custom_skills,
+                    none: args.no_custom_skills,
+                    interactive,
+                    no_color,
+                },
+                progress,
+            )? {
+                Some(skills) => skills,
+                None if interactive && args.target.is_empty() => continue 'targets,
+                None if profile_is_prompted => continue 'bundle,
+                None => return Err(cancelled_selection("project Skill")),
+            };
+            let profile = profile_name(&selected_profile).to_string();
+            let mut targets = selected_targets
+                .iter()
+                .map(|target| target_name(target).to_string())
+                .collect::<Vec<_>>();
+            targets.push("universal".to_string());
+            targets.sort();
+            targets.dedup();
+            return Ok(SkillProfileConfig {
+                api_version: "rainy.dev/v1".to_string(),
+                kind: "SkillProfile".to_string(),
+                profile: profile.clone(),
+                scope: "project".to_string(),
+                language: language_name(&args.language).to_string(),
+                targets,
+                custom_skills,
+                packages: SkillPackages {
+                    comet: (profile == "comet")
+                        .then(|| format!("{COMET_PACKAGE}@{}", args.comet_version)),
+                    skills: (profile == "comet")
+                        .then(|| format!("{SKILLS_PACKAGE}@{}", args.skills_version)),
+                    superpowers: (profile == "comet")
+                        .then(|| format!("{SUPERPOWERS_PACKAGE}@{}", args.superpowers_version)),
+                },
+                policy: SkillPolicy {
+                    auto_transition: false,
+                    require_apply_approval: true,
+                    verify_profile: "ci".to_string(),
+                },
+            });
+        }
     }
-    let custom_skills = resolve_custom_skill_selection(
-        workspace,
-        &args.skill,
-        args.all_custom_skills,
-        args.no_custom_skills,
-        &[],
-        interactive,
-        no_color,
-    )?;
-    Ok(SkillProfileConfig {
-        api_version: "rainy.dev/v1".to_string(),
-        kind: "SkillProfile".to_string(),
-        profile: profile.clone(),
-        scope: "project".to_string(),
-        language: language_name(&args.language).to_string(),
-        targets,
-        custom_skills,
-        packages: SkillPackages {
-            comet: (profile == "comet").then(|| format!("{COMET_PACKAGE}@{}", args.comet_version)),
-            skills: (profile == "comet")
-                .then(|| format!("{SKILLS_PACKAGE}@{}", args.skills_version)),
-            superpowers: (profile == "comet")
-                .then(|| format!("{SUPERPOWERS_PACKAGE}@{}", args.superpowers_version)),
-        },
-        policy: SkillPolicy {
-            auto_transition: false,
-            require_apply_approval: true,
-            verify_profile: "ci".to_string(),
-        },
-    })
 }
 
-fn prompt_profile(no_color: bool) -> RainyResult<SkillProfile> {
-    let colorful = ColorfulTheme::default();
-    let simple = SimpleTheme;
-    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
-    let choices = [
+fn prompt_profile(
+    no_color: bool,
+    current: Option<&str>,
+    progress: &ProgressReporter,
+) -> RainyResult<Option<SkillProfile>> {
+    let _progress_suspension = progress.suspend();
+    let choices = vec![
         "Complete workflow  Rainy + OpenSpec + Superpowers + Comet",
         "Rainy only         Rainy CLI execution and approval Skill",
     ];
     eprintln!();
     eprintln!("Skill setup");
     eprintln!("  Use arrow keys to move, then press Enter.");
-    let selected = Select::with_theme(theme)
-        .with_prompt("Select the Skill bundle")
-        .items(&choices)
-        .default(0)
-        .interact()
-        .map_err(|error| {
-            RainyError::config(
-                "SKILL_SELECTION_FAILED",
-                format!("could not read the Skill bundle selection: {error}"),
-            )
-        })?;
-    Ok(if selected == 0 {
-        SkillProfile::Comet
+    let prompt = Select::new("Select the Skill bundle", choices)
+        .with_starting_cursor(usize::from(current == Some("rainy")))
+        .with_help_message("Type to search; Up/Down move; Enter confirms; Esc goes back");
+    let selected = if no_color {
+        prompt
+            .with_render_config(RenderConfig::empty())
+            .prompt_skippable()
     } else {
-        SkillProfile::Rainy
-    })
+        prompt.prompt_skippable()
+    }
+    .map_err(|error| skill_prompt_error("Skill bundle", error))?;
+    Ok(selected.map(|selected| {
+        if selected.starts_with("Complete") {
+            SkillProfile::Comet
+        } else {
+            SkillProfile::Rainy
+        }
+    }))
 }
 
-fn prompt_targets(workspace: &Path, no_color: bool) -> RainyResult<Vec<SkillTarget>> {
-    let colorful = ColorfulTheme::default();
-    let simple = SimpleTheme;
-    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+fn prompt_targets(
+    workspace: &Path,
+    no_color: bool,
+    current: &[String],
+    progress: &ProgressReporter,
+) -> RainyResult<Option<Vec<SkillTarget>>> {
+    let _progress_suspension = progress.suspend();
     let targets = [
         SkillTarget::Codex,
         SkillTarget::Claude,
@@ -789,7 +989,7 @@ fn prompt_targets(workspace: &Path, no_color: bool) -> RainyResult<Vec<SkillTarg
         SkillTarget::Gemini,
         SkillTarget::Opencode,
     ];
-    let labels = [
+    let labels = vec![
         "Codex            (uses universal .agents/skills)",
         "Claude Code      (.claude/skills)",
         "Cursor           (.cursor/skills)",
@@ -801,7 +1001,12 @@ fn prompt_targets(workspace: &Path, no_color: bool) -> RainyResult<Vec<SkillTarg
         .iter()
         .map(|target| target_detected(workspace, target))
         .collect::<Vec<_>>();
-    let defaults = if detected.iter().any(|value| *value) {
+    let defaults = if !current.is_empty() {
+        targets
+            .iter()
+            .map(|target| current.iter().any(|value| value == target_name(target)))
+            .collect()
+    } else if detected.iter().any(|value| *value) {
         detected
     } else {
         targets
@@ -812,31 +1017,43 @@ fn prompt_targets(workspace: &Path, no_color: bool) -> RainyResult<Vec<SkillTarg
     eprintln!();
     eprintln!("  Always included: Universal (.agents/skills)");
     eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
-    let selected = MultiSelect::with_theme(theme)
-        .with_prompt("Select target agent hosts")
-        .items(&labels)
-        .defaults(&defaults)
-        .interact()
-        .map_err(|error| {
-            RainyError::config(
-                "SKILL_SELECTION_FAILED",
-                format!("could not read the target platform selection: {error}"),
-            )
-        })?;
-    Ok(selected.into_iter().map(|index| targets[index]).collect())
+    let default_indices = defaults
+        .iter()
+        .enumerate()
+        .filter_map(|(index, selected)| selected.then_some(index))
+        .collect::<Vec<_>>();
+    let prompt = MultiSelect::new("Select target agent hosts", labels.clone())
+        .with_default(&default_indices)
+        .with_page_size(10)
+        .with_help_message(
+            "Type to search; Space toggles; Right all; Left clear; Enter confirms; Esc goes back",
+        );
+    let selected = if no_color {
+        prompt
+            .with_render_config(RenderConfig::empty())
+            .prompt_skippable()
+    } else {
+        prompt.prompt_skippable()
+    }
+    .map_err(|error| skill_prompt_error("target platform", error))?;
+    Ok(selected.map(|selected| {
+        selected
+            .into_iter()
+            .filter_map(|label| labels.iter().position(|candidate| *candidate == label))
+            .map(|index| targets[index])
+            .collect()
+    }))
 }
 
 fn resolve_custom_skill_selection(
     workspace: &Path,
     requested: &[String],
-    all_custom_skills: bool,
-    no_custom_skills: bool,
     current: &[String],
-    interactive: bool,
-    no_color: bool,
-) -> RainyResult<Vec<String>> {
-    if no_custom_skills {
-        return Ok(Vec::new());
+    mode: CustomSkillSelectionMode,
+    progress: &ProgressReporter,
+) -> RainyResult<Option<Vec<String>>> {
+    if mode.none {
+        return Ok(Some(Vec::new()));
     }
     let available = discover_custom_skills(workspace)?;
     let available_ids = available
@@ -862,13 +1079,13 @@ fn resolve_custom_skill_selection(
                 ),
             ));
         }
-        return Ok(selected.into_iter().collect());
+        return Ok(Some(selected.into_iter().collect()));
     }
-    if all_custom_skills {
-        return Ok(available_ids.into_iter().collect());
+    if mode.all {
+        return Ok(Some(available_ids.into_iter().collect()));
     }
-    if !interactive {
-        return Ok(current.to_vec());
+    if !mode.interactive {
+        return Ok(Some(current.to_vec()));
     }
 
     let missing = current
@@ -886,9 +1103,9 @@ fn resolve_custom_skill_selection(
         ));
     }
     if available.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     }
-    prompt_custom_skills(&available, current, no_color)
+    prompt_custom_skills(&available, current, mode.no_color, progress)
 }
 
 fn display_available_custom_skills(available: &BTreeSet<String>) -> String {
@@ -903,7 +1120,9 @@ fn prompt_custom_skills(
     available: &[CustomSkill],
     current: &[String],
     no_color: bool,
-) -> RainyResult<Vec<String>> {
+    progress: &ProgressReporter,
+) -> RainyResult<Option<Vec<String>>> {
+    let _progress_suspension = progress.suspend();
     let selected = current.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let labels = available
         .iter()
@@ -916,28 +1135,38 @@ fn prompt_custom_skills(
         .iter()
         .map(|skill| selected.contains(skill.id.as_str()))
         .collect::<Vec<_>>();
-    let colorful = ColorfulTheme::default();
-    let simple = SimpleTheme;
-    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
     eprintln!();
     eprintln!("Project Skill library");
     eprintln!("  Source  {CUSTOM_SKILLS_ROOT}/");
     eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
-    let selected = MultiSelect::with_theme(theme)
-        .with_prompt("Select project Skills")
-        .items(&labels)
-        .defaults(&defaults)
-        .interact()
-        .map_err(|error| {
-            RainyError::config(
-                "SKILL_SELECTION_FAILED",
-                format!("could not read the project Skill selection: {error}"),
-            )
-        })?;
-    Ok(selected
-        .into_iter()
-        .map(|index| available[index].id.clone())
-        .collect())
+    let default_indices = defaults
+        .iter()
+        .enumerate()
+        .filter_map(|(index, selected)| selected.then_some(index))
+        .collect::<Vec<_>>();
+    let prompt = MultiSelect::new("Select project Skills", labels.clone())
+        .with_default(&default_indices)
+        .with_page_size(12)
+        .with_help_message(
+            "Type to search; Space toggles; Right all; Left clear; Enter confirms; Esc goes back",
+        );
+    let selected = if no_color {
+        prompt
+            .with_render_config(RenderConfig::empty())
+            .prompt_skippable()
+    } else {
+        prompt.prompt_skippable()
+    }
+    .map_err(|error| skill_prompt_error("project Skill", error))?;
+    Ok(selected.map(|selected| {
+        let selected = selected.into_iter().collect::<BTreeSet<_>>();
+        labels
+            .iter()
+            .zip(available)
+            .filter(|(label, _)| selected.contains(*label))
+            .map(|(_, skill)| skill.id.clone())
+            .collect()
+    }))
 }
 
 fn discover_custom_skills(workspace: &Path) -> RainyResult<Vec<CustomSkill>> {
@@ -1059,10 +1288,9 @@ fn prompt_install_confirmation(
     profile: &SkillProfileConfig,
     existing: bool,
     no_color: bool,
-) -> RainyResult<bool> {
-    let colorful = ColorfulTheme::default();
-    let simple = SimpleTheme;
-    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
+    progress: &ProgressReporter,
+) -> RainyResult<Option<bool>> {
+    let _progress_suspension = progress.suspend();
     eprintln!();
     eprintln!("Installation review");
     eprintln!(
@@ -1090,20 +1318,53 @@ fn prompt_install_confirmation(
             "Rainy CLI"
         }
     );
-    Confirm::with_theme(theme)
-        .with_prompt(if existing {
-            "Install or repair this configured Skill bundle now?"
-        } else {
-            "Install the selected Skill bundle now?"
-        })
-        .default(true)
-        .interact()
-        .map_err(|error| {
-            RainyError::config(
-                "SKILL_SELECTION_FAILED",
-                format!("could not read the installation confirmation: {error}"),
-            )
-        })
+    let prompt = Confirm::new(if existing {
+        "Install or repair this configured Skill bundle now?"
+    } else {
+        "Install the selected Skill bundle now?"
+    })
+    .with_default(true)
+    .with_help_message("Enter accepts the default; n previews without installing; Esc goes back");
+    if no_color {
+        prompt
+            .with_render_config(RenderConfig::empty())
+            .prompt_skippable()
+    } else {
+        prompt.prompt_skippable()
+    }
+    .map_err(|error| skill_prompt_error("installation confirmation", error))
+}
+
+fn skill_prompt_error(context: &str, error: InquireError) -> RainyError {
+    if matches!(error, InquireError::OperationInterrupted)
+        || matches!(&error, InquireError::IO(io) if io.kind() == std::io::ErrorKind::UnexpectedEof)
+    {
+        RainyError::action("CANCELLED", format!("{context} selection cancelled"))
+    } else {
+        RainyError::config(
+            "SKILL_SELECTION_FAILED",
+            format!("could not read the {context} selection: {error}"),
+        )
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn eof_is_reported_as_cancellation() {
+        let error = skill_prompt_error(
+            "Skill bundle",
+            InquireError::IO(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
+        );
+        assert_eq!(error.body().code, "CANCELLED");
+        assert_eq!(error.exit_code(), 130);
+    }
+}
+
+fn cancelled_selection(context: &str) -> RainyError {
+    RainyError::action("CANCELLED", format!("{context} selection cancelled"))
 }
 
 fn target_detected(workspace: &Path, target: &SkillTarget) -> bool {
@@ -1348,8 +1609,14 @@ fn apply_install(
     let lock = load_lock(workspace).ok();
     validate_managed_skills(workspace, lock.as_ref(), force)?;
     validate_upstream_skills(workspace, lock.as_ref(), force)?;
+    let mut changed_files = cleanup_obsolete_skills(workspace, profile, lock.as_ref())?;
     progress.detail("Installing managed Rainy Skills for selected agent hosts");
-    let mut changed_files = install_rainy_skills(workspace, profile, lock.as_ref(), force)?;
+    changed_files.extend(install_rainy_skills(
+        workspace,
+        profile,
+        lock.as_ref(),
+        force,
+    )?);
 
     let output_digest = if profile.profile == "comet" {
         let action = if overwrite_upstream {
@@ -1404,6 +1671,65 @@ fn apply_install(
     )?);
 
     Ok((changed_files, output_digest))
+}
+
+fn cleanup_obsolete_skills(
+    workspace: &Path,
+    profile: &SkillProfileConfig,
+    lock: Option<&SkillLock>,
+) -> RainyResult<Vec<String>> {
+    let Some(lock) = lock else {
+        return Ok(Vec::new());
+    };
+    let rainy_names = if profile.profile == "comet" {
+        vec!["rainy-cli", "rainy-comet"]
+    } else {
+        vec!["rainy-cli"]
+    };
+    let expected_managed = profile
+        .targets
+        .iter()
+        .flat_map(|target| {
+            rainy_names.iter().map(move |name| {
+                Path::new(target_relative_root(target).expect("validated target"))
+                    .join(name)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+        })
+        .chain(profile.targets.iter().flat_map(|target| {
+            profile.custom_skills.iter().map(move |name| {
+                Path::new(target_relative_root(target).expect("validated target"))
+                    .join(name)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+        }))
+        .collect::<BTreeSet<_>>();
+    let mut changed = Vec::new();
+    for managed in &lock.managed_skills {
+        if expected_managed.contains(&managed.path) {
+            continue;
+        }
+        let path = workspace.join(&managed.path);
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+            changed.push(managed.path.clone());
+        }
+    }
+    for upstream in &lock.upstream_skills {
+        if profile.profile == "comet" && profile.targets.contains(&upstream.target) {
+            continue;
+        }
+        for relative in &upstream.paths {
+            let path = workspace.join(relative);
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)?;
+                changed.push(relative.clone());
+            }
+        }
+    }
+    Ok(changed)
 }
 
 fn install_rainy_skills(
@@ -2211,7 +2537,7 @@ fn assert_required_upstream(
                 .iter()
                 .any(|skill| skill.target == *target && skill.name == name)
             {
-                return Err(RainyError::config(
+                return Err(RainyError::action(
                     "SKILL_UPSTREAM_INCOMPLETE",
                     format!(
                         "the managed installer completed but did not install {name} skills for {target}; run rainy skill doctor and retry with rainy skill install --apply"
@@ -2236,73 +2562,80 @@ fn run_comet(
     action: CometAction,
 ) -> RainyResult<String> {
     let (program, prefix) = comet_program(profile)?;
-    let mut command = Command::new(program);
+    let mut command = Command::new(&program);
     command.args(prefix);
     command.args(comet_args(workspace, profile, action));
     command.current_dir(workspace);
     command.env("COMET_AUTO_TRANSITION", "false");
-    let output = command.output().map_err(|error| {
-        RainyError::config(
-            "SKILL_COMET_EXEC_FAILED",
-            format!("failed to start Comet: {error}"),
-        )
-    })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(RainyError::config(
+    let output = crate::process::run_command(
+        command,
+        &program,
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !output.success() {
+        return Err(RainyError::action(
             "SKILL_COMET_FAILED",
             format!(
                 "Comet exited with {}: {}{}",
-                output.status,
-                truncate(stderr.trim(), 3000),
-                if stdout.trim().is_empty() {
+                process_status(&output),
+                truncate(output.stderr.trim(), 3000),
+                if output.stdout.trim().is_empty() {
                     String::new()
                 } else {
-                    format!("; stdout: {}", truncate(stdout.trim(), 1000))
+                    format!("; stdout: {}", truncate(output.stdout.trim(), 1000))
                 }
             ),
         ));
     }
     let mut hasher = Sha256::new();
-    hasher.update(&output.stdout);
-    hasher.update(&output.stderr);
+    hasher.update(output.stdout.as_bytes());
+    hasher.update(output.stderr.as_bytes());
     Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn run_superpowers(workspace: &Path, profile: &SkillProfileConfig) -> RainyResult<String> {
     let (program, prefix) = skills_program(profile)?;
-    let mut command = Command::new(program);
+    let mut command = Command::new(&program);
     command.args(prefix);
     command.args(superpowers_args(profile)?);
     command.current_dir(workspace);
-    let output = command.output().map_err(|error| {
-        RainyError::config(
-            "SKILL_SUPERPOWERS_EXEC_FAILED",
-            format!("failed to start the Superpowers installer: {error}"),
-        )
-    })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(RainyError::config(
+    let output = crate::process::run_command(
+        command,
+        &program,
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !output.success() {
+        return Err(RainyError::action(
             "SKILL_SUPERPOWERS_FAILED",
             format!(
                 "Superpowers installer exited with {}: {}{}",
-                output.status,
-                truncate(stderr.trim(), 3000),
-                if stdout.trim().is_empty() {
+                process_status(&output),
+                truncate(output.stderr.trim(), 3000),
+                if output.stdout.trim().is_empty() {
                     String::new()
                 } else {
-                    format!("; stdout: {}", truncate(stdout.trim(), 1000))
+                    format!("; stdout: {}", truncate(output.stdout.trim(), 1000))
                 }
             ),
         ));
     }
     let mut hasher = Sha256::new();
-    hasher.update(&output.stdout);
-    hasher.update(&output.stderr);
+    hasher.update(output.stdout.as_bytes());
+    hasher.update(output.stderr.as_bytes());
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn process_status(output: &crate::process::ProcessOutput) -> String {
+    if output.termination == crate::process::Termination::TimedOut {
+        "timeout".to_string()
+    } else {
+        output
+            .status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "unknown status".to_string())
+    }
 }
 
 fn skills_program(profile: &SkillProfileConfig) -> RainyResult<(OsString, Vec<OsString>)> {
@@ -2473,37 +2806,7 @@ fn comet_display(profile: &SkillProfileConfig, action: CometAction) -> Vec<Strin
         .into_iter()
         .map(str::to_string),
     );
-    if !matches!(action, CometAction::Uninstall)
-        && let Ok(mut superpowers) = superpowers_display(profile)
-    {
-        values.push("&&".to_string());
-        values.append(&mut superpowers);
-    }
     values
-}
-
-fn superpowers_display(profile: &SkillProfileConfig) -> RainyResult<Vec<String>> {
-    let program = std::env::var("RAINY_SKILLS_BIN").unwrap_or_else(|_| "npx".to_string());
-    let mut values = vec![program];
-    if std::env::var_os("RAINY_SKILLS_BIN").is_none() {
-        values.extend([
-            "--yes".to_string(),
-            "--package".to_string(),
-            profile.packages.skills.clone().ok_or_else(|| {
-                RainyError::config(
-                    "SKILL_SKILLS_PACKAGE_REQUIRED",
-                    "comet profile requires packages.skills",
-                )
-            })?,
-            "skills".to_string(),
-        ]);
-    }
-    values.extend(
-        superpowers_args(profile)?
-            .into_iter()
-            .map(|value| value.to_string_lossy().to_string()),
-    );
-    Ok(values)
 }
 
 fn check_comet_prerequisites() -> RainyResult<()> {
@@ -2591,14 +2894,22 @@ fn command_version(program: &str) -> Result<String, String> {
     } else {
         program
     };
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .map_err(|error| format!("{program} is not available: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("{program} --version exited with {}", output.status));
+    let mut command = Command::new(executable);
+    command.arg("--version");
+    let output = crate::process::run_command(
+        command,
+        executable,
+        Duration::from_secs(30),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )
+    .map_err(|error| format!("{program} is not available: {}", error.body().message))?;
+    if !output.success() {
+        return Err(format!(
+            "{program} --version exited with {}",
+            process_status(&output)
+        ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(output.stdout.trim().to_string())
 }
 
 fn configure_comet(workspace: &Path) -> RainyResult<()> {
@@ -2750,6 +3061,8 @@ fn planned_report(
     if operation != "uninstall" {
         changed_files.extend(agent::skill_sync_paths(workspace));
     }
+    changed_files.sort();
+    changed_files.dedup();
     report(
         operation,
         "dry-run",

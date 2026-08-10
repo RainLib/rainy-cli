@@ -21,9 +21,14 @@ pub struct ProjectConfig {
     pub policy: PolicySection,
     #[serde(default)]
     pub verify: VerifySection,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, serde_yaml::Value>,
+    #[serde(flatten)]
+    pub extension_fields: BTreeMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectSection {
     pub name: String,
     #[serde(rename = "type", default)]
@@ -33,6 +38,7 @@ pub struct ProjectSection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PathSection {
     pub backend: String,
     pub frontend: String,
@@ -43,6 +49,7 @@ pub struct PathSection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackageSection {
     pub java: String,
     #[serde(rename = "npmScope", default)]
@@ -50,13 +57,14 @@ pub struct PackageSection {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityRegistrySection {
     #[serde(default)]
     pub sources: Vec<RegistrySourceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum RegistrySourceConfig {
     Local {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +105,7 @@ fn is_zero(value: &i32) -> bool {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicySection {
     #[serde(rename = "allowEdit", default)]
     pub allow_edit: Vec<String>,
@@ -109,12 +118,14 @@ pub struct PolicySection {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifySection {
     #[serde(default)]
     pub profiles: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityLock {
     #[serde(rename = "lockfileVersion")]
     pub lockfile_version: u32,
@@ -127,16 +138,19 @@ pub struct CapabilityLock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LockProject {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LockRainy {
     pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LockedCapability {
     pub version: String,
     #[serde(default)]
@@ -165,6 +179,7 @@ pub struct InstalledCapability {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct RegistryLock {
     #[serde(default = "registry_lock_version")]
     pub lockfile_version: u32,
@@ -174,6 +189,7 @@ pub struct RegistryLock {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct LockedRegistry {
     #[serde(rename = "type")]
     pub source_type: String,
@@ -196,6 +212,7 @@ pub struct LockedRegistry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct InstalledRegistrySkill {
     pub id: String,
     pub target: String,
@@ -236,7 +253,30 @@ pub fn load_config(workspace: &Path) -> RainyResult<ProjectConfig> {
         ));
     }
     let content = std::fs::read_to_string(&path)?;
+    validate_project_top_level(&content)?;
     let config: ProjectConfig = serde_yaml::from_str(&content)?;
+    if config.api_version != "rainy.dev/v1" {
+        return Err(RainyError::config(
+            "CONFIG_API_VERSION_UNSUPPORTED",
+            format!("unsupported rainy.yaml apiVersion: {}", config.api_version),
+        ));
+    }
+    if config.kind != "Project" {
+        return Err(RainyError::config(
+            "CONFIG_KIND_INVALID",
+            format!("rainy.yaml kind must be Project, found {}", config.kind),
+        ));
+    }
+    if let Some(field) = config
+        .extension_fields
+        .keys()
+        .find(|field| !field.starts_with("x-"))
+    {
+        return Err(RainyError::config(
+            "CONFIG_UNKNOWN_FIELD",
+            format!("unknown rainy.yaml field '{field}'; use extensions or an x-* field"),
+        ));
+    }
     if config.project.name.trim().is_empty() {
         return Err(RainyError::config(
             "CONFIG_INVALID",
@@ -244,6 +284,40 @@ pub fn load_config(workspace: &Path) -> RainyResult<ProjectConfig> {
         ));
     }
     Ok(config)
+}
+
+fn validate_project_top_level(content: &str) -> RainyResult<()> {
+    let value: serde_yaml::Value = serde_yaml::from_str(content)?;
+    let mapping = value.as_mapping().ok_or_else(|| {
+        RainyError::config("CONFIG_INVALID", "rainy.yaml must contain a YAML object")
+    })?;
+    const CORE_FIELDS: &[&str] = &[
+        "apiVersion",
+        "kind",
+        "project",
+        "stack",
+        "paths",
+        "package",
+        "capabilityRegistry",
+        "policy",
+        "verify",
+        "extensions",
+    ];
+    for key in mapping.keys() {
+        let Some(key) = key.as_str() else {
+            return Err(RainyError::config(
+                "CONFIG_UNKNOWN_FIELD",
+                "rainy.yaml field names must be strings",
+            ));
+        };
+        if !CORE_FIELDS.contains(&key) && !key.starts_with("x-") {
+            return Err(RainyError::config(
+                "CONFIG_UNKNOWN_FIELD",
+                format!("unknown rainy.yaml field '{key}'; use extensions or an x-* field"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn serialize_config(config: &ProjectConfig) -> RainyResult<String> {
@@ -259,7 +333,17 @@ pub fn load_lock(workspace: &Path) -> RainyResult<CapabilityLock> {
         ));
     }
     let content = std::fs::read_to_string(&path)?;
-    Ok(serde_yaml::from_str(&content)?)
+    let lock: CapabilityLock = serde_yaml::from_str(&content)?;
+    if lock.lockfile_version != 1 {
+        return Err(RainyError::config(
+            "LOCK_VERSION_UNSUPPORTED",
+            format!(
+                "unsupported capability.lock lockfileVersion: {}",
+                lock.lockfile_version
+            ),
+        ));
+    }
+    Ok(lock)
 }
 
 pub fn load_registry_lock(workspace: &Path) -> RainyResult<RegistryLock> {
@@ -271,7 +355,17 @@ pub fn load_registry_lock(workspace: &Path) -> RainyResult<RegistryLock> {
         });
     }
     let content = std::fs::read_to_string(path)?;
-    Ok(serde_yaml::from_str(&content)?)
+    let lock: RegistryLock = serde_yaml::from_str(&content)?;
+    if lock.lockfile_version != registry_lock_version() {
+        return Err(RainyError::config(
+            "REGISTRY_LOCK_VERSION_UNSUPPORTED",
+            format!(
+                "unsupported registry lockfileVersion: {}",
+                lock.lockfile_version
+            ),
+        ));
+    }
+    Ok(lock)
 }
 
 pub fn save_registry_lock_content(lock: &RegistryLock) -> RainyResult<String> {

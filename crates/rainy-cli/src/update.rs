@@ -19,6 +19,8 @@ const UPDATE_PROTOCOL: &str = "rainy.update.v1";
 pub struct UpdateReport {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
+    pub operation: String,
+    pub status: String,
     pub repository: String,
     pub current_version: String,
     pub latest_version: Option<String>,
@@ -29,6 +31,8 @@ pub struct UpdateReport {
     pub next_check_after: DateTime<Utc>,
     pub release_type: String,
     pub target_asset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apply_command: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -55,8 +59,17 @@ struct GitHubRelease {
 pub fn handle_self_command(command: SelfCommand) -> RainyResult<CommandOutput> {
     match command.command {
         SelfSubcommand::Check(args) => check_command(args.repo),
-        SelfSubcommand::Update(args) => update_command(args.force, args.version, args.repo),
-        SelfSubcommand::Skip(args) => skip_command(args.version, args.repo),
+        SelfSubcommand::Update(args) => update_command(
+            args.force,
+            args.version,
+            args.repo,
+            resolve_apply_flags(args.dry_run, args.apply)?,
+        ),
+        SelfSubcommand::Skip(args) => skip_command(
+            args.version,
+            args.repo,
+            resolve_apply_flags(args.dry_run, args.apply)?,
+        ),
     }
 }
 
@@ -81,7 +94,7 @@ pub fn maybe_notify(json: bool, quiet: bool, is_self_command: bool) {
         && let Some(latest) = &report.latest_version
     {
         eprintln!(
-            "Rainy CLI update available: {} -> {latest}. Run `rainy self update` to update, or `rainy self skip {latest}` to skip this version.",
+            "Rainy CLI update available: {} -> {latest}. Run `rainy self update --apply` to update, or `rainy self skip {latest} --apply` to skip this version.",
             report.current_version
         );
     }
@@ -106,22 +119,36 @@ fn update_command(
     force: bool,
     version: Option<String>,
     repo: Option<String>,
+    apply: bool,
 ) -> RainyResult<CommandOutput> {
     let mut state = load_state().unwrap_or_default();
-    let target_version = match version {
-        Some(version) => parse_version(&version)?.to_string(),
+    let mut report = match version.as_deref() {
+        Some(version) => report_for_version(repo.as_deref(), version, "update")?,
         None => {
-            let report = check_latest_with_state(&mut state, repo.as_deref())?;
-            let target = report.latest_version.clone().ok_or_else(|| {
+            let mut report = check_latest_with_state(&mut state, repo.as_deref())?;
+            report.operation = "update".to_string();
+            report.latest_version.clone().ok_or_else(|| {
                 RainyError::config("UPDATE_VERSION_INVALID", "latest release has no version")
             })?;
-            if !report.update_available && !force {
-                save_state(&state)?;
-                return Ok(CommandOutput::Update { report });
-            }
-            target
+            report
         }
     };
+    let target_version = report.latest_version.clone().ok_or_else(|| {
+        RainyError::config("UPDATE_VERSION_INVALID", "selected release has no version")
+    })?;
+    report.apply_command = Some(update_apply_command(
+        repo.as_deref(),
+        version.as_deref(),
+        force,
+    )?);
+    if !report.update_available && !force {
+        report.status = "passed".to_string();
+        return Ok(CommandOutput::Update { report });
+    }
+    if !apply {
+        report.status = "dry-run".to_string();
+        return Ok(CommandOutput::Update { report });
+    }
 
     run_install_script(repo.as_deref(), &target_version)?;
     verify_installed_version(&target_version)?;
@@ -130,27 +157,44 @@ fn update_command(
     state.skip_repository = None;
     state.last_checked = Some(Utc::now());
     save_state(&state)?;
-    Ok(CommandOutput::message(format!(
-        "Rainy CLI {target_version} installed and verified."
-    )))
+    report.status = "applied".to_string();
+    report.skipped = false;
+    report.apply_command = None;
+    Ok(CommandOutput::Update { report })
 }
 
-fn skip_command(version: Option<String>, repo: Option<String>) -> RainyResult<CommandOutput> {
+fn skip_command(
+    version: Option<String>,
+    repo: Option<String>,
+    apply: bool,
+) -> RainyResult<CommandOutput> {
     let mut state = load_state().unwrap_or_default();
     let repository = repository_slug(repo.as_deref())?;
-    let version = match version {
-        Some(version) => parse_version(&version)?.to_string(),
+    let mut report = match version.as_deref() {
+        Some(version) => report_for_version(Some(&repository), version, "skip")?,
         None => {
-            let report = check_latest_with_state(&mut state, Some(&repository))?;
-            report.latest_version.unwrap_or_else(current_version)
+            let mut report = check_latest_with_state(&mut state, Some(&repository))?;
+            report.operation = "skip".to_string();
+            report
         }
     };
-    state.skip_version = Some(version.clone());
+    let version = report
+        .latest_version
+        .clone()
+        .unwrap_or_else(current_version);
+    report.apply_command = Some(skip_apply_command(repo.as_deref(), &version)?);
+    if !apply {
+        report.status = "dry-run".to_string();
+        report.skipped = false;
+        return Ok(CommandOutput::Update { report });
+    }
+    state.skip_version = Some(version);
     state.skip_repository = Some(repository);
     save_state(&state)?;
-    Ok(CommandOutput::message(format!(
-        "Skipped Rainy update version {version}."
-    )))
+    report.status = "applied".to_string();
+    report.skipped = true;
+    report.apply_command = None;
+    Ok(CommandOutput::Update { report })
 }
 
 fn check_latest_with_state(
@@ -169,6 +213,8 @@ fn check_latest_with_state(
     let checked_at = state.last_checked.unwrap_or_else(Utc::now);
     Ok(UpdateReport {
         protocol_version: UPDATE_PROTOCOL.to_string(),
+        operation: "check".to_string(),
+        status: "passed".to_string(),
         repository: repository.clone(),
         current_version: current,
         latest_version: Some(latest),
@@ -179,7 +225,81 @@ fn check_latest_with_state(
         next_check_after: checked_at + Duration::hours(check_interval_hours()),
         release_type: "stable".to_string(),
         target_asset: target_asset(),
+        apply_command: None,
     })
+}
+
+fn report_for_version(
+    repo: Option<&str>,
+    version: &str,
+    operation: &str,
+) -> RainyResult<UpdateReport> {
+    let repository = repository_slug(repo)?;
+    let latest = parse_version(version)?.to_string();
+    let current = current_version();
+    let checked_at = Utc::now();
+    Ok(UpdateReport {
+        protocol_version: UPDATE_PROTOCOL.to_string(),
+        operation: operation.to_string(),
+        status: "dry-run".to_string(),
+        repository: repository.clone(),
+        current_version: current.clone(),
+        latest_version: Some(latest.clone()),
+        update_available: version_gt(&latest, &current)?,
+        skipped: false,
+        install_command: install_command(&repository),
+        checked_at,
+        next_check_after: checked_at + Duration::hours(check_interval_hours()),
+        release_type: "stable".to_string(),
+        target_asset: target_asset(),
+        apply_command: None,
+    })
+}
+
+fn resolve_apply_flags(dry_run: bool, apply: bool) -> RainyResult<bool> {
+    if dry_run && apply {
+        return Err(RainyError::config(
+            "APPLY_MODE_CONFLICT",
+            "--dry-run and --apply cannot be used together",
+        ));
+    }
+    Ok(apply)
+}
+
+fn update_apply_command(
+    repo: Option<&str>,
+    version: Option<&str>,
+    force: bool,
+) -> RainyResult<String> {
+    let mut command = vec![
+        "rainy".to_string(),
+        "self".to_string(),
+        "update".to_string(),
+    ];
+    if let Some(repo) = repo {
+        command.extend(["--repo".to_string(), repository_slug(Some(repo))?]);
+    }
+    if let Some(version) = version {
+        command.extend([
+            "--version".to_string(),
+            format!("v{}", parse_version(version)?),
+        ]);
+    }
+    if force {
+        command.push("--force".to_string());
+    }
+    command.push("--apply".to_string());
+    Ok(command.join(" "))
+}
+
+fn skip_apply_command(repo: Option<&str>, version: &str) -> RainyResult<String> {
+    let mut command = vec!["rainy".to_string(), "self".to_string(), "skip".to_string()];
+    if let Some(repo) = repo {
+        command.extend(["--repo".to_string(), repository_slug(Some(repo))?]);
+    }
+    command.push(format!("v{}", parse_version(version)?));
+    command.push("--apply".to_string());
+    Ok(command.join(" "))
 }
 
 fn latest_release_version(repository: &str) -> RainyResult<String> {
@@ -234,9 +354,9 @@ fn run_install_script(repo: Option<&str>, version: &str) -> RainyResult<()> {
         .map(PathBuf::from)
         .or_else(|| config_home().map(|home| home.join("bin")))
         .ok_or_else(|| {
-            RainyError::config("UPDATE_INSTALL_FAILED", "cannot resolve install directory")
+            RainyError::action("UPDATE_INSTALL_FAILED", "cannot resolve install directory")
         })?;
-    let status = if cfg!(windows) {
+    let output = if cfg!(windows) {
         let mut command = std::process::Command::new("powershell");
         command
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
@@ -244,7 +364,12 @@ fn run_install_script(repo: Option<&str>, version: &str) -> RainyResult<()> {
             .env("RAINY_REPO", &repository)
             .env("RAINY_VERSION", &version)
             .env("INSTALL_DIR", &install_dir);
-        command.status()
+        crate::process::run_command(
+            command,
+            "powershell",
+            StdDuration::from_secs(900),
+            crate::process::DEFAULT_OUTPUT_LIMIT,
+        )
     } else {
         let mut shell = std::process::Command::new("sh");
         shell
@@ -252,14 +377,22 @@ fn run_install_script(repo: Option<&str>, version: &str) -> RainyResult<()> {
             .env("RAINY_REPO", &repository)
             .env("RAINY_VERSION", &version)
             .env("INSTALL_DIR", &install_dir);
-        shell.status()
+        crate::process::run_command(
+            shell,
+            "sh",
+            StdDuration::from_secs(900),
+            crate::process::DEFAULT_OUTPUT_LIMIT,
+        )
     };
     let _ = std::fs::remove_file(&script_path);
-    let status = status?;
-    if !status.success() {
-        return Err(RainyError::config(
+    let output = output?;
+    if !output.success() {
+        return Err(RainyError::action(
             "UPDATE_INSTALL_FAILED",
-            format!("installer exited with status {status}"),
+            format!(
+                "installer did not complete successfully: {}",
+                output.stderr.trim()
+            ),
         ));
     }
     Ok(())
@@ -408,25 +541,9 @@ fn non_empty_env(key: &str) -> Option<String> {
 }
 
 fn validate_update_url(url: &str, error_code: &'static str) -> RainyResult<()> {
-    if url.starts_with("https://") || is_loopback_http_url(url) {
-        return Ok(());
-    }
-    Err(RainyError::config(
-        error_code,
-        format!("only HTTPS or loopback HTTP update URLs are allowed: {url}"),
-    ))
-}
-
-fn is_loopback_http_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("http://") else {
-        return false;
-    };
-    let authority = rest.split('/').next().unwrap_or_default();
-    let host = authority
-        .strip_prefix('[')
-        .and_then(|value| value.split(']').next())
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or_default());
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
+    crate::security::validate_http(url, true).map_err(|reason| {
+        RainyError::config(error_code, format!("update URL is not allowed: {reason}"))
+    })
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -494,18 +611,7 @@ fn state_path() -> Option<PathBuf> {
 }
 
 fn config_home() -> Option<PathBuf> {
-    std::env::var_os("RAINY_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".rainy"))
-        })
-        .or_else(|| {
-            std::env::var_os("USERPROFILE")
-                .map(PathBuf::from)
-                .map(|home| home.join(".rainy"))
-        })
+    crate::paths::rainy_home().ok()
 }
 
 fn load_state() -> RainyResult<UpdateState> {
@@ -594,20 +700,24 @@ fn verify_installed_version(expected: &str) -> RainyResult<()> {
         .or_else(|| config_home().map(|home| home.join("bin")))
         .map(|dir| dir.join(if cfg!(windows) { "rainy.exe" } else { "rainy" }))
         .ok_or_else(|| {
-            RainyError::config("UPDATE_VERIFY_FAILED", "cannot resolve install directory")
+            RainyError::action("UPDATE_VERIFY_FAILED", "cannot resolve install directory")
         })?;
-    let output = std::process::Command::new(&binary)
-        .arg("--version")
-        .output()
-        .map_err(|err| {
-            RainyError::config(
-                "UPDATE_VERIFY_FAILED",
-                format!("failed to run {}: {err}", binary.display()),
-            )
-        })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if !output.status.success() || !stdout.trim_end().ends_with(expected) {
-        return Err(RainyError::config(
+    let mut command = std::process::Command::new(&binary);
+    command.arg("--version");
+    let output = crate::process::run_command(
+        command,
+        &binary,
+        StdDuration::from_secs(30),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )
+    .map_err(|err| {
+        RainyError::action(
+            "UPDATE_VERIFY_FAILED",
+            format!("failed to run {}: {}", binary.display(), err.body().message),
+        )
+    })?;
+    if !output.success() || !output.stdout.trim_end().ends_with(expected) {
+        return Err(RainyError::action(
             "UPDATE_VERIFY_FAILED",
             format!("installed binary did not report version {expected}"),
         ));

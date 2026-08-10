@@ -16,7 +16,7 @@
         "owner": { "type": "string" },
         "description": { "type": "string" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "exports": {
       "type": "object",
@@ -38,8 +38,14 @@
           "items": { "type": "string" }
         }
       },
-      "additionalProperties": true
-    }
+      "additionalProperties": false
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "extensions": { "type": "object" }
   },
-  "additionalProperties": true
+  "patternProperties": { "^x-[A-Za-z0-9._-]+$": true },
+  "additionalProperties": false
 }

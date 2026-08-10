@@ -108,6 +108,7 @@ resolved="$(
   HOME="$tmp_dir/home" \
     INSTALL_DIR="$install_dir" \
     RAINY_SKILL_FORCE_INSTALL=1 \
+    RAINY_SKILL_VERSION=v0.5.0 \
     RAINY_SKILL_RELEASE_URL="$release_url" \
     sh "$BOOTSTRAP" 2>"$tmp_dir/install.log"
 )"
@@ -118,6 +119,7 @@ printf '%064d  install.sh\n' 0 >"$release_dir/installers.sha256"
 if HOME="$tmp_dir/home" \
   INSTALL_DIR="$tmp_dir/rejected" \
   RAINY_SKILL_FORCE_INSTALL=1 \
+  RAINY_SKILL_VERSION=v0.5.0 \
   RAINY_SKILL_RELEASE_URL="$release_url" \
   sh "$BOOTSTRAP" >/dev/null 2>"$tmp_dir/checksum.log"; then
   fail "bootstrap accepted an installer with the wrong checksum"
@@ -126,11 +128,24 @@ grep -q "checksum verification failed" "$tmp_dir/checksum.log" \
   || fail "bootstrap checksum failure was not explanatory"
 
 if RAINY_SKILL_FORCE_INSTALL=1 \
+  RAINY_SKILL_VERSION=v0.5.0 \
   RAINY_SKILL_RELEASE_URL="http://example.com/release" \
   sh "$BOOTSTRAP" >/dev/null 2>"$tmp_dir/url.log"; then
   fail "bootstrap accepted a non-loopback HTTP release URL"
 fi
 grep -q "release URL must use HTTPS or loopback HTTP" "$tmp_dir/url.log" \
   || fail "bootstrap URL rejection was not explanatory"
+
+if RAINY_SKILL_FORCE_INSTALL=1 \
+  RAINY_SKILL_VERSION=v0.5.0 \
+  RAINY_SKILL_RELEASE_URL="https://rainy:hunter2@example.com/release" \
+  sh "$BOOTSTRAP" >/dev/null 2>"$tmp_dir/credential-url.log"; then
+  fail "bootstrap accepted embedded URL credentials"
+fi
+grep -q "embedded URL credentials are not allowed" "$tmp_dir/credential-url.log" \
+  || fail "bootstrap credential URL rejection was not explanatory"
+if grep -q "hunter2" "$tmp_dir/credential-url.log"; then
+  fail "bootstrap credential URL rejection leaked the password"
+fi
 
 echo "skill tests passed"

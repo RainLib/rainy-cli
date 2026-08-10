@@ -3,7 +3,7 @@ members = ["crates/rainy-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -21,12 +21,13 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 ctrlc = "3.4"
-dialoguer = "0.11"
+command-group = "=5.0.1"
 flate2 = "1.1"
 globset = "0.4"
 fs2 = "0.4"
 handlebars = "6.3"
 include_dir = "0.7"
+inquire = { version = "=0.9.4", features = ["fuzzy"] }
 jsonschema = { version = "0.33", default-features = false }
 similar = "2.7"
 serde = { version = "1.0", features = ["derive"] }
@@ -34,10 +35,13 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 sha2 = "0.10"
 semver = "1.0"
+shell-words = "1.1"
 thiserror = "2.0"
+terminal_size = "0.4"
 toml = "0.9"
 tar = "0.4"
 ureq = { version = "2.12", default-features = true }
+url = "2.5"
 walkdir = "2.5"
 wasmtime = "36.0.8"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }

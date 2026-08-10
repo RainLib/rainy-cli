@@ -1,7 +1,7 @@
 param(
   [string]$Repo = $(if ($env:RAINY_REPO) { $env:RAINY_REPO } else { "RainLib/rainy-cli" }),
   [string]$Version = $(if ($env:RAINY_VERSION) { $env:RAINY_VERSION } else { "latest" }),
-  [string]$InstallDir = $(if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $HOME ".rainy\bin" }),
+  [string]$InstallDir = $(if ($env:INSTALL_DIR) { $env:INSTALL_DIR } elseif ($env:RAINY_HOME) { Join-Path $env:RAINY_HOME "bin" } elseif ($HOME) { Join-Path $HOME ".rainy\bin" } else { Join-Path $env:USERPROFILE ".rainy\bin" }),
   [string]$BaseUrl = $(if ($env:RAINY_INSTALLER_BASE_URL) { $env:RAINY_INSTALLER_BASE_URL } else { "" }),
   [string]$ReleaseBaseUrl = $(if ($env:RAINY_RELEASE_BASE_URL) { $env:RAINY_RELEASE_BASE_URL } else { "" }),
   [string]$LatestVersionUrl = $(if ($env:RAINY_LATEST_VERSION_URL) { $env:RAINY_LATEST_VERSION_URL } else { "" }),
@@ -71,7 +71,7 @@ function Add-RainyToPath {
 function Save-RainyReleaseSource {
   param([string]$Url)
   if (-not $Url) { return }
-  $RainyHome = if ($env:RAINY_HOME) { $env:RAINY_HOME } else { Join-Path $HOME ".rainy" }
+  $RainyHome = if ($env:RAINY_HOME) { $env:RAINY_HOME } elseif ($HOME) { Join-Path $HOME ".rainy" } else { Join-Path $env:USERPROFILE ".rainy" }
   New-Item -ItemType Directory -Force -Path $RainyHome | Out-Null
   $SourceFile = Join-Path $RainyHome "release-source"
   $Temporary = "$SourceFile.tmp.$PID"
@@ -95,8 +95,15 @@ function Invoke-RainyDownload {
 
 function Assert-RainyDownloadUrl {
   param([string]$Uri)
-  if ($Uri -notmatch '^https://' -and $Uri -notmatch '^http://(127\.0\.0\.1|localhost)(:\d+)?(/|$)') {
-    throw "rainy installer: download URL must use HTTPS or loopback HTTP: $Uri"
+  try { $Parsed = [System.Uri]$Uri } catch { throw "rainy installer: download URL is invalid" }
+  if (-not $Parsed.IsAbsoluteUri) { throw "rainy installer: download URL is invalid" }
+  if ($Parsed.UserInfo) { throw "rainy installer: embedded URL credentials are not allowed" }
+  if ($Parsed.Query -match '(?i)(^|[?&])(access_key|api_?key|authorization|credential|password|secret|signature|token)=') {
+    throw "rainy installer: sensitive authentication query parameters are not allowed"
+  }
+  $LoopbackHttp = $Parsed.Scheme -eq 'http' -and ($Parsed.Host -eq 'localhost' -or $Parsed.Host -eq '127.0.0.1' -or $Parsed.Host -eq '::1')
+  if ($Parsed.Scheme -ne 'https' -and -not $LoopbackHttp) {
+    throw "rainy installer: download URL must use HTTPS or loopback HTTP"
   }
 }
 

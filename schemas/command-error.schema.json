@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/command-error.schema.json",
+  "title": "Rainy Command Error",
+  "type": "object",
+  "required": ["protocolVersion", "status", "error"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.command.v1" },
+    "status": { "const": "error" },
+    "traceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "category", "message", "retryable", "nextSteps"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z0-9_]+$" },
+        "category": { "type": "string" },
+        "message": { "type": "string" },
+        "details": true,
+        "retryable": { "type": "boolean" },
+        "nextSteps": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

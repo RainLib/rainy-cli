@@ -18,9 +18,9 @@
           "summary": { "type": "string" },
           "noop": { "type": "boolean" }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

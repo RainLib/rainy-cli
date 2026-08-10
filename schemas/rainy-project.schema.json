@@ -15,6 +15,10 @@
         "type": { "type": "string" },
         "owner": { "type": "string" }
       },
+      "additionalProperties": false
+    },
+    "stack": {
+      "type": "object",
       "additionalProperties": true
     },
     "paths": {
@@ -26,7 +30,7 @@
         "generated": { "type": "string" },
         "evidence": { "type": "string" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "package": {
       "type": "object",
@@ -35,7 +39,7 @@
         "java": { "type": "string" },
         "npmScope": { "type": "string" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "capabilityRegistry": {
       "type": "object",
@@ -60,11 +64,11 @@
                 "pattern": "^[A-Fa-f0-9]{64}$"
               }
             },
-            "additionalProperties": true
+            "additionalProperties": false
           }
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "policy": {
       "type": "object",
@@ -86,8 +90,25 @@
           "items": { "type": "string" }
         }
       },
-      "additionalProperties": true
-    }
+      "additionalProperties": false
+    },
+    "verify": {
+      "type": "object",
+      "properties": {
+        "profiles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": { "type": "object" }
   },
-  "additionalProperties": true
+  "patternProperties": {
+    "^x-[A-Za-z0-9._-]+$": true
+  },
+  "additionalProperties": false
 }

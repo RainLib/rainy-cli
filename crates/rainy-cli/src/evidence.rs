@@ -41,10 +41,25 @@ struct EvidenceChange {
     artifacts: Vec<String>,
 }
 
-pub fn generate_command(workspace: &Path, format: EvidenceFormat) -> RainyResult<CommandOutput> {
+pub fn generate_command(
+    workspace: &Path,
+    format: EvidenceFormat,
+    apply: bool,
+) -> RainyResult<CommandOutput> {
     let config = config::load_config(workspace)?;
-    let lock = config::load_lock(workspace)?;
     let evidence_path = config.paths.evidence.clone();
+    let planned_files = evidence_files(&evidence_path, &format);
+    if !apply {
+        return Ok(CommandOutput::Evidence {
+            status: "dry-run",
+            files: planned_files,
+            apply_command: Some(format!(
+                "rainy evidence generate --format {} --apply",
+                evidence_format_name(&format)
+            )),
+        });
+    }
+    let lock = config::load_lock(workspace)?;
     let evidence_dir = workspace.join(&evidence_path);
     std::fs::create_dir_all(&evidence_dir)?;
     let doctor = doctor::run_doctor(workspace, None)?;
@@ -94,9 +109,29 @@ pub fn generate_command(workspace: &Path, format: EvidenceFormat) -> RainyResult
     }
 
     Ok(CommandOutput::Evidence {
-        status: "generated",
+        status: "applied",
         files,
+        apply_command: None,
     })
+}
+
+fn evidence_format_name(format: &EvidenceFormat) -> &'static str {
+    match format {
+        EvidenceFormat::Markdown => "markdown",
+        EvidenceFormat::Json => "json",
+        EvidenceFormat::All => "all",
+    }
+}
+
+fn evidence_files(root: &str, format: &EvidenceFormat) -> Vec<String> {
+    let mut files = Vec::new();
+    if matches!(format, EvidenceFormat::Markdown | EvidenceFormat::All) {
+        files.push(format!("{root}/report.md"));
+    }
+    if matches!(format, EvidenceFormat::Json | EvidenceFormat::All) {
+        files.push(format!("{root}/report.json"));
+    }
+    files
 }
 
 fn markdown(report: &EvidenceReport) -> String {

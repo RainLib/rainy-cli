@@ -3,7 +3,8 @@ SHELL := /bin/sh
 CARGO ?= cargo
 PYTHON ?= python3
 RAINY_BIN ?= target/debug/rainy
-INSTALL_DIR ?= $(HOME)/.rainy/bin
+RAINY_HOME ?= $(HOME)/.rainy
+INSTALL_DIR ?= $(RAINY_HOME)/bin
 LOCAL_INSTALL_BIN ?= target/release/rainy
 
 PROJECT ?= demo-saas
@@ -26,7 +27,7 @@ help:
 	@printf '%s\n' '  make build              Build debug binary'
 	@printf '%s\n' '  make release            Build release binary'
 	@printf '%s\n' '  make install            Install rainy via cargo install --path'
-	@printf '%s\n' '  make install-local      Build and atomically replace $(INSTALL_DIR)/rainy'
+	@printf '%s\n' '  make install-local      Replace $(INSTALL_DIR)/rainy and snapshot local Defaults'
 	@printf '%s\n' '  make install-script     Install from GitHub Release via scripts/install.sh'
 	@printf '%s\n' '  make uninstall          Uninstall rainy-cli cargo package'
 	@printf '%s\n' ''
@@ -39,9 +40,9 @@ help:
 	@printf '%s\n' '  make check              fmt-check + test + clippy'
 	@printf '%s\n' '  make ci                 Full local CI smoke'
 	@printf '%s\n' '  make release-check      Local checks before tagging a GitHub Release'
-	@printf '%s\n' '  make production-check   Alias for release-check'
+	@printf '%s\n' '  make production-check   Release checks plus required cargo audit/deny'
 	@printf '%s\n' '  make repo-check         Check repository metadata and stale release URLs'
-	@printf '%s\n' '  make security-check     Run cargo audit/deny when installed'
+	@printf '%s\n' '  make security-check     Require and run cargo audit/deny'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Protocol / integration checks:'
 	@printf '%s\n' '  make schema-check       Parse all schema JSON files'
@@ -50,6 +51,7 @@ help:
 	@printf '%s\n' '  make skill-check        Validate Rainy/Comet Skills and bootstrap installers'
 	@printf '%s\n' '  make installer-check    Syntax-check installer scripts where possible'
 	@printf '%s\n' '  make installer-test     Run installer platform/checksum tests'
+	@printf '%s\n' '  make tty-check          Run Unix PTY interaction and terminal recovery tests'
 	@printf '%s\n' '  make mirror-test        Test OSS mirror publication ordering'
 	@printf '%s\n' '  make release-input-test Validate release tag/version gates'
 	@printf '%s\n' '  make smoke              JSON smoke commands'
@@ -96,7 +98,10 @@ install-local: release
 	mv -f "$$temporary" "$$destination"; \
 	trap - EXIT HUP INT TERM; \
 	printf '%s\n' "Installed local Rainy binary: $$destination"; \
-	"$$destination" --version
+	"$$destination" --version; \
+	RAINY_HOME="$(RAINY_HOME)" RAINY_NO_UPDATE_CHECK=1 "$$destination" defaults update \
+		--source "$(CURDIR)" --ref local-worktree --apply; \
+	printf '%s\n' "Installed local Defaults snapshot under $(RAINY_HOME)/defaults"
 
 .PHONY: install-script
 install-script:
@@ -162,6 +167,10 @@ installer-check:
 installer-test:
 	sh scripts/test-install.sh
 
+.PHONY: tty-check
+tty-check: build
+	$(PYTHON) scripts/test-tty.py $(RAINY_BIN)
+
 .PHONY: mirror-test
 mirror-test:
 	sh scripts/test-publish-oss.sh
@@ -187,17 +196,19 @@ repo-check:
 
 .PHONY: security-check
 security-check:
-	@if command -v cargo-audit >/dev/null 2>&1; then cargo audit; else printf '%s\n' 'cargo-audit not found; security workflow installs and runs it'; fi
-	@if command -v cargo-deny >/dev/null 2>&1; then cargo deny check; else printf '%s\n' 'cargo-deny not found; security workflow installs and runs it'; fi
+	@command -v cargo-audit >/dev/null 2>&1 || { printf '%s\n' 'cargo-audit not found; install cargo-audit 0.22.2 before production-check' >&2; exit 1; }
+	@command -v cargo-deny >/dev/null 2>&1 || { printf '%s\n' 'cargo-deny not found; install cargo-deny 0.19.4 before production-check' >&2; exit 1; }
+	cargo audit
+	cargo deny check
 
 .PHONY: ci
-ci: fmt-check test clippy schema-check mcp-check skill-check installer-check installer-test mirror-test release-input-test smoke repo-check
+ci: fmt-check test clippy schema-check mcp-check skill-check installer-check installer-test tty-check mirror-test release-input-test smoke repo-check
 
 .PHONY: release-check
 release-check: ci
 
 .PHONY: production-check
-production-check: release-check
+production-check: release-check security-check
 
 .PHONY: demo-dry-run
 demo-dry-run: build

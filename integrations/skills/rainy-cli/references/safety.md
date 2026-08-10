@@ -47,6 +47,8 @@
 ## Reporting
 
 - Reuse one trace ID across commands serving the same request.
+- Parse command results from `rainy.command.v1.data`; parse operational errors from `stderr.error`.
+- Treat exit `4` as a complete failed check report on `stdout`, not as a missing result.
 - Report plan path, applied files, verification result, and unresolved warnings.
 - Do not claim success when strict verification was skipped or failed.
 

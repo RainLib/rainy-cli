@@ -44,7 +44,7 @@ Use the same dry-run, review, and explicit apply sequence for capability upgrade
 "$RAINY_BIN" --workspace "$WORKSPACE" doctor --json
 "$RAINY_BIN" --workspace "$WORKSPACE" verify --profile local --json
 "$RAINY_BIN" --workspace "$WORKSPACE" verify --profile ci --json
-"$RAINY_BIN" --workspace "$WORKSPACE" evidence generate --format all --json
+"$RAINY_BIN" --workspace "$WORKSPACE" evidence generate --format all --apply --json
 ```
 
 Use `local` during interactive development. Use `ci` as the strict production gate.
@@ -52,8 +52,8 @@ Use `local` during interactive development. Use `ci` as the strict production ga
 ## Synchronize Agent Context
 
 ```sh
-"$RAINY_BIN" --workspace "$WORKSPACE" agent init --json
-"$RAINY_BIN" --workspace "$WORKSPACE" skill sync --json
+"$RAINY_BIN" --workspace "$WORKSPACE" agent init --apply --json
+"$RAINY_BIN" --workspace "$WORKSPACE" skill sync --apply --json
 ```
 
 These commands synchronize project context and installed capability information. They do not replace this model-facing Skill package.
@@ -77,7 +77,11 @@ Superpowers + Comet profile with an explicit project Skill selection:
 "$RAINY_BIN" --workspace "$WORKSPACE" skill doctor --json
 ```
 
-`init`, `install`, `update`, and `uninstall` preview by default. In a JSON dry-run report, present `report.applyCommand` for approval and execute that exact Rainy command only after approval. `report.command` is the upstream command Rainy will invoke internally during apply; never execute it as a substitute for `report.applyCommand`. `--yes` is accepted as an explicit alias for `--apply`, but generated automation should prefer the canonical `--apply` spelling.
+`init`, `install`, `update`, and `uninstall` preview by default. In a JSON preview, read
+`data.report.applyCommand`, present it for approval, and execute that exact Rainy command only after
+approval. `data.report.command` is an upstream command Rainy may invoke internally; never execute it as
+a substitute. `--yes` is an explicit alias for `--apply`, but generated automation should prefer
+the canonical spelling.
 
 The target and Skill lists above are illustrative. Agents must pass only hosts and project Skills selected
 by the user and must not enter interactive selectors. Universal `.agents/skills` is added automatically.
@@ -97,8 +101,8 @@ Manage an existing profile:
 "$RAINY_BIN" --workspace "$WORKSPACE" skill uninstall --apply --json
 ```
 
-Do not pass `--profile`, `--language`, `--target`, or package version options when the profile already
-exists. Omit project Skill flags to preserve its current selection. Source directories under
+An existing profile can be intentionally reconfigured with explicit `--profile`, `--language`, and
+`--target` values. Omit selectors only when the current value must be preserved. Source directories under
 `rainy-skills/` remain user-owned and are not removed by uninstall.
 
 Never infer `--apply` approval from a Comet transition. Use `--force` only after reviewing modified managed Skill files.
@@ -108,7 +112,8 @@ Never infer `--apply` approval from a Comet transition. Use `--force` only after
 ```sh
 "$RAINY_BIN" self check --json
 "$RAINY_BIN" self update
-"$RAINY_BIN" self skip <version>
+"$RAINY_BIN" self update --apply
+"$RAINY_BIN" self skip <version> --apply
 ```
 
 ## Enterprise Capabilities

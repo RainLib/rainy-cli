@@ -31,12 +31,6 @@ pub fn handle_conformance_command(command: ConformanceCommand) -> RainyResult<Co
                 None => config::default_registry_path()?,
             };
             let report = check_path(&path)?;
-            if report.status == "failed" {
-                return Err(RainyError::registry(
-                    "CONFORMANCE_FAILED",
-                    serde_json::to_string(&report)?,
-                ));
-            }
             Ok(CommandOutput::Conformance { report })
         }
     }

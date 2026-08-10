@@ -26,9 +26,11 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 ## 核心模块职责
 
-`main.rs` 是命令分发和全局横切逻辑入口。它解析 CLI 参数，执行自更新提示，按命令路由到各模块，并在成功或失败后写 audit log。
+`main.rs` 是命令分发和全局横切逻辑入口。`runtime.rs` 建立统一 `RunContext`，承载解析后的
+工作区、输出模式、终端能力、trace id、取消状态和进度实例；`workspace.rs` 负责向上发现项目，
+`paths.rs` 统一 `RAINY_HOME`、`HOME`、`USERPROFILE` 和系统目录。
 
-`cli.rs` 定义命令树和参数结构。当前命令包括 `new/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/conformance/schema/self`，未知顶层命令会进入 plugin external forwarding。
+`cli.rs` 定义命令树和参数结构。当前命令包括 `new/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/conformance/schema/self`。只有发现同名已安装插件时才启用顶层 external forwarding；其他拼写错误保留 Clap 建议。
 
 `config.rs` 负责 `rainy.yaml` 和 `capability.lock` 的读写。`rainy.yaml` 描述项目、路径、registry source、policy、verify 配置；`capability.lock` 记录已安装能力、provider、版本、artifacts 和 skills。
 
@@ -44,9 +46,11 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 `policy.rs` 是 apply 前的安全门。它合并系统、用户、工作区和 capability policy，检查敏感路径、allow/deny edit、需要审批的 action，以及危险命令。
 
-`doctor.rs`、`verify.rs`、`evidence.rs` 分别负责项目健康检查、能力验证和证据产出。Evidence 会汇总当前配置、lock、doctor、verify 和变更信息，并输出 Markdown/JSON。
+`doctor.rs`、`verify.rs`、`evidence.rs` 分别负责组合式健康检查、跨平台结构化验证和证据产出。
+验证命令使用 `run.program/run.args`，不经过系统 shell；所有外部进程由 `process.rs` 以进程组
+监管，支持取消、超时和双流输出上限。Evidence 会汇总当前配置、lock、doctor、verify 和变更信息。
 
-`plugin.rs` 负责外部扩展。当前支持安装插件、列出/查看插件、调用 plugin action、转发 external command、HTTP adapter 和 Wasm action plugin。插件返回的变更仍要经过权限校验和主 CLI policy gate。
+`plugin.rs` 负责外部扩展。当前支持安装插件、列出/查看插件、调用 plugin action、转发 external command、HTTP adapter 和 Wasm action plugin。Wasm 限制输入/输出、内存、fuel、实例资源和执行时间；插件返回的变更仍要经过权限校验和主 CLI policy gate。
 
 `schema.rs` 和 `conformance.rs` 负责 schema list/validate 以及 pack/plugin conformance 检查。Schema 使用标准 Draft 2020-12 validator，并将仓库内相对引用装配为本地 definitions。
 
@@ -64,7 +68,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - backend/frontend 基础目录
 - compose、CI、openapi、charts、evidence 等目录或文件
 
-`new/init app` 默认会写入文件，也支持 `--dry-run` 预览。
+`new/init app` 默认只预览；显式 `--apply` 或 `--yes` 后才写入文件。
 
 ### 2. 发现能力
 
@@ -135,7 +139,8 @@ print human or JSON output
 
 `rainy verify --profile local` 运行项目配置和 capability validations，适合开发机使用；对 Maven、Node、Docker 等外部工具缺失可给出 warning。`rainy verify --profile ci` 是严格门禁，未知步骤、registry 加载错误、缺失验证工具链都会失败。Golden Path 生成的 GitHub Actions 会准备 Java/Maven/Node/pnpm、安装前端依赖、安装 Rainy CLI，再运行严格 `ci` 验证。
 
-`rainy evidence generate` 会生成 evidence 文件，把配置、已安装能力、doctor、verify 和变更摘要整理成可进入 PR 或审计链路的材料。
+`rainy evidence generate` 默认只预览将生成的 evidence 文件；`rainy evidence generate --apply`
+才会把配置、已安装能力、doctor、verify 和变更摘要写成可进入 PR 或审计链路的材料。
 
 ### 6. Pack 和 Plugin 扩展
 
@@ -172,17 +177,19 @@ rainy skill doctor
 
 所有安装、更新和卸载默认只生成 dry-run report，必须显式 `--apply`。Comet、`skills` CLI 和 Superpowers 均固定到精确 SemVer；OpenSpec/Comet/Superpowers 实际生成的 Skill 路径、管理方和内容摘要写入 `skills.lock`。任一必需组件缺失都会阻止成功安装并使 doctor 失败。Rainy 自有 Skill 和 Rainy 管理的上游 Skill 发生手工修改时，update/uninstall 会拒绝继续，除非用户审阅后指定 `--force`。
 
-交互终端中的 `skill install` 在缺少 profile 时自动初始化：先选择完整组合或 Rainy-only 套件，始终加入 Universal `.agents/skills`，再多选 Codex、Claude、Cursor、GitHub Copilot、Gemini 和 OpenCode 目标，然后从 `rainy-skills/` 多选项目 Skill，最后展示安装摘要并要求独立的 yes/no 确认。已有 profile 时固定套件、语言、宿主和版本，只重新选择项目 Skill。非 TTY、JSON 和 CI 首次使用确定性的 `comet + codex + universal` 默认值且不会提示，必须显式 `--apply`，自定义 Skill 使用 `--skill` 或 `--all-custom-skills` 声明。Comet 初始化前先安装目标宿主下的 `rainy-cli`、`rainy-comet` 和固定版本 Superpowers，使 Comet 检测到 Superpowers 已存在并避免重复安装。Universal 和 Codex 共享 `.agents/skills`，Claude 使用 `.claude/skills`，Cursor 使用 `.cursor/skills` 并兼容从 `.agents/skills` 发现遵循 Universal 标准的上游 Skills；安装后会按摘要把受管的 `.codex/skills`、`.agent/skills` 兼容副本合并到规范通用目录，保留规则、hooks、workflows 和未知用户文件。选中的项目 Skill 复制到每个目标宿主并写入 lock 摘要，安装过程不执行 `scripts/`，源 `rainy-skills/` 不由卸载流程删除。上游初始化完成后，Rainy 使用结构化 YAML 合并 `.comet/config.yaml` 并强制 `auto_transition: false`；Comet 阶段变化不能替代 Rainy apply、原生插件、部署、迁移或 secret 写入审批。
+交互终端中的 `skill install` 在缺少 profile 时自动初始化：先选择完整组合或 Rainy-only 套件，始终加入 Universal `.agents/skills`，再多选 Codex、Claude、Cursor、GitHub Copilot、Gemini 和 OpenCode 目标，然后从 `rainy-skills/` 多选项目 Skill。选择完成后显示安装摘要，确认即执行，不需要再次输入 `--apply`；选择 `n` 返回预览，显式 `--dry-run` 也只预览。已有 profile 时固定套件、语言、宿主和版本，只重新选择项目 Skill。非 TTY、JSON 和 CI 首次使用确定性的 `comet + codex + universal` 默认值且不会提示，仍必须显式 `--apply`，自定义 Skill 使用 `--skill` 或 `--all-custom-skills` 声明。Comet 初始化前先安装目标宿主下的 `rainy-cli`、`rainy-comet` 和固定版本 Superpowers，使 Comet 检测到 Superpowers 已存在并避免重复安装。Universal 和 Codex 共享 `.agents/skills`，Claude 使用 `.claude/skills`，Cursor 使用 `.cursor/skills` 并兼容从 `.agents/skills` 发现遵循 Universal 标准的上游 Skills；安装后会按摘要把受管的 `.codex/skills`、`.agent/skills` 兼容副本合并到规范通用目录，保留规则、hooks、workflows 和未知用户文件。选中的项目 Skill 复制到每个目标宿主并写入 lock 摘要，安装过程不执行 `scripts/`，源 `rainy-skills/` 不由卸载流程删除。上游初始化完成后，Rainy 使用结构化 YAML 合并 `.comet/config.yaml` 并强制 `auto_transition: false`；Comet 阶段变化不能替代 Rainy apply、原生插件、部署、迁移或 secret 写入审批。
 
-`AGENTS.md` 使用 `rainy:context` 管理块更新，保留 Comet block 和用户自定义内容。`rainy skill sync` 对未启用 profile 的旧项目继续保持原有上下文同步行为。
+`AGENTS.md` 使用 `rainy:context` 管理块更新，保留 Comet block 和用户自定义内容。
+`rainy skill sync` 默认预览，`rainy skill sync --apply` 执行；对未启用 profile 的旧项目继续保持
+原有上下文同步行为。
 
 ### 8. 发布、安装和自更新
 
-普通 `main` push 和 pull request 不自动运行构建。推送 `vX.Y.Z` tag 后，release workflow 统一执行
-质量检查、跨平台构建和发布；打 tag 前应在本地执行 `make production-check`。安全 workflow 保留每周
-定时扫描和手动触发。
+普通 `main` push 不触发 Action。Pull request 运行完整质量门禁、依赖安全策略和三系统原生测试。
+推送 `vX.Y.Z` tag 后，release workflow 再次执行质量与安全门禁，然后统一完成五目标构建和发布；
+打 tag 前应在本地执行 `make production-check`。CodeQL 和依赖扫描还保留每周定时与手动触发入口。
 
-Release workflow 在 tag 或手动触发时运行：
+Release workflow 仅在推送版本 tag 时运行：
 
 ```text
 verify release inputs
@@ -227,19 +234,20 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
 - `schemas/*.schema.json`: 对外协议和报告结构的稳定参考。
 - `.rainy/org-policy.yaml`: 仓库级企业策略，使用 `org-policy` schema 校验；系统和用户策略使用相同字段。
 - `.rainy/audit.log`: 命令成功或失败的本地审计记录。
-- JSON 输出：所有主要命令支持 `--json`，供 Agent、MCP、CI 调用。
+- JSON 输出：所有主要命令使用 `{protocolVersion,type,status,traceId,data}` 的
+  `rainy.command.v1` 包装，供 Agent、MCP、CI 调用。
 - 人类输出：结果摘要、下一步、影响范围、可选明细采用固定层级；内部命令和全部路径
   仅由 `--verbose` 展示。错误只输出一次，并包含稳定 code、原因和可执行恢复命令。
-- 进度输出：统一四阶段生命周期写入 `stderr`，TTY 使用带心跳和耗时的动态进度条，
-  `--progress always` 使用稳定逐行日志；失败进度只报告耗时，具体错误由结构化错误块输出一次。
-  `auto` 只用于可能耗时的命令，`--no-color`/`NO_COLOR` 使用逐行输出而不重绘；`--json` 和
-  `--quiet` 强制关闭进度。`Ctrl+C` 清理动态行并以退出码 `130` 退出。
+- 进度输出：真实任务事件写入 `stderr`，TTY 使用 spinner、当前阶段和耗时；`TERM=dumb`、
+  重定向和 `--progress always` 使用稳定逐行事件。`--no-color` 只关闭颜色，不关闭 TTY 原地
+  刷新；`--json` 和 `--quiet` 强制关闭进度。`Ctrl+C` 恢复终端并请求取消，2 秒后终止整个
+  子进程组，以退出码 `130` 结束。
 - Release assets: 多平台 CLI 包、对应 sha256 文件和安装脚本。
 - Model Skill assets: 平台无关的 `rainy-cli-skill`、`rainy-comet-skill` 压缩包及对应 sha256。
 
 ## 当前限制与后续建设
 
-### P0 / 近期
+### 已知边界
 
 - 组合 Skill 当前只管理 project scope；全局宿主目录不由 Rainy 自动写入，避免影响其他仓库。
 - 上游 Comet 当前没有公开的非交互平台参数。Rainy 以所选目标创建和验证受管 Skill，
@@ -247,14 +255,14 @@ CLI 自更新通过 `rainy self check/update/skip` 管理。默认仓库来自 C
   显式 `--platform` 参数，减少对上游平台检测行为的适配。
 - 当前 MCP wrapper 仍是示例级 Python 进程，尚未具备生产 MCP host 的 workspace allowlist、审批交互和独立安装包。
 
-### P1 / 中期
+### 中期演进
 
 - 当前 Rust 实现仍是单 crate 多模块，和最终设计稿的多 crate 分层有差距。建议在接口稳定后拆分 `core/config/registry/plan/actions/policy/plugin/json-protocol`。
 - `verify` 已区分 `local` 和 `ci`：local 适合本地开发，ci 是严格质量门禁。后续可以继续扩展 profile schema，例如显式声明 strict、timeout、required tools。
 - MCP 和 Backstage 已补充部署、权限、版本兼容和打包说明，但实现仍是示例级；模型 Skill 已可独立安装，MCP 尚未发布为独立生产包。
 - Pack 完整性 manifest 可配合 cosign 发布者签名；组织仍需维护受信公钥轮换和撤销流程。
 
-### P2 / 长期
+### 长期演进
 
 - GitHub Release 仍是主发布源，OSS/CDN 镜像当前由发布辅助脚本同步。后续可把镜像上传接入受保护的发布环境，并补 crates.io、Homebrew、npm 或包管理器 tap。
 - audit log 具备预检、文件锁和落盘同步，但仍是本地文件；企业场景需要集中化审计、指标、trace id 贯通和 SIEM/日志平台集成。

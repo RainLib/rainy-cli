@@ -20,11 +20,14 @@
           "durationMs": { "type": "number" },
           "command": { "type": "string" },
           "stdout": { "type": "string" },
-          "stderr": { "type": "string" }
+          "stderr": { "type": "string" },
+          "stdoutTruncated": { "type": "boolean" },
+          "stderrTruncated": { "type": "boolean" },
+          "timedOut": { "type": "boolean" }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

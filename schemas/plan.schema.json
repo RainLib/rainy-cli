@@ -18,9 +18,9 @@
           "uses": { "type": "string" },
           "input": true
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

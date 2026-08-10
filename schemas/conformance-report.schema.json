@@ -17,9 +17,9 @@
           "status": { "enum": ["passed", "warning", "failed"] },
           "message": { "type": "string" }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

@@ -179,7 +179,7 @@ rainy pack verify packs/<PACK>
 ```bash
 rainy doctor --json
 rainy verify --profile ci --json
-rainy evidence generate --format all --json
+rainy evidence generate --format all --apply --json
 ```
 
 把 `rainy.yaml`、`capability.lock`、`rainy-skills.yaml`、`skills.lock` 和 pack source 纳入代码审查；

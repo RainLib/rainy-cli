@@ -122,7 +122,7 @@ metadata:
   description: Company service dependencies, configuration, CI, and model guidance.
 
 requires:
-  rainy: ">=0.4.0, <0.5.0"
+  rainy: ">=0.5.0, <0.6.0"
 
 exports:
   capabilities:
@@ -225,8 +225,12 @@ actions:
 
 validations:
   - id: backend-tests
-    command: ./mvnw test
+    run:
+      program: ./mvnw
+      args: [test]
     workingDirectory: apps/backend
+    timeoutSeconds: 900
+    platforms: [linux, macos, windows]
 
 doctor:
   checks:
@@ -470,9 +474,9 @@ apiVersion: rainy.dev/v1
 kind: RainyDefaults
 metadata:
   name: company-rainy-defaults
-  version: 0.4.0-company.1
+  version: 0.5.0-company.1
 requires:
-  rainy: ">=0.4.0, <0.5.0"
+  rainy: ">=0.5.0, <0.6.0"
 paths:
   packs: community-packs
   skills: integrations/skills
@@ -490,7 +494,7 @@ rainy conformance check --path community-packs --json
 
 ```bash
 export RAINY_DEFAULTS_SOURCE=https://gitlab.example.com/platform/rainy-defaults.git
-export RAINY_DEFAULTS_REF=v0.4.0-company.1
+export RAINY_DEFAULTS_REF=v0.5.0-company.1
 
 rainy defaults install --dry-run
 rainy defaults install --apply
@@ -498,7 +502,8 @@ rainy defaults doctor
 ```
 
 Defaults 缓存位于 `~/.rainy/defaults/rainy-official/<SOURCE_HASH>`，锁位于
-`~/.rainy/defaults.lock`。`RAINY_OFFLINE=1` 禁止网络回源。企业镜像必须保留 `rainy-cli` 和
+`~/.rainy/defaults.lock`。锁记录 package version、resolved revision 和缓存内容 digest；离线加载也会
+复算 digest，拒绝被修改的缓存。`RAINY_OFFLINE=1` 禁止网络回源。企业镜像必须保留 `rainy-cli` 和
 `rainy-comet` 两个 Rainy 管理的 Skill，否则 `rainy skill install` 初始化组合 profile 时会失败。
 
 ## 10. Git 发布和版本策略
@@ -560,9 +565,9 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install Rainy
-        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.4.0/install.sh | RAINY_VERSION=v0.4.0 sh
+        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.0/install.sh | RAINY_VERSION=v0.5.0 sh
       - name: Validate packs
         run: |
           for pack in */pack.yaml; do
@@ -592,7 +597,7 @@ validate-rainy-registry:
   image: ubuntu:24.04
   before_script:
     - apt-get update && apt-get install -y curl git ca-certificates
-    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.4.0/install.sh | RAINY_VERSION=v0.4.0 sh
+    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.0/install.sh | RAINY_VERSION=v0.5.0 sh
   script:
     - find . -name pack.yaml -print0 | xargs -0 -n1 ~/.rainy/bin/rainy schema validate --schema capability-pack --file
     - ~/.rainy/bin/rainy conformance check --path . --json
@@ -659,7 +664,7 @@ rainy apply --plan plans/service-baseline.json --dry-run
 rainy apply --plan plans/service-baseline.json --apply
 rainy doctor --capability service-baseline --json
 rainy verify --profile ci --capability service-baseline --json
-rainy evidence generate --format all --json
+rainy evidence generate --format all --apply --json
 ```
 
 应提交到项目 Git：

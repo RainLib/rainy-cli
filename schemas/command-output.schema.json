@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/command-output.schema.json",
+  "title": "Rainy Command Result",
+  "type": "object",
+  "required": ["protocolVersion", "type", "status", "data"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.command.v1" },
+    "type": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["ok", "preview", "applied", "warning", "failed"] },
+    "traceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false
+}

@@ -18,6 +18,7 @@ pub struct AddCapabilityRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionPlan {
     pub id: String,
     pub capability: String,
@@ -26,6 +27,7 @@ pub struct ExecutionPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlannedAction {
     pub id: String,
     pub uses: String,

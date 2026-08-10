@@ -168,9 +168,9 @@ fn extend_unique(target: &mut Vec<String>, values: Vec<String>) {
 
 fn policy_files(workspace: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
-    files.push(std::path::PathBuf::from("/etc/rainy/policy.yaml"));
-    if let Some(home) = std::env::var_os("HOME") {
-        files.push(std::path::PathBuf::from(home).join(".rainy/policy.yaml"));
+    files.push(crate::paths::system_policy_path());
+    if let Ok(home) = crate::paths::rainy_home() {
+        files.push(home.join("policy.yaml"));
     }
     files.push(workspace.join(".rainy/org-policy.yaml"));
     files

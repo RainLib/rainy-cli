@@ -10,12 +10,14 @@ rainy [--workspace <PROJECT_DIR>] [--json] [--verbose] [--quiet] \
   [--no-color] [--progress <auto|always|never>] [--trace-id <TRACE_ID>] <COMMAND>
 ```
 
-- `--workspace` 指向包含 `rainy.yaml` 的项目根目录，省略时使用当前目录。
+- `--workspace` 显式指定精确项目根；省略时从当前目录向上查找最近的 `rainy.yaml` 或
+  `rainy-skills.yaml`，但不会越过最近 Git 根。
 - 人工操作使用默认输出；Agent、脚本和 CI 必须使用 `--json`。
 - `--verbose` 展开成功检查、上游命令和完整路径。
 - `--progress auto` 仅为可能耗时的命令在交互终端显示动态进度；`always` 输出逐行进度；`never` 关闭。
 - `--no-color`、`NO_COLOR` 或 `TERM=dumb` 禁用颜色；`TERM=dumb` 还禁用动态终端绘制。
 - 会修改项目的命令先 preview，再以 `--apply` 执行。不要把 dry-run 当成已完成。
+- `--yes` 是变更命令一致的 `--apply` 别名；`--force` 只允许覆盖已审阅的漂移，不会隐含执行。
 - 同一业务请求使用一个 `--trace-id`，便于关联 `.rainy/audit.log`。
 
 ## 从零创建项目
@@ -30,7 +32,9 @@ rainy new demo-saas --golden-path spring-nextjs-saas \
   --package com.example.demo --apply
 
 cd demo-saas
-rainy doctor
+rainy doctor --scope auto
+rainy doctor --scope project
+rainy doctor --scope all --network
 rainy verify --profile local
 ```
 
@@ -197,10 +201,11 @@ rainy pack verify <PACK_DIR>
 rainy doctor
 rainy verify --profile local
 rainy verify --profile ci
-rainy evidence generate --format all
+rainy evidence generate --format all --apply
 ```
 
-- `doctor` 检查配置、lock、生成物、默认 secret 和 capability 自检。
+- `doctor` 支持 `auto|project|skills|runtime|defaults|registries|all`。默认只组合本地发现到的
+  配置，网络探测必须显式传 `--network`。
 - `local` 用于开发机，可把缺失的外部工具报告为 warning。
 - `ci` 是严格门禁，生产流水线应以其退出码为准。
 - `evidence` 将交付事实输出到 `rainy.yaml` 中配置的 evidence 目录。
@@ -222,9 +227,9 @@ manifest 和权限均完成审阅后才可显式启用 `--allow-native-plugin`�
 ## Agent 与 Skills
 
 ```bash
-rainy agent init
+rainy agent init --apply
 rainy agent context
-rainy skill sync
+rainy skill sync --apply
 ```
 
 创建当前项目拥有的 Skill 规则和命令包：
@@ -298,11 +303,15 @@ rainy conformance check --path <PACK_OR_PLUGIN_DIR>
 ```bash
 rainy self check
 rainy self update
-rainy self update --version <VERSION>
+rainy self update --apply
+rainy self update --version <VERSION> --apply
 rainy self skip [VERSION]
+rainy self skip [VERSION] --apply
 ```
 
-`self update` 下载对应平台的 Release 安装器，验证 checksum，安装后再次验证二进制版本。
+`self update` 和 `self skip` 默认只预览并返回可执行的 `applyCommand`；`--apply` 或 `--yes` 才修改
+二进制或更新状态。`--force` 只允许重装，不隐含执行。执行 update 时会下载对应平台的 Release
+安装器，验证 checksum，安装后再次验证二进制版本。
 可通过 `--repo <OWNER/REPO>` 或 `RAINY_UPDATE_REPO` 使用受信任的企业镜像仓库。
 
 ## Shell 补全
@@ -325,8 +334,10 @@ source <(rainy completion zsh)
 4. apply 后运行 `doctor`、严格 `verify` 和 evidence。
 5. policy、checksum、签名或 verify 失败时停止，不自动添加 `--force` 或原生插件信任。
 
-命令参数缺失或无效时返回退出码 `2` 和 `CLI_ARGUMENT_INVALID`；未知顶层命令返回
-`EXTERNAL_COMMAND_NOT_FOUND`。两者在 `--json` 下将单个错误对象写入 `stderr`，`stdout`
-保持为空。用户按 `Ctrl+C` 时退出码为 `130`。
+命令参数缺失、拼写错误或无效时返回退出码 `2` 和 `CLI_ARGUMENT_INVALID`，并保留 Clap 的
+相似命令建议。只有确实存在的已安装 `rainy-<name>` 插件才会接管顶层快捷命令。操作错误在
+`--json` 下将 `rainy.command.v1` 错误对象写入 `stderr`，`stdout` 保持为空；Doctor、Verify、
+Schema、Conformance 的检查失败将完整报告写入 `stdout` 并退出 `4`。用户按 `Ctrl+C` 时退出
+`130`。
 
 企业私有能力的组织方式见 [enterprise-integration.md](enterprise-integration.md)。

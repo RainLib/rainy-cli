@@ -103,14 +103,14 @@ irm https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 | 
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
-RAINY_REPO=owner/repo RAINY_VERSION=v0.1.2 sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.5.0 sh scripts/install.sh
 RAINY_NO_MODIFY_PATH=1 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.1.2 -InstallDir "$HOME\.rainy\bin"
+.\scripts\install.ps1 -Repo owner/repo -Version v0.5.0 -InstallDir "$HOME\.rainy\bin"
 .\scripts\install.ps1 -NoModifyPath
 ```
 
@@ -179,7 +179,7 @@ rainy capability add minio-file-storage --provider minio --apply
 rainy doctor
 rainy verify --profile local
 rainy verify --profile ci
-rainy evidence generate
+rainy evidence generate --apply
 ```
 
 为项目启用组合式模型工作流（需要 Node.js 20+、npm/npx 和 Git）：
@@ -243,10 +243,20 @@ rainy capability add minio-file-storage --provider minio --dry-run --json
 rainy doctor --json
 ```
 
+所有成功结果使用 `rainy.command.v1` 包装：
+
+```json
+{"protocolVersion":"rainy.command.v1","type":"capabilities","status":"ok","data":{"capabilities":[]}}
+```
+
+操作错误写入 `stderr`；Doctor、Verify、Schema 和 Conformance 的检查失败报告仍完整写入
+`stdout`，并退出 `4`。固定退出码为：`0` 完成/预览/警告，`1` 运行或 I/O，`2` 参数或配置，
+`3` 策略/审批，`4` 检查失败，`5` 网络/认证，`6` 摘要/签名完整性，`130` 取消。
+
 ## 命令进度
 
-Rainy 在交互式终端中为可能耗时的命令显示四阶段进度条、当前任务和耗时。Skill、verify、doctor
-等多步骤命令会继续更新当前正在执行的具体内容；列表、说明和补全等快速读取命令默认保持安静。
+Rainy 在交互式终端中根据真实任务事件显示 spinner、当前阶段和耗时，不再伪造固定四阶段完成度。
+Skill、verify、doctor 等多步骤命令会持续更新当前任务；列表、说明和补全等快速读取命令默认保持安静。
 进度写入 `stderr`，最终结果写入 `stdout`，因此可以安全地重定向业务结果。
 
 ```bash
@@ -256,9 +266,9 @@ rainy doctor --progress never            # 关闭进度
 ```
 
 进度模式也可以通过 `RAINY_PROGRESS=auto|always|never` 配置。`--json` 和 `--quiet`
-始终关闭进度，保证 JSON 协议及静默调用不会混入额外内容；`--no-color` 会将终端进度改为
-稳定逐行输出，不使用 ANSI 重绘。Rainy 同时遵循 `NO_COLOR`；`TERM=dumb` 会关闭颜色和动态
-终端绘制。按 `Ctrl+C` 会以退出码 `130` 终止，并清理活动进度行。
+始终关闭进度，保证 JSON 协议及静默调用不会混入额外内容；`--no-color` 只关闭颜色，真实 TTY
+仍原地刷新。Rainy 同时遵循 `NO_COLOR`；`TERM=dumb` 或重定向输出使用稳定逐行事件。按
+`Ctrl+C` 会先恢复终端并请求取消，清理整个子进程组，最终退出 `130`。
 
 ## Shell 补全
 
@@ -285,7 +295,7 @@ make help          # 查看所有目标
 make build         # 构建 debug binary
 make release       # 构建 release binary
 make install       # cargo install --path crates/rainy-cli
-make install-local # 构建 release 并原子替换 ~/.rainy/bin/rainy
+make install-local # 替换 ~/.rainy/bin/rainy，并快照当前工作区 Defaults
 make install-script # 从 GitHub Release 安装预编译包
 make uninstall     # cargo uninstall rainy-cli
 make fmt           # 格式化 Rust 代码
@@ -296,7 +306,8 @@ make clippy        # clippy 严格检查
 make check         # fmt-check + test + clippy
 make ci            # 本地完整 CI smoke
 make release-check # 发 GitHub Release 前的本地检查
-make production-check # 生产可用性本地检查，等同 release-check
+make production-check # release-check + 强制 cargo audit/deny
+make security-check # 强制执行 cargo audit 和 cargo deny
 make schema-check  # 检查 schemas/*.schema.json 可解析
 make conformance   # 检查 community-packs conformance
 make mcp-check     # 编译检查 MCP Python wrapper
@@ -331,7 +342,9 @@ make install-local INSTALL_DIR="$HOME/.local/bin"
 ```
 
 `install-local` 使用 `target/release/rainy`，先写入同目录临时文件，再原子替换
-`$INSTALL_DIR/rainy`。它不会修改 shell 的 `PATH`；首次安装仍使用发布安装器来写入 shell 配置。
+`$INSTALL_DIR/rainy`。随后验证当前工作区的 Packs、Skills 和模板，并原子快照到
+`$RAINY_HOME/defaults`，所以本地测试不依赖尚未发布的版本 Tag。它不会修改 shell 的 `PATH`；
+首次安装仍使用发布安装器来写入 shell 配置。
 
 常用变量可以覆盖：
 
@@ -382,7 +395,7 @@ rainy pack install ./community-packs/minio-file-storage --dry-run
 rainy pack install ./community-packs/minio-file-storage --apply
 rainy pack update --dry-run
 rainy pack update --apply
-rainy pack sign ./community-packs/minio-file-storage
+rainy pack sign ./community-packs/minio-file-storage --apply
 rainy pack verify ./community-packs/minio-file-storage
 ```
 
@@ -430,9 +443,9 @@ rainy conformance check --path community-packs --json
 Agent 上下文：
 
 ```bash
-rainy agent init
+rainy agent init --apply
 rainy agent context
-rainy skill sync
+rainy skill sync --apply
 ```
 
 Skill profile 管理：
@@ -462,17 +475,18 @@ rainy skill uninstall --apply
 rainy self check
 rainy self check --json
 rainy self check --repo owner/repo
-rainy self update
-rainy self update --repo owner/repo --version v0.1.2
-rainy self skip 0.2.0
-rainy self skip --repo owner/repo 0.2.0
+rainy self update                                      # 预览
+rainy self update --apply                              # 安装最新版
+rainy self update --repo owner/repo --version v0.5.0 --apply
+rainy self skip 0.5.0                                  # 预览
+rainy self skip --repo owner/repo 0.5.0 --apply
 ```
 
 release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
 
 ```text
 Rainy CLI update available: 0.1.1 -> 0.2.0.
-Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this version.
+Run `rainy self update --apply` to update, or `rainy self skip 0.5.0 --apply` to skip this version.
 ```
 
 自动检查默认行为：
@@ -486,9 +500,10 @@ Run `rainy self update` to update, or `rainy self skip 0.2.0` to skip this versi
 
 ## 发布流程
 
-普通 `main` push 和 pull request 不会自动触发构建。完整质量检查、跨平台构建和发布只在推送
-`vX.Y.Z` tag 时运行；开发者应在打 tag 前本地执行 `make production-check`。安全扫描保留每周定时
-和手动触发入口。
+普通 `main` push 不触发任何 Action。Pull request 会运行质量门禁、依赖漏洞/许可证策略检查和
+Linux/macOS/Windows 原生测试；只有推送 `vX.Y.Z` tag 才会执行完整安全门禁、五目标构建与发布。
+CodeQL 与依赖扫描另保留每周定时和手动触发入口。开发者应在打 tag 前本地执行
+`make production-check`，本机必须已安装固定主版本的 `cargo-audit` 与 `cargo-deny`。
 
 GitHub Release 由 `.github/workflows/release.yml` 负责。发版前建议本地先跑：
 
@@ -499,11 +514,11 @@ make release-check
 创建并推送版本标签后会触发 release workflow：
 
 ```bash
-git tag -a v0.1.2 -m "Rainy CLI v0.1.2"
-git push origin v0.1.2
+git tag -a v0.5.0 -m "Rainy CLI v0.5.0"
+git push origin v0.5.0
 ```
 
-release workflow 会先执行格式、测试、clippy、schema、MCP wrapper 和安装脚本检查，然后分别构建并上传：
+release workflow 会先执行格式、测试、clippy、audit/deny、schema、MCP wrapper、PTY 和安装脚本检查，然后分别构建并上传：
 
 - `rainy-x86_64-unknown-linux-gnu.tar.gz`
 - `rainy-aarch64-unknown-linux-gnu.tar.gz`
@@ -555,16 +570,16 @@ Rainy 的核心使用方式是“先计划，再应用”：
 5. 写入失败时回滚已应用文件，避免部分落地。
 6. `rainy doctor` 检查项目健康。
 7. `rainy verify` 运行验证步骤。
-8. `rainy evidence generate` 生成 Markdown/JSON 证据报告。
+8. `rainy evidence generate --apply` 生成 Markdown/JSON 证据报告。
 
 说明：
 
 - `add capability`、`apply`、`pack install/update`、`plugin install/call` 默认是 dry-run，需要显式 `--apply` 才会写文件。
-- `new` / `init app` 默认会创建项目，但支持 `--dry-run`。
+- `new` / `init app` 和其他变更命令默认只预览；必须传 `--apply` 或同义的 `--yes` 才会写入。
 - 所有命令支持全局 `--json`，方便 Agent、MCP、CI 调用。
 - `verify --profile local` 适合开发机，缺少本地工具链时可给 warning；`verify --profile ci` 是严格门禁，未知步骤或缺失验证工具会失败。
 - 策略会阻止敏感路径、危险命令、需要审批的操作和插件越权写入。
-- Wasm 是默认插件运行时；原生 `rainy-*` 插件必须在 Rainy 项目内通过 `--allow-native-plugin`、`RAINY_ALLOW_NATIVE_PLUGIN=1` 或 `policy.allowNativePlugins: true` 显式授权，并写入审计日志。
+- Wasm 是默认插件运行时，受 1 MiB 输入、5 MiB 输出、64 MiB 内存、1 亿 fuel 和 30 秒限制；原生 `rainy-*` 插件必须在 Rainy 项目内显式授权，默认 300 秒超时并写入审计日志。
 
 ## 当前建设进度
 
@@ -578,6 +593,8 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - Capability 依赖和 provider 解析：依赖缺失失败、被依赖能力禁止删除、provider 默认/显式/非法场景有稳定错误。
 - Policy Gate：内置敏感路径、项目 policy、org policy、capability policy、审批动作、危险命令、插件写权限。
 - Doctor / Verify / Evidence：健康检查、能力验证、证据报告、secret 脱敏、默认开发 secret warning。
+- 运行时可靠性：统一 `RunContext`、工作区向上发现、真实进度事件、Ctrl+C 子进程组清理、外部命令超时和输出上限。
+- 跨平台 Verify：优先使用 `run.program/run.args`，不经过 `sh -c`；旧 `command` 仅兼容无 shell 运算符的简单命令。
 - Audit log：修改命令执行前检查审计可写性，成功和失败命令通过文件锁写入 `.rainy/audit.log`。
 - Plugin：Wasm action plugin 默认可用；原生 `rainy-*` 需要显式信任；HTTP adapter 受权限、HTTPS/loopback 和响应大小限制。
 - Release 安装和自更新：五平台构建与 smoke、强制 checksum、回滚安装、SBOM、provenance、原生 HTTPS 版本检查和 `self check/update/skip`。
@@ -587,7 +604,7 @@ Rainy 的核心使用方式是“先计划，再应用”：
 - Schema / conformance：标准 Draft 2020-12 validator、schema list/validate、pack/plugin conformance 检查。
 - 企业扩展样例：私有 pack、本地 registry、分层 org policy schema、企业接入边界和 CI 门禁说明。
 - CLI 交互规范：命令级 help 示例、统一 Summary/Next step/Checks/Details 层级、独立 JSON 协议和进度显示。
-- 测试：包含 unit 和 E2E tests，覆盖 Golden Path、policy、plugin、schema、conformance、事务回滚、自更新状态等主流程。
+- 测试：包含 unit、E2E 和真实 PTY tests，覆盖 Golden Path、policy、plugin、schema、conformance、事务回滚、自更新、窄终端、多轮选择、取消和子进程清理。
 - CI / release 门禁：三系统测试、MSRV、audit/deny、CodeQL、格式、E2E、clippy、schema、安装器测试、JSON smoke、conformance 和五平台 release 构建。
 
 部分完成 / 示例级：
@@ -636,5 +653,6 @@ make installer-test
 - Composed workflow Skill: [integrations/skills/rainy-comet](integrations/skills/rainy-comet)
 - Skill profile management: [docs/skills-management.md](docs/skills-management.md)
 - Release mirrors and OSS: [docs/release-mirrors.md](docs/release-mirrors.md)
+- 0.4 to 0.5 migration: [docs/migration-0.4-to-0.5.md](docs/migration-0.4-to-0.5.md)
 - Backstage example: [integrations/backstage](integrations/backstage)
 - Full design document: [Rainy_CLI_最终形态程序设计与详细开发文档.md](Rainy_CLI_最终形态程序设计与详细开发文档.md)

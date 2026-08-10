@@ -5,6 +5,20 @@ use crate::registry::{CapabilityGraph, CapabilityInfo, CapabilitySummary, PackIn
 use crate::verify::VerifyReport;
 use serde::Serialize;
 
+const COMMAND_PROTOCOL_VERSION: &str = "rainy.command.v1";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandEnvelope {
+    protocol_version: &'static str,
+    #[serde(rename = "type")]
+    output_type: &'static str,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace_id: Option<String>,
+    data: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum CommandOutput {
@@ -83,6 +97,8 @@ pub enum CommandOutput {
     Evidence {
         status: &'static str,
         files: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        apply_command: Option<String>,
     },
     Plugins {
         plugins: Vec<crate::plugin::PluginInfo>,
@@ -91,6 +107,8 @@ pub enum CommandOutput {
         plugin: String,
         stdout: String,
         stderr: String,
+        stdout_truncated: bool,
+        stderr_truncated: bool,
     },
     Conformance {
         report: crate::conformance::ConformanceReport,
@@ -213,9 +231,27 @@ impl CommandOutput {
             Self::Skill { report } => &report.status,
             Self::Registry { report } => &report.status,
             Self::Defaults { report } => &report.status,
-            Self::Update { .. } => "ok",
+            Self::Update { report } => &report.status,
             Self::Completion { .. } => "ok",
             _ => "ok",
+        }
+    }
+
+    pub fn protocol_status(&self) -> &'static str {
+        match self.status() {
+            "dry-run" | "preview" => "preview",
+            "applied" => "applied",
+            "failed" | "fail" => "failed",
+            "warning" | "warn" | "degraded" => "warning",
+            _ => "ok",
+        }
+    }
+
+    pub fn exit_code(&self) -> i32 {
+        if self.protocol_status() == "failed" {
+            4
+        } else {
+            0
         }
     }
 
@@ -306,22 +342,40 @@ impl CommandOutput {
         }
     }
 
-    pub fn print(&self, json: bool, verbose: bool) {
+    pub fn print(&self, json: bool, verbose: bool, trace_id: Option<&str>) {
         if json {
+            let mut data = serde_json::to_value(self).expect("serialize command output");
+            if let Some(object) = data.as_object_mut() {
+                object.remove("type");
+                object.remove("status");
+            }
+            crate::redaction::json(&mut data);
+            let envelope = CommandEnvelope {
+                protocol_version: COMMAND_PROTOCOL_VERSION,
+                output_type: self.kind(),
+                status: self.protocol_status(),
+                trace_id: trace_id.map(str::to_string),
+                data,
+            };
             println!(
                 "{}",
-                serde_json::to_string_pretty(self).expect("serialize command output")
+                serde_json::to_string_pretty(&envelope).expect("serialize command envelope")
             );
             return;
         }
 
         match self {
-            Self::Message { message, .. } => {
+            Self::Message {
+                status, message, ..
+            } => {
                 print_title("Rainy");
                 print_summary(&[
-                    ("Status", "Completed".to_string()),
+                    ("Status", result_status_label(status).to_string()),
                     ("Result", message.clone()),
                 ]);
+                if *status == "dry-run" {
+                    print_next_step("Rerun the same command with --apply.");
+                }
             }
             Self::Init {
                 status,
@@ -431,12 +485,12 @@ impl CommandOutput {
                     ("Actions", plan.actions.len().to_string()),
                 ]);
                 print_next_step(
-                    "Review the plan and diff, then apply the saved plan with rainy apply --plan <PLAN_FILE> --apply.",
+                    "Review the plan and diff, then rerun the same capability command with --apply.",
                 );
                 println!();
                 println!("Actions");
                 for action in &plan.actions {
-                    println!("  {:<24} {}", action.id, action.uses);
+                    print_columns(&[&action.id, &action.uses]);
                 }
                 println!();
                 println!("Changes");
@@ -504,10 +558,7 @@ impl CommandOutput {
                 println!();
                 println!("Items");
                 for capability in capabilities {
-                    println!(
-                        "  {:<28} {:<12} {}",
-                        capability.id, capability.version, capability.description
-                    );
+                    print_columns(&[&capability.id, &capability.version, &capability.description]);
                 }
             }
             Self::Capability { capability } => {
@@ -554,12 +605,11 @@ impl CommandOutput {
                 println!();
                 println!("Items");
                 for capability in capabilities {
-                    println!(
-                        "  {:<28} {:<12} {}",
-                        capability.id,
-                        capability.version,
-                        capability.provider.as_deref().unwrap_or("-")
-                    );
+                    print_columns(&[
+                        &capability.id,
+                        &capability.version,
+                        capability.provider.as_deref().unwrap_or("-"),
+                    ]);
                 }
             }
             Self::Packs { packs } => {
@@ -568,7 +618,7 @@ impl CommandOutput {
                 println!();
                 println!("Items");
                 for pack in packs {
-                    println!("  {:<28} {:<12} {}", pack.name, pack.version, pack.path);
+                    print_columns(&[&pack.name, &pack.version, &pack.path]);
                 }
             }
             Self::Registry { report } => {
@@ -581,10 +631,12 @@ impl CommandOutput {
                     println!();
                     println!("Registries");
                     for registry in &report.registries {
-                        println!(
-                            "  {:<18} {:<8} priority {:<4} {}",
-                            registry.name, registry.source_type, registry.priority, registry.source
-                        );
+                        print_columns(&[
+                            &registry.name,
+                            &registry.source_type,
+                            &format!("priority {}", registry.priority),
+                            &registry.source,
+                        ]);
                         if let Some(resolved) = &registry.resolved_ref {
                             println!("    resolved {resolved}");
                         }
@@ -619,7 +671,7 @@ impl CommandOutput {
                         .iter()
                         .filter(|(status, _, _)| verbose || !matches!(*status, "pass" | "passed"))
                     {
-                        println!("  {:<5} {:<28} {}", check_status_label(status), id, message);
+                        print_check_line(status, id, message);
                     }
                     if !verbose
                         && checks
@@ -695,13 +747,27 @@ impl CommandOutput {
                     vec![("Profile", report.profile.clone())],
                 );
             }
-            Self::Evidence { files, .. } => {
+            Self::Evidence {
+                status,
+                files,
+                apply_command,
+            } => {
                 print_title("Evidence generation");
                 print_summary(&[
-                    ("Status", "Completed".to_string()),
+                    ("Status", result_status_label(status).to_string()),
                     ("Files", files.len().to_string()),
                 ]);
-                print_paths("Affected locations", files);
+                if let Some(command) = apply_command {
+                    print_next_step(&format!("$ {command}"));
+                }
+                print_paths(
+                    if *status == "dry-run" {
+                        "Planned locations"
+                    } else {
+                        "Affected locations"
+                    },
+                    files,
+                );
             }
             Self::Plugins { plugins } => {
                 print_title("Plugins");
@@ -712,7 +778,7 @@ impl CommandOutput {
                     println!();
                     println!("Items");
                     for plugin in plugins {
-                        println!("  {:<28} {}", plugin.name, plugin.path);
+                        print_columns(&[&plugin.name, &plugin.path]);
                         if !plugin.shadowed_paths.is_empty() {
                             println!(
                                 "    WARN shadowed duplicate plugin(s): {}",
@@ -722,12 +788,24 @@ impl CommandOutput {
                     }
                 }
             }
-            Self::PluginRun { stdout, stderr, .. } => {
+            Self::PluginRun {
+                stdout,
+                stderr,
+                stdout_truncated,
+                stderr_truncated,
+                ..
+            } => {
                 if !stdout.is_empty() {
                     print!("{stdout}");
                 }
                 if !stderr.is_empty() {
                     eprint!("{stderr}");
+                }
+                if *stdout_truncated || *stderr_truncated {
+                    eprintln!();
+                    eprintln!(
+                        "Plugin output was truncated (stdout: {stdout_truncated}, stderr: {stderr_truncated})."
+                    );
                 }
             }
             Self::Conformance { report } => {
@@ -751,7 +829,7 @@ impl CommandOutput {
                 println!();
                 println!("Items");
                 for schema in schemas {
-                    println!("  {:<28} {}", schema.name, schema.path);
+                    print_columns(&[&schema.name, &schema.path]);
                 }
             }
             Self::SchemaValidation { report } => {
@@ -766,7 +844,7 @@ impl CommandOutput {
                     println!();
                     println!("Issues");
                     for issue in &report.issues {
-                        println!("  {:<24} {}", issue.path, issue.message);
+                        print_columns(&[&issue.path, &issue.message]);
                     }
                 }
             }
@@ -790,7 +868,7 @@ impl CommandOutput {
                     println!("  Comet            phase orchestration and recovery state");
                 }
                 for skill in &report.custom_skills {
-                    println!("  {skill:<16} project-owned Skill");
+                    print_columns(&[skill, "project-owned Skill"]);
                 }
 
                 if !report.apply_command.is_empty() {
@@ -840,7 +918,7 @@ impl CommandOutput {
                         .iter()
                         .filter(|check| verbose || check.status != "pass")
                     {
-                        println!("  {:<5} {:<28} {}", check.status, check.id, check.message);
+                        print_check_line(&check.status, &check.id, &check.message);
                     }
                 }
 
@@ -865,11 +943,47 @@ impl CommandOutput {
             }
             Self::Update { report } => {
                 print_title("Rainy update");
-                if report.update_available {
+                if report.operation == "skip" {
                     print_summary(&[
                         (
                             "Status",
-                            if report.skipped {
+                            if report.status == "dry-run" {
+                                "Preview only; no state changed"
+                            } else {
+                                "Update skipped"
+                            }
+                            .to_string(),
+                        ),
+                        (
+                            "Version",
+                            report
+                                .latest_version
+                                .as_deref()
+                                .unwrap_or("unknown")
+                                .to_string(),
+                        ),
+                        ("Repository", report.repository.clone()),
+                    ]);
+                } else if report.operation == "update" && report.status == "applied" {
+                    print_summary(&[
+                        ("Status", "Installed and verified".to_string()),
+                        (
+                            "Version",
+                            report
+                                .latest_version
+                                .as_deref()
+                                .unwrap_or("unknown")
+                                .to_string(),
+                        ),
+                        ("Repository", report.repository.clone()),
+                    ]);
+                } else if report.update_available {
+                    print_summary(&[
+                        (
+                            "Status",
+                            if report.status == "dry-run" {
+                                "Preview only; no files changed"
+                            } else if report.skipped {
                                 "Update skipped"
                             } else {
                                 "Update available"
@@ -887,12 +1001,10 @@ impl CommandOutput {
                         ),
                         ("Release", report.release_type.clone()),
                     ]);
-                    if report.skipped {
+                    if report.status == "dry-run" {
+                        print_details("The selected release has not been installed.");
+                    } else if report.skipped {
                         print_details("The latest version is currently skipped.");
-                    } else {
-                        print_next_step(
-                            "Run rainy self update to install and verify the latest release.",
-                        );
                     }
                 } else {
                     print_summary(&[
@@ -900,6 +1012,9 @@ impl CommandOutput {
                         ("Current", report.current_version.clone()),
                         ("Release", report.release_type.clone()),
                     ]);
+                }
+                if let Some(command) = &report.apply_command {
+                    print_next_step(&format!("$ {command}"));
                 }
                 if verbose {
                     print_details(&format!("Install command: {}", report.install_command));
@@ -917,6 +1032,16 @@ fn print_title(title: &str) {
 
 fn print_summary(rows: &[(&str, String)]) {
     println!("Summary");
+    let terminal_width = output_width();
+    if terminal_width < 64 {
+        for (label, value) in rows {
+            println!("  {label}");
+            for line in wrap_text(value, terminal_width.saturating_sub(4).max(16)) {
+                println!("    {line}");
+            }
+        }
+        return;
+    }
     let width = rows
         .iter()
         .map(|(label, _)| label.chars().count())
@@ -924,14 +1049,94 @@ fn print_summary(rows: &[(&str, String)]) {
         .unwrap_or(12)
         + 2;
     for (label, value) in rows {
-        println!("  {label:<width$}{value}");
+        let prefix = format!("  {label:<width$}");
+        let lines = wrap_text(
+            value,
+            terminal_width
+                .saturating_sub(prefix.chars().count())
+                .max(16),
+        );
+        if let Some((first, rest)) = lines.split_first() {
+            println!("{prefix}{first}");
+            let continuation = " ".repeat(prefix.chars().count());
+            for line in rest {
+                println!("{continuation}{line}");
+            }
+        }
+    }
+}
+
+fn print_columns(values: &[&str]) {
+    if values.is_empty() {
+        return;
+    }
+    let width = output_width();
+    if width < 80 || values.len() == 1 {
+        println!("  {}", values[0]);
+        for value in &values[1..] {
+            for line in wrap_text(value, width.saturating_sub(6).max(16)) {
+                println!("      {line}");
+            }
+        }
+        return;
+    }
+
+    let column_widths: &[usize] = match values.len() {
+        2 => &[28],
+        3 => &[28, 12],
+        _ => &[18, 12, 16],
+    };
+    let mut prefix = String::from("  ");
+    for (index, value) in values[..values.len() - 1].iter().enumerate() {
+        let column_width = column_widths
+            .get(index)
+            .copied()
+            .unwrap_or(16)
+            .max(value.chars().count() + 2);
+        prefix.push_str(&format!("{value:<column_width$}"));
+    }
+    let lines = wrap_text(
+        values[values.len() - 1],
+        width.saturating_sub(prefix.chars().count()).max(16),
+    );
+    if let Some((first, rest)) = lines.split_first() {
+        println!("{prefix}{first}");
+        let continuation = " ".repeat(prefix.chars().count());
+        for line in rest {
+            println!("{continuation}{line}");
+        }
+    }
+}
+
+fn print_check_line(status: &str, id: &str, message: &str) {
+    let terminal_width = output_width();
+    if terminal_width < 80 || id.chars().count() > 28 {
+        println!("  {} {id}", check_status_label(status));
+        for line in wrap_text(message, terminal_width.saturating_sub(6).max(16)) {
+            println!("      {line}");
+        }
+    } else {
+        let prefix = format!("  {:<5} {id:<28} ", check_status_label(status));
+        let lines = wrap_text(
+            message,
+            terminal_width
+                .saturating_sub(prefix.chars().count())
+                .max(16),
+        );
+        if let Some((first, rest)) = lines.split_first() {
+            println!("{prefix}{first}");
+            let continuation = " ".repeat(prefix.chars().count());
+            for line in rest {
+                println!("{continuation}{line}");
+            }
+        }
     }
 }
 
 fn print_next_step(message: &str) {
     println!();
     println!("Next step");
-    println!("  {message}");
+    print_wrapped(message, 2);
 }
 
 fn print_paths(title: &str, paths: &[String]) {
@@ -948,7 +1153,7 @@ fn print_paths(title: &str, paths: &[String]) {
 fn print_details(message: &str) {
     println!();
     println!("Details");
-    println!("  {message}");
+    print_wrapped(message, 2);
 }
 
 fn print_check_report(
@@ -987,8 +1192,51 @@ fn print_check_report(
         return;
     }
     for (status, id, message) in visible {
-        println!("  {:<5} {:<28} {}", check_status_label(status), id, message);
+        if output_width() < 80 {
+            println!("  {} {id}", check_status_label(status));
+            for line in wrap_text(message, output_width().saturating_sub(4).max(16)) {
+                println!("    {line}");
+            }
+        } else {
+            print_check_line(status, id, message);
+        }
     }
+}
+
+fn output_width() -> usize {
+    terminal_size::terminal_size()
+        .map(|(terminal_size::Width(width), _)| usize::from(width))
+        .unwrap_or(100)
+        .clamp(40, 160)
+}
+
+fn print_wrapped(message: &str, indent: usize) {
+    let prefix = " ".repeat(indent);
+    for line in wrap_text(message, output_width().saturating_sub(indent).max(16)) {
+        println!("{prefix}{line}");
+    }
+}
+
+fn wrap_text(message: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in message.lines() {
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            if !current.is_empty() && current.chars().count() + 1 + word.chars().count() > width {
+                lines.push(std::mem::take(&mut current));
+            }
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        } else if paragraph.is_empty() {
+            lines.push(String::new());
+        }
+    }
+    lines
 }
 
 fn check_status_label(status: &str) -> &'static str {
@@ -1021,15 +1269,21 @@ fn list_or_none(values: &[String]) -> String {
 
 #[derive(Debug, Serialize)]
 struct ErrorEnvelope {
+    #[serde(rename = "protocolVersion")]
+    protocol_version: &'static str,
     status: &'static str,
+    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none")]
+    trace_id: Option<String>,
     error: crate::error::ErrorBody,
 }
 
-pub fn print_error(err: &RainyError, json: bool) {
+pub fn print_error(err: &RainyError, json: bool, trace_id: Option<&str>) {
     let body = err.body();
     if json {
         let envelope = ErrorEnvelope {
+            protocol_version: COMMAND_PROTOCOL_VERSION,
             status: "error",
+            trace_id: trace_id.map(str::to_string),
             error: body,
         };
         eprintln!(
@@ -1039,12 +1293,20 @@ pub fn print_error(err: &RainyError, json: bool) {
     } else {
         eprintln!("Error");
         eprintln!("  Code    {}", body.code);
-        eprintln!(
-            "  Reason  {}",
-            human_error_reason(&body.code, &body.message)
-        );
+        let reason = human_error_reason(&body.code, &body.message);
+        let mut lines = reason.lines();
+        eprintln!("  Reason  {}", lines.next().unwrap_or("unknown error"));
+        for line in lines {
+            eprintln!("          {}", line.trim_start());
+        }
         print_error_report(&body.message);
-        if let Some(commands) = error_next_steps(&body.code) {
+        if !body.next_steps.is_empty() {
+            eprintln!();
+            eprintln!("Next steps");
+            for command in &body.next_steps {
+                eprintln!("  $ {command}");
+            }
+        } else if let Some(commands) = error_next_steps(&body.code) {
             eprintln!();
             eprintln!("Next steps");
             for command in commands {
@@ -1105,7 +1367,28 @@ fn print_error_report(message: &str) {
     eprintln!();
     eprintln!("Checks");
     for (status, id, message) in failed {
-        eprintln!("  {:<5} {:<28} {}", check_status_label(status), id, message);
+        let terminal_width = output_width();
+        if terminal_width < 80 || id.chars().count() > 28 {
+            eprintln!("  {} {id}", check_status_label(status));
+            for line in wrap_text(message, terminal_width.saturating_sub(6).max(16)) {
+                eprintln!("      {line}");
+            }
+        } else {
+            let prefix = format!("  {:<5} {id:<28} ", check_status_label(status));
+            let lines = wrap_text(
+                message,
+                terminal_width
+                    .saturating_sub(prefix.chars().count())
+                    .max(16),
+            );
+            if let Some((first, rest)) = lines.split_first() {
+                eprintln!("{prefix}{first}");
+                let continuation = " ".repeat(prefix.chars().count());
+                for line in rest {
+                    eprintln!("{continuation}{line}");
+                }
+            }
+        }
     }
 }
 
@@ -1158,29 +1441,23 @@ fn error_next_steps(code: &str) -> Option<&'static [&'static str]> {
         "CONFIG_NOT_FOUND" => Some(&[
             "rainy skill doctor",
             "rainy new --help",
-            "rainy --workspace <PROJECT_DIR> doctor",
+            "rainy doctor --scope auto",
         ]),
         "PROJECT_TEMPLATE_CONFIG_NOT_FOUND"
         | "PROJECT_TEMPLATE_CONFIG_INVALID"
-        | "PROJECT_TEMPLATE_NOT_FOUND" => Some(&[
-            "rainy schema validate --schema project-template-catalog --file <CATALOG_FILE>",
-            "rainy new --help",
-        ]),
+        | "PROJECT_TEMPLATE_NOT_FOUND" => {
+            Some(&["rainy schema validate --help", "rainy new --help"])
+        }
         "PROJECT_TEMPLATE_GIT_FAILED"
         | "PROJECT_TEMPLATE_GIT_NOT_AVAILABLE"
-        | "PROJECT_TEMPLATE_SOURCE_INVALID" => Some(&[
-            "git ls-remote <TEMPLATE_GIT_URL> <GIT_REF>",
-            "rainy new --help",
-        ]),
+        | "PROJECT_TEMPLATE_SOURCE_INVALID" => Some(&["rainy new --help", "rainy new --help"]),
         "LOCK_NOT_FOUND" => Some(&["rainy doctor --verbose", "rainy new --help"]),
-        "CAPABILITY_NOT_FOUND" | "CAPABILITY_PROVIDER_INVALID" => Some(&[
-            "rainy capability list",
-            "rainy capability explain <CAPABILITY_ID>",
-        ]),
-        "REGISTRY_EMPTY" | "PACK_NOT_FOUND" => Some(&[
-            "rainy pack list",
-            "rainy pack install <PACK_SOURCE> --dry-run",
-        ]),
+        "CAPABILITY_NOT_FOUND" | "CAPABILITY_PROVIDER_INVALID" => {
+            Some(&["rainy capability list", "rainy capability explain --help"])
+        }
+        "REGISTRY_EMPTY" | "PACK_NOT_FOUND" => {
+            Some(&["rainy pack list", "rainy pack install --help"])
+        }
         "POLICY_APPROVAL_REQUIRED" | "POLICY_DENY_EDIT" | "POLICY_DENY_COMMAND" => {
             Some(&["rainy doctor --verbose"])
         }
@@ -1193,15 +1470,15 @@ fn error_next_steps(code: &str) -> Option<&'static [&'static str]> {
             Some(&["rainy schema list", "rainy schema validate --help"])
         }
         "CONFORMANCE_FAILED" | "CONFORMANCE_SOURCE_INVALID" => {
-            Some(&["rainy conformance check --path <PATH> --verbose"])
+            Some(&["rainy conformance check --help"])
         }
         "PLUGIN_NOT_FOUND" | "PLUGIN_MANIFEST_INVALID" => {
-            Some(&["rainy plugin list", "rainy plugin inspect <PLUGIN_ID>"])
+            Some(&["rainy plugin list", "rainy plugin inspect --help"])
         }
         "EXTERNAL_COMMAND_NOT_FOUND" => {
             Some(&["rainy --help", "rainy plugin list", "rainy plugin --help"])
         }
-        "CLI_ARGUMENT_INVALID" => Some(&["rainy --help", "rainy <COMMAND> --help"]),
+        "CLI_ARGUMENT_INVALID" => Some(&["rainy --help"]),
         "UPDATE_CHECK_FAILED" | "UPDATE_VERIFY_FAILED" => {
             Some(&["rainy self check --verbose", "rainy self update --help"])
         }
@@ -1214,10 +1491,9 @@ fn error_next_steps(code: &str) -> Option<&'static [&'static str]> {
         "SKILL_CUSTOM_NOT_FOUND"
         | "SKILL_CUSTOM_INVALID"
         | "SKILL_CUSTOM_FRONTMATTER_REQUIRED"
-        | "SKILL_CUSTOM_FRONTMATTER_INVALID" => Some(&[
-            "rainy skill create <SKILL_ID> --description <TEXT> --apply",
-            "rainy skill install --help",
-        ]),
+        | "SKILL_CUSTOM_FRONTMATTER_INVALID" => {
+            Some(&["rainy skill create --help", "rainy skill install --help"])
+        }
         "SKILL_INSTALL_SETUP_ALREADY_CONFIGURED" => Some(&[
             "rainy skill status",
             "rainy skill install --help",

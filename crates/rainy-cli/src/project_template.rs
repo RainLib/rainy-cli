@@ -7,6 +7,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 const MAX_TEMPLATE_ENTRIES: usize = 10_000;
 const MAX_TEMPLATE_BYTES: u64 = 512 * 1024 * 1024;
@@ -216,16 +217,14 @@ fn resolve_catalog_path(explicit: Option<PathBuf>) -> RainyResult<PathBuf> {
     if let Some(path) = std::env::var_os("RAINY_TEMPLATE_CONFIG") {
         return Ok(PathBuf::from(path));
     }
-    if let Some(home) = std::env::var_os("RAINY_HOME") {
-        return Ok(PathBuf::from(home).join("templates.yaml"));
-    }
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        RainyError::config(
-            "PROJECT_TEMPLATE_CONFIG_NOT_FOUND",
-            "cannot determine the template catalog; pass --template-config or set RAINY_TEMPLATE_CONFIG",
-        )
-    })?;
-    Ok(PathBuf::from(home).join(".rainy/templates.yaml"))
+    crate::paths::rainy_home()
+        .map(|home| home.join("templates.yaml"))
+        .map_err(|_| {
+            RainyError::config(
+                "PROJECT_TEMPLATE_CONFIG_NOT_FOUND",
+                "cannot determine the template catalog; pass --template-config or set RAINY_TEMPLATE_CONFIG",
+            )
+        })
 }
 
 fn load_catalog(path: &Path) -> RainyResult<ProjectTemplateCatalog> {
@@ -311,56 +310,21 @@ fn contains_control(value: &str) -> bool {
 }
 
 fn validate_source_git_url(url: &str) -> RainyResult<()> {
-    let supported = has_url_authority(url, "https://")
-        || has_url_authority(url, "ssh://")
-        || is_scp_git_url(url)
-        || url
-            .strip_prefix("file://")
-            .is_some_and(|path| !path.trim().is_empty());
-    let https_has_credentials = url
-        .strip_prefix("https://")
-        .and_then(|value| value.split('/').next())
-        .is_some_and(|authority| authority.contains('@'));
-    if supported && !contains_control(url) && !url.starts_with('-') && !https_has_credentials {
-        return Ok(());
-    }
-    Err(RainyError::config(
-        "PROJECT_TEMPLATE_SOURCE_INVALID",
-        "template Git source must use HTTPS, SSH, SCP-style git@host:path, or file:// and must not embed credentials",
-    ))
+    crate::security::validate_git(url, true).map_err(|reason| {
+        RainyError::config(
+            "PROJECT_TEMPLATE_SOURCE_INVALID",
+            format!("template Git source is not allowed: {reason}"),
+        )
+    })
 }
 
 fn validate_target_git_url(url: &str) -> RainyResult<()> {
-    let https_has_credentials = url
-        .strip_prefix("https://")
-        .and_then(|value| value.split('/').next())
-        .is_some_and(|authority| authority.contains('@'));
-    if url.trim().is_empty()
-        || url.starts_with('-')
-        || contains_control(url)
-        || https_has_credentials
-        || !(has_url_authority(url, "https://")
-            || has_url_authority(url, "ssh://")
-            || is_scp_git_url(url))
-    {
-        return Err(RainyError::config(
+    crate::security::validate_git(url, false).map_err(|reason| {
+        RainyError::config(
             "PROJECT_GIT_URL_INVALID",
-            "target Git URL must use HTTPS or SSH and must not contain control characters or embedded credentials",
-        ));
-    }
-    Ok(())
-}
-
-fn has_url_authority(url: &str, scheme: &str) -> bool {
-    url.strip_prefix(scheme)
-        .and_then(|value| value.split('/').next())
-        .is_some_and(|authority| !authority.trim().is_empty())
-}
-
-fn is_scp_git_url(url: &str) -> bool {
-    url.strip_prefix("git@")
-        .and_then(|value| value.split_once(':'))
-        .is_some_and(|(host, path)| !host.trim().is_empty() && !path.trim().is_empty())
+            format!("target Git URL is not allowed: {reason}"),
+        )
+    })
 }
 
 fn safe_relative_path(value: &str, code: &str) -> RainyResult<PathBuf> {
@@ -380,19 +344,25 @@ fn safe_relative_path(value: &str, code: &str) -> RainyResult<PathBuf> {
 }
 
 fn clone_template(source: &GitTemplateSource, target: &Path) -> RainyResult<()> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["clone", "--depth", "1", "--no-tags", "--branch"])
         .arg(&source.reference)
         .arg(&source.url)
-        .arg(target)
-        .output()
-        .map_err(|error| {
-            RainyError::config(
-                "PROJECT_TEMPLATE_GIT_NOT_AVAILABLE",
-                format!("cannot execute git: {error}"),
-            )
-        })?;
-    if output.status.success() {
+        .arg(target);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )
+    .map_err(|error| {
+        RainyError::config(
+            "PROJECT_TEMPLATE_GIT_NOT_AVAILABLE",
+            format!("cannot execute git: {}", error.body().message),
+        )
+    })?;
+    if output.success() {
         return Ok(());
     }
 
@@ -417,40 +387,49 @@ fn clone_template(source: &GitTemplateSource, target: &Path) -> RainyResult<()> 
 }
 
 fn run_git(repository: &Path, args: &[&str]) -> RainyResult<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repository)
-        .args(args)
-        .output()
-        .map_err(|error| {
-            RainyError::config(
-                "PROJECT_TEMPLATE_GIT_NOT_AVAILABLE",
-                format!("cannot execute git: {error}"),
-            )
-        })?;
-    if output.status.success() {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repository).args(args);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )
+    .map_err(|error| {
+        RainyError::config(
+            "PROJECT_TEMPLATE_GIT_NOT_AVAILABLE",
+            format!("cannot execute git: {}", error.body().message),
+        )
+    })?;
+    if output.success() {
         Ok(())
     } else {
         Err(RainyError::config(
             "PROJECT_TEMPLATE_GIT_FAILED",
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            output.stderr.trim().to_string(),
         ))
     }
 }
 
 fn resolve_git_commit(repository: &Path) -> RainyResult<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repository)
-        .args(["rev-parse", "HEAD"])
-        .output()?;
-    if !output.status.success() {
+        .args(["rev-parse", "HEAD"]);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !output.success() {
         return Err(RainyError::config(
             "PROJECT_TEMPLATE_GIT_FAILED",
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            output.stderr.trim().to_string(),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(output.stdout.trim().to_string())
 }
 
 fn resolve_template_root(checkout: &Path, subdirectory: Option<&str>) -> RainyResult<PathBuf> {

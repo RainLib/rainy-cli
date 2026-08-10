@@ -54,7 +54,7 @@ An environment variable has priority over the saved source:
 ```bash
 export RAINY_RELEASE_BASE_URL=https://downloads.example.com/rainy-cli
 rainy self check
-rainy self update
+rainy self update --apply
 ```
 
 Delete `~/.rainy/release-source` and unset the environment variables to return

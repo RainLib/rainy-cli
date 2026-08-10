@@ -36,7 +36,7 @@ Read [references/ownership.md](references/ownership.md) before changing files or
 3. During build, follow the selected Superpowers method. For Rainy capability changes, generate and save a dry-run execution plan.
 4. Present the Rainy plan, diff, policy result, and warnings. Wait for explicit user approval.
 5. Apply the exact saved plan with `rainy apply --plan <path> --apply`. Never infer approval from a Comet phase transition or task checkbox.
-6. During verify, run `rainy doctor`, `rainy verify --profile ci`, and `rainy evidence generate`. Attach their results to the Comet/OpenSpec verification record.
+6. During verify, run `rainy doctor`, `rainy verify --profile ci`, and `rainy evidence generate --apply`. Attach their results to the Comet/OpenSpec verification record.
 7. Archive only after acceptance criteria and Rainy verification pass and branch handling is complete.
 
 Keep Comet `auto_transition` disabled. Phase progression may update Comet state, but it must not authorize Rainy mutation, native plugins, deployment, database migration, or secret writes.

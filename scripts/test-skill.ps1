@@ -45,7 +45,9 @@ try {
 param(
   [string]$Repo,
   [string]$Version,
-  [string]$InstallDir
+  [string]$InstallDir,
+  [string]$BaseUrl,
+  [string]$ReleaseBaseUrl
 )
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -72,7 +74,7 @@ Copy-Item -LiteralPath $env:RAINY_SKILL_TEST_BINARY -Destination (Join-Path $Ins
   $env:RAINY_BIN = $null
   $env:RAINY_SKILL_TEST_BINARY = $Binary
   $ReleaseUrl = "http://127.0.0.1:$(Get-Content $PortFile)/release"
-  $Resolved = & $Bootstrap -InstallDir $InstallDir -ReleaseUrl $ReleaseUrl -ForceInstall
+  $Resolved = & $Bootstrap -InstallDir $InstallDir -ReleaseUrl $ReleaseUrl -ReleaseVersion v0.5.0 -ForceInstall
   if ((Resolve-Path $Resolved).Path -ne (Resolve-Path (Join-Path $InstallDir "rainy.exe")).Path) {
     throw "PowerShell bootstrap did not return the installed binary"
   }
@@ -84,11 +86,20 @@ Copy-Item -LiteralPath $env:RAINY_SKILL_TEST_BINARY -Destination (Join-Path $Ins
   (("0" * 64) + "  install.ps1") | Out-File -NoNewline -Encoding ascii (Join-Path $ReleaseDir "installers.sha256")
   $ChecksumFailed = $false
   try {
-    & $Bootstrap -InstallDir (Join-Path $TempDir "rejected") -ReleaseUrl $ReleaseUrl -ForceInstall
+    & $Bootstrap -InstallDir (Join-Path $TempDir "rejected") -ReleaseUrl $ReleaseUrl -ReleaseVersion v0.5.0 -ForceInstall
   } catch {
     $ChecksumFailed = $_.Exception.Message -match "checksum verification failed"
   }
   if (-not $ChecksumFailed) { throw "PowerShell bootstrap accepted an invalid installer checksum" }
+
+  $CredentialUrlFailed = $false
+  try {
+    & $Bootstrap -InstallDir (Join-Path $TempDir "credential-rejected") `
+      -ReleaseUrl "https://rainy:hunter2@example.com/release" -ReleaseVersion v0.5.0 -ForceInstall
+  } catch {
+    $CredentialUrlFailed = $_.Exception.Message -match "embedded URL credentials are not allowed" -and $_.Exception.Message -notmatch "hunter2"
+  }
+  if (-not $CredentialUrlFailed) { throw "PowerShell bootstrap accepted or leaked embedded URL credentials" }
 } finally {
   $env:RAINY_BIN = $PreviousRainyBin
   $env:RAINY_SKILL_TEST_BINARY = $PreviousTestBinary

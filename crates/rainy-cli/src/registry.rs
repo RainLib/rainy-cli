@@ -1,17 +1,16 @@
 use crate::cli::{
-    PackCommand, PackSubcommand, RegistryAddArgs, RegistryCommand, RegistryDoctorArgs,
-    RegistryRemoveArgs, RegistrySubcommand, RegistrySyncArgs, SkillTarget,
+    PackCommand, PackSubcommand, RegistryAddArgs, RegistryCommand, RegistryRemoveArgs,
+    RegistrySubcommand, RegistrySyncArgs, SkillTarget,
 };
 use crate::config::{self, ProjectConfig, RegistrySourceConfig};
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
 use crate::patch::{self, ChangeSet};
 use crate::policy;
-use dialoguer::{
-    MultiSelect,
-    theme::{ColorfulTheme, SimpleTheme, Theme},
-};
+use crate::progress::ProgressReporter;
 use fs2::FileExt;
+use inquire::ui::RenderConfig;
+use inquire::{InquireError, MultiSelect};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,11 +34,16 @@ pub struct CapabilityPack {
     pub requires: BTreeMap<String, String>,
     #[serde(default)]
     pub exports: PackExports,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, serde_yaml::Value>,
+    #[serde(flatten)]
+    pub extension_fields: BTreeMap<String, serde_yaml::Value>,
     #[serde(skip)]
     pub root: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackMetadata {
     pub name: String,
     pub version: String,
@@ -50,6 +54,7 @@ pub struct PackMetadata {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackExports {
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -103,6 +108,7 @@ struct RegistrySkillInstallOptions<'a> {
     interactive: bool,
     no_color: bool,
     registry_name: &'a str,
+    progress: &'a ProgressReporter,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +147,10 @@ pub struct CapabilityDefinition {
     pub agent_rules: Vec<String>,
     #[serde(default)]
     pub policy: config::PolicySection,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, serde_yaml::Value>,
+    #[serde(flatten)]
+    pub extension_fields: BTreeMap<String, serde_yaml::Value>,
     #[serde(skip)]
     pub pack_root: PathBuf,
     #[serde(skip)]
@@ -148,6 +158,7 @@ pub struct CapabilityDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityProvider {
     pub id: String,
     #[serde(default)]
@@ -157,6 +168,7 @@ pub struct CapabilityProvider {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityInput {
     #[serde(rename = "type")]
     pub input_type: String,
@@ -165,12 +177,14 @@ pub struct CapabilityInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityActions {
     #[serde(default)]
     pub install: Vec<ActionSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActionSpec {
     pub id: String,
     pub uses: String,
@@ -179,20 +193,38 @@ pub struct ActionSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValidationCommand {
     pub id: String,
-    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<ValidationRun>,
     #[serde(rename = "workingDirectory", default)]
     pub working_directory: Option<String>,
+    #[serde(rename = "timeoutSeconds", default)]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub platforms: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationRun {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityDoctor {
     #[serde(default)]
     pub checks: Vec<DoctorCheckSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DoctorCheckSpec {
     pub id: String,
     pub uses: String,
@@ -235,6 +267,10 @@ pub struct HttpRegistryIndex {
     pub protocol_version: String,
     #[serde(default)]
     pub packs: Vec<HttpRegistryPack>,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, serde_yaml::Value>,
+    #[serde(flatten)]
+    pub extension_fields: BTreeMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,6 +283,10 @@ pub struct HttpRegistryPack {
     pub files: Vec<String>,
     #[serde(default)]
     pub digests: BTreeMap<String, String>,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, serde_yaml::Value>,
+    #[serde(flatten)]
+    pub extension_fields: BTreeMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,6 +386,7 @@ pub fn handle_pack_command(
     command: PackCommand,
     interactive: bool,
     no_color: bool,
+    progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
     match command.command {
         PackSubcommand::List => {
@@ -383,9 +424,19 @@ pub fn handle_pack_command(
             }
             Ok(CommandOutput::Packs { packs })
         }
-        PackSubcommand::Install(args) => install_pack(workspace, args, interactive, no_color),
+        PackSubcommand::Install(args) => {
+            install_pack(workspace, args, interactive, no_color, progress)
+        }
         PackSubcommand::Update(args) => update_packs(workspace, args),
-        PackSubcommand::Sign(args) => sign_pack(&args.path),
+        PackSubcommand::Sign(args) => {
+            if args.dry_run && args.apply {
+                return Err(RainyError::config(
+                    "APPLY_MODE_CONFLICT",
+                    "--dry-run and --apply cannot be used together",
+                ));
+            }
+            sign_pack(&args.path, args.apply)
+        }
         PackSubcommand::Verify(args) => verify_pack_signature(&args.path),
     }
 }
@@ -395,13 +446,18 @@ pub fn handle_registry_command(
     command: RegistryCommand,
     interactive: bool,
     no_color: bool,
+    progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
     match command.command {
         RegistrySubcommand::List => registry_list(workspace),
         RegistrySubcommand::Add(args) => registry_add(workspace, args),
-        RegistrySubcommand::Sync(args) => registry_sync(workspace, args, interactive, no_color),
+        RegistrySubcommand::Sync(args) => {
+            registry_sync(workspace, args, interactive, no_color, progress)
+        }
         RegistrySubcommand::Remove(args) => registry_remove(workspace, args),
-        RegistrySubcommand::Doctor(args) => registry_doctor(workspace, args),
+        RegistrySubcommand::Doctor(args) => Ok(CommandOutput::Registry {
+            report: registry_doctor_report(workspace, args.name.as_deref())?,
+        }),
     }
 }
 
@@ -470,6 +526,7 @@ fn registry_sync(
     args: RegistrySyncArgs,
     interactive: bool,
     no_color: bool,
+    progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     if !args.all && args.module.is_empty() {
@@ -495,6 +552,7 @@ fn registry_sync(
         &args.target,
         interactive,
         no_color,
+        progress,
     )?;
     let project = config::load_config(workspace)?;
     let selected = project
@@ -569,6 +627,7 @@ fn registry_sync(
                     interactive,
                     no_color,
                     registry_name: &name,
+                    progress,
                 },
             )?
         } else {
@@ -646,14 +705,17 @@ fn registry_remove(workspace: &Path, args: RegistryRemoveArgs) -> RainyResult<Co
     })
 }
 
-fn registry_doctor(workspace: &Path, args: RegistryDoctorArgs) -> RainyResult<CommandOutput> {
+pub fn registry_doctor_report(
+    workspace: &Path,
+    wanted_registry: Option<&str>,
+) -> RainyResult<RegistryReport> {
     let project = config::load_config(workspace)?;
     let lock = config::load_registry_lock(workspace)?;
     let mut infos = Vec::new();
     let mut checks = Vec::new();
     for (index, source) in project.capability_registry.sources.iter().enumerate() {
         let name = registry_name(source, index);
-        if args.name.as_deref().is_some_and(|wanted| wanted != name) {
+        if wanted_registry.is_some_and(|wanted| wanted != name) {
             continue;
         }
         infos.push(registry_info(source, index, &lock));
@@ -683,10 +745,13 @@ fn registry_doctor(workspace: &Path, args: RegistryDoctorArgs) -> RainyResult<Co
             },
         });
     }
-    if infos.is_empty() && args.name.is_some() {
+    if infos.is_empty() && wanted_registry.is_some() {
         return Err(RainyError::registry(
             "REGISTRY_NOT_FOUND",
-            format!("registry not found: {}", args.name.unwrap_or_default()),
+            format!(
+                "registry not found: {}",
+                wanted_registry.unwrap_or_default()
+            ),
         ));
     }
     let status = if checks.iter().any(|check| check.status == "failed") {
@@ -694,9 +759,7 @@ fn registry_doctor(workspace: &Path, args: RegistryDoctorArgs) -> RainyResult<Co
     } else {
         "passed"
     };
-    Ok(CommandOutput::Registry {
-        report: registry_report("doctor", status, infos, checks),
-    })
+    Ok(registry_report("doctor", status, infos, checks))
 }
 
 fn registry_report(
@@ -831,18 +894,7 @@ fn registry_info(
 }
 
 fn rainy_home() -> RainyResult<PathBuf> {
-    if let Some(path) = std::env::var_os("RAINY_HOME") {
-        return Ok(PathBuf::from(path));
-    }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .ok_or_else(|| {
-            RainyError::registry(
-                "RAINY_HOME_NOT_FOUND",
-                "cannot determine Rainy home; set RAINY_HOME to an absolute directory",
-            )
-        })?;
-    Ok(PathBuf::from(home).join(".rainy"))
+    crate::paths::rainy_home()
 }
 
 fn registry_source_identity(source: &RegistrySourceConfig) -> String {
@@ -998,13 +1050,19 @@ fn sync_git_registry(
     if let Some(reference) = reference {
         command.args(["--branch", reference]);
     }
-    let output = command.arg(url).arg(&staging).output()?;
-    if !output.status.success() {
+    command.arg(url).arg(&staging);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !output.success() {
         let Some(reference) = reference else {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(RainyError::registry(
                 "REGISTRY_GIT_FETCH_FAILED",
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                output.stderr.trim().to_string(),
             ));
         };
         reset_staging(&staging)?;
@@ -1017,40 +1075,46 @@ fn sync_git_registry(
         )?;
         run_git(&staging, &["checkout", "--quiet", "--detach", "FETCH_HEAD"])?;
     }
-    let resolved = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .args(["-C"])
         .arg(&staging)
-        .args(["rev-parse", "HEAD"])
-        .output()?;
-    if !resolved.status.success() {
+        .args(["rev-parse", "HEAD"]);
+    let resolved = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !resolved.success() {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(RainyError::registry(
             "REGISTRY_GIT_REF_INVALID",
-            String::from_utf8_lossy(&resolved.stderr).trim().to_string(),
+            resolved.stderr.trim().to_string(),
         ));
     }
     reject_unsafe_tree_entries(&staging)?;
     filter_pack_modules(&staging, modules)?;
     validate_pack_source(&staging)?;
     atomic_replace_directory(&staging, &target)?;
-    Ok((
-        target,
-        String::from_utf8_lossy(&resolved.stdout).trim().to_string(),
-    ))
+    Ok((target, resolved.stdout.trim().to_string()))
 }
 
 fn run_git(repository: &Path, args: &[&str]) -> RainyResult<()> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repository)
-        .args(args)
-        .output()?;
-    if output.status.success() {
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(repository).args(args);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if output.success() {
         Ok(())
     } else {
         Err(RainyError::registry(
             "REGISTRY_GIT_FETCH_FAILED",
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            output.stderr.trim().to_string(),
         ))
     }
 }
@@ -1422,6 +1486,7 @@ fn resolve_registry_skill_targets(
     requested: &[SkillTarget],
     interactive: bool,
     no_color: bool,
+    progress: &ProgressReporter,
 ) -> RainyResult<Vec<SkillTarget>> {
     if !install_skills {
         return Ok(Vec::new());
@@ -1436,6 +1501,7 @@ fn resolve_registry_skill_targets(
         ));
     }
 
+    let _progress_suspension = progress.suspend();
     let targets = [
         SkillTarget::Universal,
         SkillTarget::Codex,
@@ -1466,30 +1532,37 @@ fn resolve_registry_skill_targets(
             .map(|target| matches!(target, SkillTarget::Universal))
             .collect()
     };
-    let colorful = ColorfulTheme::default();
-    let simple = SimpleTheme;
-    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
     eprintln!();
     eprintln!("Enterprise Skill targets");
     eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
-    let selected = MultiSelect::with_theme(theme)
-        .with_prompt("Select target agent hosts")
-        .items(&labels)
-        .defaults(&defaults)
-        .interact()
-        .map_err(|error| {
-            RainyError::registry(
-                "REGISTRY_SKILL_SELECTION_FAILED",
-                format!("could not read the target platform selection: {error}"),
-            )
-        })?;
+    let default_indices = defaults
+        .iter()
+        .enumerate()
+        .filter_map(|(index, selected)| selected.then_some(index))
+        .collect::<Vec<_>>();
+    let prompt = MultiSelect::new("Select target agent hosts", labels.to_vec())
+        .with_default(&default_indices)
+        .with_page_size(10)
+        .with_help_message(
+            "Type to search; Space toggles; Right all; Left clear; Enter confirms; Esc goes back",
+        );
+    let selected = if no_color {
+        prompt.with_render_config(RenderConfig::empty()).prompt()
+    } else {
+        prompt.prompt()
+    }
+    .map_err(|error| registry_prompt_error("target platform", error))?;
     if selected.is_empty() {
         return Err(RainyError::registry(
             "REGISTRY_SKILL_TARGET_REQUIRED",
             "select at least one target agent host",
         ));
     }
-    Ok(selected.into_iter().map(|index| targets[index]).collect())
+    Ok(selected
+        .into_iter()
+        .filter_map(|label| labels.iter().position(|candidate| *candidate == label))
+        .map(|index| targets[index])
+        .collect())
 }
 
 fn registry_skill_target_detected(workspace: &Path, target: &SkillTarget) -> bool {
@@ -1536,6 +1609,7 @@ fn install_registry_skills(
         options.interactive,
         options.no_color,
         options.registry_name,
+        options.progress,
     )?;
     install_discovered_registry_skills(
         workspace,
@@ -1605,6 +1679,7 @@ fn select_registry_skill_ids(
     interactive: bool,
     no_color: bool,
     registry_name: &str,
+    progress: &ProgressReporter,
 ) -> RainyResult<BTreeSet<String>> {
     let available = exports
         .iter()
@@ -1632,6 +1707,7 @@ fn select_registry_skill_ids(
         return Ok(available);
     }
 
+    let _progress_suspension = progress.suspend();
     let previous_ids = previous
         .iter()
         .map(|skill| skill.id.as_str())
@@ -1648,34 +1724,55 @@ fn select_registry_skill_ids(
             .map(|export| previous_ids.contains(export.id.as_str()))
             .collect()
     };
-    let colorful = ColorfulTheme::default();
-    let simple = SimpleTheme;
-    let theme: &dyn Theme = if no_color { &simple } else { &colorful };
     eprintln!();
     eprintln!("Enterprise Skill selection");
     eprintln!("  Registry  {registry_name}");
     eprintln!("  Use Up/Down to move, Space to select, and Enter to confirm.");
-    let selected = MultiSelect::with_theme(theme)
-        .with_prompt("Select Skills to install")
-        .items(&labels)
-        .defaults(&defaults)
-        .interact()
-        .map_err(|error| {
-            RainyError::registry(
-                "REGISTRY_SKILL_SELECTION_FAILED",
-                format!("could not read the Skill selection: {error}"),
-            )
-        })?;
+    let default_indices = defaults
+        .iter()
+        .enumerate()
+        .filter_map(|(index, selected)| selected.then_some(index))
+        .collect::<Vec<_>>();
+    let prompt = MultiSelect::new("Select Skills to install", labels.clone())
+        .with_default(&default_indices)
+        .with_page_size(12)
+        .with_help_message(
+            "Type to search; Space toggles; Right all; Left clear; Enter confirms; Esc goes back",
+        );
+    let selected = if no_color {
+        prompt.with_render_config(RenderConfig::empty()).prompt()
+    } else {
+        prompt.prompt()
+    }
+    .map_err(|error| registry_prompt_error("Skill", error))?
+    .into_iter()
+    .collect::<BTreeSet<_>>();
     if selected.is_empty() {
         return Err(RainyError::registry(
             "REGISTRY_SKILL_SELECTION_REQUIRED",
             "select at least one Skill, or rerun without --install-skills",
         ));
     }
-    Ok(selected
-        .into_iter()
-        .map(|index| exports[index].id.clone())
+    Ok(labels
+        .iter()
+        .zip(exports)
+        .filter(|(label, _)| selected.contains(*label))
+        .map(|(_, export)| export.id.clone())
         .collect())
+}
+
+fn registry_prompt_error(context: &str, error: InquireError) -> RainyError {
+    if matches!(
+        error,
+        InquireError::OperationCanceled | InquireError::OperationInterrupted
+    ) {
+        RainyError::action("CANCELLED", format!("{context} selection cancelled"))
+    } else {
+        RainyError::registry(
+            "REGISTRY_SKILL_SELECTION_FAILED",
+            format!("could not read the {context} selection: {error}"),
+        )
+    }
 }
 
 fn install_selected_registry_skills_for_targets(
@@ -2132,11 +2229,25 @@ fn load_pack_at(
     let pack_path = root.join("pack.yaml");
     let content = std::fs::read_to_string(&pack_path)?;
     let mut pack: CapabilityPack = serde_yaml::from_str(&content)?;
+    validate_extension_fields(
+        "capability pack",
+        &pack.api_version,
+        "CapabilityPack",
+        &pack.kind,
+        &pack.extension_fields,
+    )?;
     pack.root = root.to_path_buf();
     for capability_path in &pack.exports.capabilities {
         let path = root.join(capability_path);
         let content = std::fs::read_to_string(&path)?;
         let mut capability: CapabilityDefinition = serde_yaml::from_str(&content)?;
+        validate_extension_fields(
+            "capability",
+            &capability.api_version,
+            "Capability",
+            &capability.kind,
+            &capability.extension_fields,
+        )?;
         capability.pack_root = root.to_path_buf();
         capability.pack_name = pack.metadata.name.clone();
         if capabilities.contains_key(&capability.id) {
@@ -2151,11 +2262,34 @@ fn load_pack_at(
     Ok(())
 }
 
+fn validate_extension_fields(
+    document: &str,
+    api_version: &str,
+    expected_kind: &str,
+    actual_kind: &str,
+    fields: &BTreeMap<String, serde_yaml::Value>,
+) -> RainyResult<()> {
+    if api_version != "rainy.dev/v1" || actual_kind != expected_kind {
+        return Err(RainyError::registry(
+            "REGISTRY_DOCUMENT_IDENTITY_INVALID",
+            format!("{document} must use apiVersion rainy.dev/v1 and kind {expected_kind}"),
+        ));
+    }
+    if let Some(field) = fields.keys().find(|field| !field.starts_with("x-")) {
+        return Err(RainyError::registry(
+            "REGISTRY_DOCUMENT_UNKNOWN_FIELD",
+            format!("unknown {document} field '{field}'; use extensions or an x-* field"),
+        ));
+    }
+    Ok(())
+}
+
 fn install_pack(
     workspace: &Path,
     args: crate::cli::PackInstallArgs,
     interactive: bool,
     no_color: bool,
+    progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let skill_targets = resolve_registry_skill_targets(
@@ -2164,6 +2298,7 @@ fn install_pack(
         &args.target,
         interactive,
         no_color,
+        progress,
     )?;
     let name = args
         .name
@@ -2214,6 +2349,7 @@ fn install_pack(
                     interactive,
                     no_color,
                     registry_name: &name,
+                    progress,
                 },
             )?
         } else {
@@ -2349,33 +2485,49 @@ fn update_packs(workspace: &Path, args: crate::cli::PackUpdateArgs) -> RainyResu
     })
 }
 
-fn sign_pack(path: &Path) -> RainyResult<CommandOutput> {
+fn sign_pack(path: &Path, apply: bool) -> RainyResult<CommandOutput> {
     validate_pack_source(path)?;
     let signature = calculate_pack_signature(path)?;
     let signature_path = path.join(".rainy-pack-signature.json");
+    if !apply {
+        return Ok(CommandOutput::Message {
+            status: "dry-run",
+            message: format!(
+                "Would create pack integrity manifest {} with sha256 {}",
+                signature_path.display(),
+                signature.digest
+            ),
+        });
+    }
     std::fs::write(
         &signature_path,
         format!("{}\n", serde_json::to_string_pretty(&signature)?),
     )?;
     let publisher_signed = if let Some(key) = std::env::var_os("RAINY_PACK_SIGNING_KEY") {
         let detached_signature = path.join(".rainy-pack-signature.sig");
-        let output = std::process::Command::new("cosign")
+        let mut command = std::process::Command::new("cosign");
+        command
             .args(["sign-blob", "--yes", "--key"])
             .arg(key)
             .arg("--output-signature")
             .arg(&detached_signature)
-            .arg(&signature_path)
-            .output()
-            .map_err(|err| {
-                RainyError::registry(
-                    "PACK_PUBLISHER_SIGNING_FAILED",
-                    format!("failed to run cosign: {err}"),
-                )
-            })?;
-        if !output.status.success() {
+            .arg(&signature_path);
+        let output = crate::process::run_command(
+            command,
+            "cosign",
+            Duration::from_secs(300),
+            crate::process::DEFAULT_OUTPUT_LIMIT,
+        )
+        .map_err(|err| {
+            RainyError::registry(
+                "PACK_PUBLISHER_SIGNING_FAILED",
+                format!("failed to run cosign: {}", err.body().message),
+            )
+        })?;
+        if !output.success() {
             return Err(RainyError::registry(
                 "PACK_PUBLISHER_SIGNING_FAILED",
-                String::from_utf8_lossy(&output.stderr).to_string(),
+                output.stderr,
             ));
         }
         true
@@ -2432,23 +2584,29 @@ fn verify_pack_signature(path: &Path) -> RainyResult<CommandOutput> {
                 ),
             ));
         }
-        let output = std::process::Command::new("cosign")
+        let mut command = std::process::Command::new("cosign");
+        command
             .args(["verify-blob", "--key"])
             .arg(key)
             .arg("--signature")
             .arg(&detached_signature)
-            .arg(&signature_path)
-            .output()
-            .map_err(|err| {
-                RainyError::registry(
-                    "PACK_PUBLISHER_SIGNATURE_INVALID",
-                    format!("failed to run cosign: {err}"),
-                )
-            })?;
-        if !output.status.success() {
+            .arg(&signature_path);
+        let output = crate::process::run_command(
+            command,
+            "cosign",
+            Duration::from_secs(300),
+            crate::process::DEFAULT_OUTPUT_LIMIT,
+        )
+        .map_err(|err| {
+            RainyError::registry(
+                "PACK_PUBLISHER_SIGNATURE_INVALID",
+                format!("failed to run cosign: {}", err.body().message),
+            )
+        })?;
+        if !output.success() {
             return Err(RainyError::registry(
                 "PACK_PUBLISHER_SIGNATURE_INVALID",
-                String::from_utf8_lossy(&output.stderr).to_string(),
+                output.stderr,
             ));
         }
         true
@@ -2537,6 +2695,13 @@ fn sync_http_registry_modules(
             "HTTP_REGISTRY_INVALID",
             format!("unsupported registry protocol: {}", index.protocol_version),
         ));
+    }
+    validate_x_extension_fields("registry index", &index.extension_fields)?;
+    for pack in &index.packs {
+        validate_x_extension_fields(
+            &format!("registry pack {}", pack.name),
+            &pack.extension_fields,
+        )?;
     }
     let available = index
         .packs
@@ -2681,25 +2846,22 @@ fn http_get(url: &str) -> RainyResult<String> {
 }
 
 fn validate_network_url(url: &str, code: &'static str) -> RainyResult<()> {
-    if url.starts_with("https://") {
-        return Ok(());
+    crate::security::validate_http(url, true).map_err(|reason| {
+        RainyError::registry(code, format!("registry URL is not allowed: {reason}"))
+    })
+}
+
+fn validate_x_extension_fields(
+    document: &str,
+    fields: &BTreeMap<String, serde_yaml::Value>,
+) -> RainyResult<()> {
+    if let Some(field) = fields.keys().find(|field| !field.starts_with("x-")) {
+        return Err(RainyError::registry(
+            "REGISTRY_DOCUMENT_UNKNOWN_FIELD",
+            format!("unknown {document} field '{field}'; use extensions or an x-* field"),
+        ));
     }
-    if let Some(rest) = url.strip_prefix("http://") {
-        let host = rest
-            .split_once('/')
-            .map(|(host, _)| host)
-            .unwrap_or(rest)
-            .split(':')
-            .next()
-            .unwrap_or_default();
-        if matches!(host, "127.0.0.1" | "localhost" | "::1") {
-            return Ok(());
-        }
-    }
-    Err(RainyError::registry(
-        code,
-        format!("only HTTPS or loopback HTTP URLs are allowed: {url}"),
-    ))
+    Ok(())
 }
 
 fn validate_relative_registry_file(path: &str) -> RainyResult<()> {
@@ -2730,17 +2892,12 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn validate_git_url(url: &str) -> RainyResult<()> {
-    if url.starts_with("https://")
-        || url.starts_with("ssh://")
-        || url.starts_with("git@")
-        || url.starts_with("file://")
-    {
-        return Ok(());
-    }
-    Err(RainyError::registry(
-        "PACK_SOURCE_UNSUPPORTED_URL",
-        format!("git source must use HTTPS or SSH: {url}"),
-    ))
+    crate::security::validate_git(url, true).map_err(|reason| {
+        RainyError::registry(
+            "PACK_SOURCE_UNSUPPORTED_URL",
+            format!("Git source is not allowed: {reason}"),
+        )
+    })
 }
 
 fn validate_pack_source(source: &Path) -> RainyResult<()> {

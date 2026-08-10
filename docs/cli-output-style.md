@@ -35,7 +35,7 @@ under `--verbose`. They must not compete with the next Rainy command.
 Skill install
 
 Summary
-  Status    Preview only; no files changed
+  Status    Applied
   Bundle    Complete workflow
   Targets   codex
   Language  zh
@@ -46,12 +46,11 @@ Enabled Skills
   Superpowers      engineering methods and delivery workflow
   Comet            phase orchestration and recovery state
 
-Next step
-  $ rainy skill install --apply
-
-Planned locations
+Affected locations
   .agents/skills
   .comet
+  rainy-skills.yaml
+  skills.lock
 ```
 
 ## Errors
@@ -72,10 +71,10 @@ Next steps
 Error codes and JSON error envelopes remain stable for scripts. Human recovery commands are
 additive guidance.
 
-Command-line input failures use `CLI_ARGUMENT_INVALID` and exit with code `2`; unknown top-level
-commands use `EXTERNAL_COMMAND_NOT_FOUND` and exit with code `1`. In `--json` mode, both use the
-same error envelope on `stderr`, while `stdout` stays empty. This makes invalid invocation
-unambiguous without contaminating a redirected result stream.
+Command-line input failures and unknown command spellings use `CLI_ARGUMENT_INVALID`, preserve Clap
+suggestions, and exit with code `2`. An installed native plugin may still use its declared top-level
+shortcut. In `--json` mode, operation errors use the same `rainy.command.v1` error envelope on
+`stderr`, while `stdout` stays empty.
 
 ## Streams And Modes
 
@@ -85,15 +84,14 @@ unambiguous without contaminating a redirected result stream.
 - Redirected or non-terminal input disables interaction.
 - `--progress auto` is reserved for commands that can take noticeable time; read-only output stays
   quiet unless `--progress always` is explicitly requested.
-- `--no-color` and `NO_COLOR` disable color. Progress switches to stable line output rather than
-  ANSI cursor redraws; interactive selectors retain the cursor control they require.
+- `--no-color` and `NO_COLOR` disable color without disabling TTY redraws.
 - `TERM=dumb` disables color and dynamic progress rendering.
 - `--verbose` expands diagnostics without changing the JSON schema.
 
 ## Cancellation
 
-`Ctrl+C` exits with code `130`. When a dynamic progress line is active, Rainy clears it before
-exiting. Atomic filesystem writes already committed remain valid; incomplete work is never
+`Ctrl+C` requests cancellation, restores the cursor, waits up to two seconds, terminates the whole
+child process group, and exits with code `130`. Atomic filesystem writes already committed remain valid; incomplete work is never
 reported as a successful apply. Callers that need recovery should rerun the same preview command
 and inspect the resulting plan before applying again.
 
@@ -102,10 +100,13 @@ and inspect the resulting plan before applying again.
 Interactive selectors use arrow keys to move, Space to toggle multi-select entries, and Enter to
 confirm. Detected platforms are preselected. A required platform selector cannot accept an empty result;
 the project Skill selector may intentionally select none.
+`Esc` returns to the preceding Skill selection step; `Ctrl+C` or terminal EOF cancels the operation,
+restores terminal state, and exits with code `130` without applying changes.
 Universal `.agents/skills` is displayed as always included and is added to every Skill profile.
-Before installation, Rainy prints the selected bundle, targets, project Skills, and effective Skills and
-requires a separate yes/no confirmation. Declining continues as a preview; accepting is equivalent to
-explicit interactive apply approval.
+Interactive `rainy skill install` prints the selected bundle, targets, project Skills, and effective
+Skills, then asks for confirmation. Accepting installs immediately without `--apply`; declining or
+passing `--dry-run` returns a preview. Non-interactive, redirected, and JSON callers require `--apply`
+or `--yes`. `Esc` returns to selection, while Ctrl+C and EOF cancel with exit code `130`.
 
 Every interactive choice has an equivalent explicit flag so that the same operation can be replayed
 without a terminal. For project Skills, those flags are `--skill`, `--all-custom-skills`, and

@@ -8,5 +8,5 @@
     "protocolVersion": { "const": "rainy.plugin-rpc.v1" },
     "changeSet": { "$ref": "changeset.schema.json" }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

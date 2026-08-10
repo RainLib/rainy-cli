@@ -12,15 +12,21 @@ mod evidence;
 mod init;
 mod output;
 mod patch;
+mod paths;
 mod plugin;
 mod policy;
+mod process;
 mod progress;
 mod project_template;
+mod redaction;
 mod registry;
+mod runtime;
 mod schema;
+mod security;
 mod skills;
 mod update;
 mod verify;
+mod workspace;
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use cli::{
@@ -29,65 +35,96 @@ use cli::{
 };
 use error::{RainyError, RainyResult};
 use output::CommandOutput;
-use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let cli = match Cli::try_parse() {
+    let mut cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(error) => handle_cli_parse_error(error),
+        Err(error) => {
+            try_parse_installed_plugin(&error).unwrap_or_else(|| handle_cli_parse_error(error))
+        }
     };
     let json = cli.json;
+    if let Err(error) = validate_trace_id(cli.trace_id.as_deref()) {
+        output::print_error(&error, json, cli.trace_id.as_deref());
+        std::process::exit(error.exit_code());
+    }
     if let Err(error) = progress::install_interrupt_handler() {
         let error = RainyError::action(
             "INTERRUPT_HANDLER_UNAVAILABLE",
             format!("unable to install Ctrl+C handler: {error}"),
         );
-        output::print_error(&error, json);
+        output::print_error(&error, json, cli.trace_id.as_deref());
         std::process::exit(1);
     }
     let verbose = cli.verbose;
     let no_color = color_disabled(cli.no_color);
-    let interactive =
-        !cli.json && !cli.quiet && io::stdin().is_terminal() && io::stderr().is_terminal();
-    let audit_workspace = cli
-        .workspace
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let prompt_before_progress =
-        interactive && command_needs_prompt(&audit_workspace, &cli.command);
+    let output_mode = if cli.json {
+        runtime::OutputMode::Json
+    } else if cli.quiet {
+        runtime::OutputMode::Quiet
+    } else {
+        runtime::OutputMode::Human
+    };
+    let terminal = runtime::TerminalCapabilities::detect(no_color, output_mode);
+    let marker = workspace_marker(&cli.command);
+    let resolved_workspace = match workspace::resolve(cli.workspace.take(), marker) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            let error = RainyError::from(error);
+            output::print_error(&error, json, cli.trace_id.as_deref());
+            std::process::exit(error.exit_code());
+        }
+    };
+    cli.workspace = Some(resolved_workspace.clone());
+    let audit_workspace = resolved_workspace;
     let trace_id = cli.trace_id.clone();
     let audit_command = command_label(&cli.command).to_string();
+    let audit_required = command_requires_audit(&cli.command, terminal.interactive);
     let is_self_command = matches!(cli.command, Commands::SelfCommand(_));
     let is_completion_command = matches!(cli.command, Commands::Completion(_));
+    let implicit_defaults_fetch =
+        command_uses_default_content(&cli.command) && defaults::implicit_fetch_required();
     update::maybe_notify(json, cli.quiet || is_completion_command, is_self_command);
-    let progress_mode = if prompt_before_progress
-        || is_completion_command
+    let progress_mode = if is_completion_command
         || (matches!(cli.progress, progress::ProgressMode::Auto)
-            && !command_benefits_from_progress(&cli.command))
+            && !command_benefits_from_progress(&cli.command)
+            && !implicit_defaults_fetch)
     {
         progress::ProgressMode::Never
     } else {
         cli.progress
     };
-    let mut progress =
-        progress::ProgressReporter::new(progress_mode, cli.json, cli.quiet, no_color);
+    let progress = progress::ProgressReporter::new(progress_mode, cli.json, cli.quiet, no_color);
+    let context = runtime::RunContext::new(
+        audit_workspace.clone(),
+        output_mode,
+        terminal,
+        trace_id.clone(),
+        &progress,
+    );
     progress.stage(format!("Preparing {audit_command}"));
 
-    if command_requires_audit(&cli.command)
-        && let Err(err) = audit::preflight(&audit_workspace)
-    {
+    if audit_required && let Err(err) = audit::preflight(&audit_workspace) {
         progress.finish_error();
-        output::print_error(&err, json);
+        output::print_error(&err, json, trace_id.as_deref());
         std::process::exit(err.exit_code());
     }
 
     progress.stage(format!("Running {audit_command}"));
 
-    match run(cli, &progress, interactive, no_color) {
+    let result = run(cli, &context);
+    if progress::cancelled() {
+        progress.finish_cancelled();
+        let error = RainyError::action("CANCELLED", "command cancelled by user");
+        output::print_error(&error, json, trace_id.as_deref());
+        std::process::exit(130);
+    }
+
+    match result {
         Ok(output) => {
             progress.stage("Recording command result");
-            if !is_completion_command
+            if audit_required
                 && let Err(err) = audit::record_success(
                     &audit_workspace,
                     &audit_command,
@@ -96,15 +133,19 @@ fn main() {
                 )
             {
                 progress.finish_error();
-                output::print_error(&err, json);
+                output::print_error(&err, json, trace_id.as_deref());
                 std::process::exit(err.exit_code());
             }
             progress.stage("Rendering output");
             progress.finish_success();
-            output.print(json, verbose);
+            let exit_code = output.exit_code();
+            output.print(json, verbose, trace_id.as_deref());
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
         }
         Err(err) => {
-            if !is_completion_command {
+            if audit_required {
                 let _ = audit::record_error(
                     &audit_workspace,
                     &audit_command,
@@ -113,40 +154,152 @@ fn main() {
                 );
             }
             progress.finish_error();
-            output::print_error(&err, json);
+            output::print_error(&err, json, trace_id.as_deref());
             std::process::exit(err.exit_code());
         }
     }
 }
 
+fn try_parse_installed_plugin(error: &clap::Error) -> Option<Cli> {
+    if error.kind() != ErrorKind::InvalidSubcommand {
+        return None;
+    }
+    let rendered = error.to_string();
+    let command = rendered.lines().find_map(|line| {
+        line.strip_prefix("error: unrecognized subcommand '")
+            .and_then(|line| line.split_once('\'').map(|(command, _)| command))
+    })?;
+    let mut arguments = std::env::args_os().collect::<Vec<_>>();
+    let position = arguments
+        .iter()
+        .position(|argument| argument.to_str() == Some(command))?;
+    let explicit_workspace = arguments.iter().enumerate().find_map(|(index, argument)| {
+        let value = argument.to_string_lossy();
+        value
+            .strip_prefix("--workspace=")
+            .map(PathBuf::from)
+            .or_else(|| {
+                (value == "--workspace")
+                    .then(|| arguments.get(index + 1).map(PathBuf::from))
+                    .flatten()
+            })
+    });
+    let workspace =
+        workspace::resolve(explicit_workspace, workspace::WorkspaceMarker::Either).ok()?;
+    if !plugin::external_command_exists(&workspace, command) {
+        return None;
+    }
+    arguments.insert(position, "external".into());
+    Cli::try_parse_from(arguments).ok()
+}
+
 fn handle_cli_parse_error(error: clap::Error) -> ! {
+    if error.kind() == ErrorKind::MissingSubcommand {
+        print_current_command_help();
+        std::process::exit(0);
+    }
     if matches!(
         error.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
     ) {
-        let _ = error.print();
+        print!("{error}");
         std::process::exit(0);
     }
 
     let rendered = error.to_string();
-    let reason = rendered
-        .lines()
-        .find_map(|line| line.strip_prefix("error: "))
-        .or_else(|| rendered.lines().find(|line| !line.trim().is_empty()))
-        .unwrap_or("invalid command-line input")
-        .to_string();
+    if !rendered.lines().any(|line| line.starts_with("error: ")) {
+        print!("{rendered}");
+        std::process::exit(0);
+    }
+    let reason = clap_reason(&rendered);
     let json = std::env::args_os().any(|argument| argument == "--json");
     let parse_error = RainyError::config("CLI_ARGUMENT_INVALID", reason);
-    output::print_error(&parse_error, json);
+    output::print_error(&parse_error, json, None);
     if !json {
         if let Some(usage) = clap_usage(&rendered) {
             eprintln!();
             eprintln!("Usage");
             eprintln!("  {usage}");
         }
-        eprintln!("  Run 'rainy <COMMAND> --help' for command-specific examples.");
+        eprintln!("  Run 'rainy --help', or append '--help' to the current command path.");
     }
     std::process::exit(2);
+}
+
+fn print_current_command_help() {
+    let mut command = Cli::command();
+    for argument in std::env::args().skip(1) {
+        if let Some(subcommand) = command.find_subcommand(&argument).cloned() {
+            command = subcommand;
+        }
+    }
+    let _ = command.print_long_help();
+    println!();
+}
+
+fn clap_reason(rendered: &str) -> String {
+    let mut collecting = false;
+    let mut lines = Vec::new();
+    for line in rendered.lines() {
+        if let Some(first) = line.strip_prefix("error: ") {
+            collecting = true;
+            lines.push(first.to_string());
+            continue;
+        }
+        if collecting {
+            if line.trim_start().starts_with("Usage:") {
+                break;
+            }
+            if !line.trim().is_empty() {
+                lines.push(line.trim_end().to_string());
+            }
+        }
+    }
+    if lines.is_empty() {
+        rendered
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("invalid command-line input")
+            .to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn validate_trace_id(trace_id: Option<&str>) -> RainyResult<()> {
+    let Some(trace_id) = trace_id else {
+        return Ok(());
+    };
+    if trace_id.is_empty()
+        || trace_id.len() > 64
+        || !trace_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+    {
+        return Err(RainyError::config(
+            "TRACE_ID_INVALID",
+            "--trace-id must contain 1-64 ASCII letters, digits, '.', '-', '_', or ':'",
+        ));
+    }
+    Ok(())
+}
+
+fn workspace_marker(command: &Commands) -> workspace::WorkspaceMarker {
+    use workspace::WorkspaceMarker;
+    match command {
+        Commands::New(_)
+        | Commands::Init(_)
+        | Commands::Defaults(_)
+        | Commands::Schema(_)
+        | Commands::Conformance(_)
+        | Commands::SelfCommand(_)
+        | Commands::Completion(_) => WorkspaceMarker::None,
+        Commands::Skill(_) => WorkspaceMarker::Skills,
+        Commands::Doctor(_) | Commands::Plugin(_) | Commands::External(_) => {
+            WorkspaceMarker::Either
+        }
+        _ => WorkspaceMarker::Project,
+    }
 }
 
 fn clap_usage(rendered: &str) -> Option<String> {
@@ -156,39 +309,6 @@ fn clap_usage(rendered: &str) -> Option<String> {
         // Environment-backed global flags are already in effect. Showing them
         // as positional-looking input makes a recovery command misleading.
         .map(|usage| usage.replace(" --allow-native-plugin", ""))
-}
-
-fn command_needs_prompt(workspace: &Path, command: &Commands) -> bool {
-    match command {
-        Commands::Skill(command) => match &command.command {
-            cli::SkillSubcommand::Init(args) => {
-                args.profile.is_none()
-                    || args.target.is_empty()
-                    || (args.skill.is_empty() && !args.all_custom_skills && !args.no_custom_skills)
-                    || (!args.apply && !args.dry_run)
-            }
-            cli::SkillSubcommand::Install(args) => {
-                (!workspace.join("rainy-skills.yaml").is_file()
-                    && (args.profile.is_none() || args.target.is_empty()))
-                    || (args.skill.is_empty() && !args.all_custom_skills && !args.no_custom_skills)
-                    || (!args.apply && !args.dry_run)
-            }
-            _ => false,
-        },
-        Commands::Pack(command) => matches!(
-            &command.command,
-            cli::PackSubcommand::Install(args)
-                if args.install_skills
-                    && (args.target.is_empty() || (args.skill.is_empty() && !args.all_skills))
-        ),
-        Commands::Registry(command) => matches!(
-            &command.command,
-            cli::RegistrySubcommand::Sync(args)
-                if args.install_skills
-                    && (args.target.is_empty() || (args.skill.is_empty() && !args.all_skills))
-        ),
-        _ => false,
-    }
 }
 
 fn command_benefits_from_progress(command: &Commands) -> bool {
@@ -222,7 +342,7 @@ fn command_benefits_from_progress(command: &Commands) -> bool {
             command.command,
             cli::PluginSubcommand::Install(_) | cli::PluginSubcommand::Call(_)
         ),
-        Commands::Agent(command) => matches!(command.command, cli::AgentSubcommand::Init),
+        Commands::Agent(command) => matches!(command.command, cli::AgentSubcommand::Init(_)),
         Commands::Skill(command) => !matches!(
             command.command,
             cli::SkillSubcommand::Status | cli::SkillSubcommand::Doctor
@@ -232,8 +352,33 @@ fn command_benefits_from_progress(command: &Commands) -> bool {
     }
 }
 
-fn command_requires_audit(command: &Commands) -> bool {
+fn command_uses_default_content(command: &Commands) -> bool {
     match command {
+        Commands::Init(_) | Commands::Add(_) | Commands::Apply(_) | Commands::Capability(_) => true,
+        Commands::New(args) => args.template.is_none(),
+        Commands::Pack(command) => matches!(
+            command.command,
+            cli::PackSubcommand::List
+                | cli::PackSubcommand::Inspect { .. }
+                | cli::PackSubcommand::Update(_)
+        ),
+        Commands::Doctor(_) | Commands::Verify(_) | Commands::Evidence(_) => true,
+        Commands::Skill(command) => matches!(
+            command.command,
+            cli::SkillSubcommand::Init(_)
+                | cli::SkillSubcommand::Install(_)
+                | cli::SkillSubcommand::Update(_)
+        ),
+        _ => false,
+    }
+}
+
+fn command_requires_audit(command: &Commands, interactive: bool) -> bool {
+    match command {
+        Commands::Init(command) => match &command.command {
+            InitSubcommand::App(args) => args.apply,
+        },
+        Commands::New(args) => args.apply,
         Commands::Add(command) => match &command.command {
             AddSubcommand::Capability(args) => args.apply,
         },
@@ -246,7 +391,7 @@ fn command_requires_audit(command: &Commands) -> bool {
         Commands::Pack(command) => match &command.command {
             cli::PackSubcommand::Install(args) => args.apply,
             cli::PackSubcommand::Update(args) => args.apply,
-            cli::PackSubcommand::Sign(_) => true,
+            cli::PackSubcommand::Sign(args) => args.apply,
             _ => false,
         },
         Commands::Registry(command) => match &command.command {
@@ -255,15 +400,42 @@ fn command_requires_audit(command: &Commands) -> bool {
             cli::RegistrySubcommand::Remove(args) => args.apply,
             _ => false,
         },
-        Commands::Defaults(_) => false,
+        Commands::Defaults(command) => match &command.command {
+            cli::DefaultsSubcommand::Install(args) | cli::DefaultsSubcommand::Update(args) => {
+                args.apply
+            }
+            _ => false,
+        },
         Commands::Plugin(command) => match &command.command {
             cli::PluginSubcommand::Install(args) => args.apply,
             cli::PluginSubcommand::Call(args) => args.apply,
             _ => false,
         },
-        Commands::Evidence(_) | Commands::Agent(_) | Commands::Skill(_) | Commands::External(_) => {
-            true
+        Commands::Evidence(args) => {
+            args.apply
+                || matches!(
+                    &args.command,
+                    Some(EvidenceSubcommand::Generate(generate)) if generate.apply
+                )
         }
+        Commands::Agent(command) => {
+            matches!(&command.command, cli::AgentSubcommand::Init(args) if args.apply)
+        }
+        Commands::Skill(command) => match &command.command {
+            cli::SkillSubcommand::Init(args) => args.apply,
+            cli::SkillSubcommand::Install(args) => args.apply || (interactive && !args.dry_run),
+            cli::SkillSubcommand::Create(args) => args.apply,
+            cli::SkillSubcommand::Sync(args) => args.apply,
+            cli::SkillSubcommand::Update(args) => args.apply,
+            cli::SkillSubcommand::Uninstall(args) => args.apply,
+            cli::SkillSubcommand::Status | cli::SkillSubcommand::Doctor => false,
+        },
+        Commands::SelfCommand(command) => match &command.command {
+            cli::SelfSubcommand::Update(args) => args.apply,
+            cli::SelfSubcommand::Skip(args) => args.apply,
+            cli::SelfSubcommand::Check(_) => false,
+        },
+        Commands::External(_) => true,
         _ => false,
     }
 }
@@ -297,13 +469,16 @@ fn command_label(command: &Commands) -> &'static str {
     }
 }
 
-fn run(
-    cli: Cli,
-    progress: &progress::ProgressReporter,
-    interactive: bool,
-    no_color: bool,
-) -> RainyResult<CommandOutput> {
-    let workspace = cli.workspace.unwrap_or(std::env::current_dir()?);
+fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput> {
+    if context.cancelled() {
+        return Err(RainyError::action("CANCELLED", "command cancelled by user"));
+    }
+    let _execution_metadata = (
+        context.output_mode,
+        context.terminal.width,
+        context.trace_id.as_deref(),
+    );
+    let workspace = context.workspace().to_path_buf();
     let allow_native_plugin = cli.allow_native_plugin
         || config::load_config(&workspace)
             .map(|config| config.policy.allow_native_plugins)
@@ -338,7 +513,7 @@ fn run(
                     catalog_path: args.template_config,
                     git_url: args.git_url,
                     dry_run,
-                    progress,
+                    progress: context.progress,
                 })
             } else {
                 init::init_app(init::InitOptions {
@@ -367,42 +542,64 @@ fn run(
             CapabilitySubcommand::Upgrade(args) => upgrade_capability(&workspace, args),
             CapabilitySubcommand::Remove(args) => remove_capability(&workspace, args),
         },
-        Commands::Pack(command) => {
-            registry::handle_pack_command(&workspace, command, interactive, no_color)
-        }
-        Commands::Registry(command) => {
-            registry::handle_registry_command(&workspace, command, interactive, no_color)
-        }
+        Commands::Pack(command) => registry::handle_pack_command(
+            &workspace,
+            command,
+            context.terminal.interactive,
+            !context.terminal.color,
+            context.progress,
+        ),
+        Commands::Registry(command) => registry::handle_registry_command(
+            &workspace,
+            command,
+            context.terminal.interactive,
+            !context.terminal.color,
+            context.progress,
+        ),
         Commands::Defaults(command) => defaults::handle_defaults_command(command),
-        Commands::Doctor(args) => {
-            doctor::doctor_command(&workspace, args.capability.as_deref(), progress)
-        }
+        Commands::Doctor(args) => doctor::doctor_command(
+            &workspace,
+            args.scope,
+            args.capability.as_deref(),
+            args.network,
+            context.progress,
+        ),
         Commands::Verify(args) => verify::verify_command(
             &workspace,
             &args.profile,
             args.capability.as_deref(),
-            progress,
+            context.progress,
         ),
         Commands::Evidence(args) => {
-            let format = match args.command {
-                Some(EvidenceSubcommand::Generate(generate)) => generate.format.or(args.format),
-                None => args.format,
-            }
-            .unwrap_or(EvidenceFormat::All);
-            evidence::generate_command(&workspace, format)
+            let (format, dry_run, apply) = match args.command {
+                Some(EvidenceSubcommand::Generate(generate)) => (
+                    generate.format.or(args.format),
+                    generate.dry_run || args.dry_run,
+                    generate.apply || args.apply,
+                ),
+                None => (args.format, args.dry_run, args.apply),
+            };
+            let apply = resolve_apply_flags(dry_run, apply)?;
+            evidence::generate_command(&workspace, format.unwrap_or(EvidenceFormat::All), apply)
         }
         Commands::Plugin(command) => {
             plugin::handle_plugin_command(&workspace, command, allow_native_plugin)
         }
         Commands::Agent(command) => agent::handle_agent_command(&workspace, command),
-        Commands::Skill(command) => {
-            skills::handle_skill_command(&workspace, command, progress, interactive, no_color)
-        }
+        Commands::Skill(command) => skills::handle_skill_command(
+            &workspace,
+            command,
+            context.progress,
+            context.terminal.interactive,
+            !context.terminal.color,
+        ),
         Commands::Conformance(command) => conformance::handle_conformance_command(command),
         Commands::Schema(command) => schema::handle_schema_command(command),
         Commands::SelfCommand(command) => update::handle_self_command(command),
         Commands::Completion(command) => generate_completion(command),
-        Commands::External(args) => plugin::run_external(&workspace, args, allow_native_plugin),
+        Commands::External(args) => {
+            plugin::run_external(&workspace, args.args, allow_native_plugin)
+        }
     }
 }
 

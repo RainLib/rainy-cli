@@ -15,9 +15,9 @@ static HTTP_PLUGIN_TEST_LOCK: Mutex<()> = Mutex::new(());
 fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
     let output = run(&["--progress", "always", "capability", "list"]);
     let progress = String::from_utf8(output.stderr).expect("progress output");
-    assert!(progress.contains("[1/4] Preparing capability"));
-    assert!(progress.contains("[2/4] Running capability"));
-    assert!(progress.contains("[4/4] Completed in"));
+    assert!(progress.contains("[1] Preparing capability"));
+    assert!(progress.contains("[2] Running capability"));
+    assert!(progress.contains("[4] Completed in"));
 
     let output = run(&["--progress", "always", "--json", "capability", "list"]);
     assert!(output.stderr.is_empty(), "JSON mode emitted progress");
@@ -32,8 +32,7 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
     let workspace = temp.path().join("progress-demo");
     let workspace = workspace.to_string_lossy().to_string();
     let default_preview = run(&["--workspace", &workspace, "skill", "init", "--json"]);
-    let default_preview: serde_json::Value =
-        serde_json::from_slice(&default_preview.stdout).expect("default Skill preview");
+    let default_preview = command_data(&default_preview);
     assert_eq!(default_preview["report"]["profile"], "comet");
     assert_eq!(
         default_preview["report"]["targets"],
@@ -79,7 +78,7 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
         automatic_progress.contains("No Skill profile found; starting automatic initialization")
     );
     assert!(automatic_progress.contains("Building the Skill installation preview"));
-    assert!(automatic_progress.contains("[4/4] Completed in"));
+    assert!(automatic_progress.contains("Completed in"));
 
     let failed = rainy()
         .args([
@@ -97,7 +96,7 @@ fn progress_is_visible_on_demand_and_never_corrupts_json_or_quiet_output() {
     assert!(!failed.status.success());
     let failed = String::from_utf8(failed.stderr).expect("structured error output");
     assert_eq!(failed.matches("SKILL_CUSTOM_NOT_FOUND").count(), 1);
-    assert!(failed.contains("[4/4] Failed in"));
+    assert!(failed.contains("Failed in"));
     assert!(failed.contains("Next steps"));
     assert!(!failed.contains("config error:"));
 
@@ -112,11 +111,12 @@ fn invalid_input_and_unknown_external_commands_use_the_error_contract() {
         .args(["capabilty", "list"])
         .output()
         .expect("run unknown command");
-    assert_eq!(unknown.status.code(), Some(1));
+    assert_eq!(unknown.status.code(), Some(2));
     assert!(unknown.stdout.is_empty());
     let unknown_error = String::from_utf8(unknown.stderr).expect("unknown command error");
-    assert!(unknown_error.contains("EXTERNAL_COMMAND_NOT_FOUND"));
-    assert!(unknown_error.contains("unknown Rainy command or installed plugin: capabilty"));
+    assert!(unknown_error.contains("CLI_ARGUMENT_INVALID"));
+    assert!(unknown_error.contains("unrecognized subcommand 'capabilty'"));
+    assert!(unknown_error.contains("'capability'"));
     assert!(unknown_error.contains("Next steps"));
     assert!(!unknown_error.contains("PLUGIN_NATIVE_NOT_TRUSTED"));
 
@@ -147,24 +147,230 @@ fn invalid_input_and_unknown_external_commands_use_the_error_contract() {
         serde_json::from_slice(&json.stderr).expect("structured JSON input error");
     assert_eq!(json_error["status"], "error");
     assert_eq!(json_error["error"]["code"], "CLI_ARGUMENT_INVALID");
+
+    let temp = TempDir::new().expect("protocol schema fixtures");
+    let success_path = temp.path().join("command-output.json");
+    let success = run(&["--json", "capability", "list"]);
+    fs::write(&success_path, &success.stdout).expect("write command output fixture");
+    let validated = run(&[
+        "schema",
+        "validate",
+        "--schema",
+        "command-output",
+        "--file",
+        &success_path.to_string_lossy(),
+        "--json",
+    ]);
+    assert_eq!(command_data(&validated)["report"]["status"], "passed");
+
+    let error_path = temp.path().join("command-error.json");
+    fs::write(&error_path, &json.stderr).expect("write command error fixture");
+    let validated = run(&[
+        "schema",
+        "validate",
+        "--schema",
+        "command-error",
+        "--file",
+        &error_path.to_string_lossy(),
+        "--json",
+    ]);
+    assert_eq!(command_data(&validated)["report"]["status"], "passed");
+}
+
+#[test]
+fn credential_urls_are_rejected_without_leaking_into_output_or_audit() {
+    let temp = TempDir::new().expect("credential URL workspace");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "security-demo", "--apply"]);
+    let workspace = temp.path().join("security-demo");
+    let secret = "rainy-secret-do-not-log";
+    let source = format!("git+https://operator:{secret}@git.example.com/platform/packs.git");
+    let output = rainy()
+        .args([
+            "--workspace",
+            &workspace.to_string_lossy(),
+            "registry",
+            "add",
+            "private",
+            &source,
+            "--apply",
+            "--json",
+        ])
+        .output()
+        .expect("reject credential URL");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("structured credential error");
+    assert_eq!(error["error"]["code"], "PACK_SOURCE_UNSUPPORTED_URL");
+    assert_eq!(error["error"]["category"], "registry");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+
+    let audit = fs::read_to_string(workspace.join(".rainy/audit.log")).expect("failure audit");
+    assert!(!audit.contains(secret));
+    assert!(!audit.contains("operator:"));
+    assert!(audit.contains("PACK_SOURCE_UNSUPPORTED_URL"));
 }
 
 #[test]
 fn missing_project_configuration_points_skill_only_repositories_to_skill_doctor() {
     let temp = TempDir::new().expect("skill-only repository");
     let output = rainy()
-        .args(["--workspace", &temp.path().to_string_lossy(), "doctor"])
+        .args([
+            "--workspace",
+            &temp.path().to_string_lossy(),
+            "doctor",
+            "--scope",
+            "project",
+            "--json",
+        ])
         .output()
         .expect("run project doctor without configuration");
 
-    assert_eq!(output.status.code(), Some(1));
-    let error = String::from_utf8(output.stderr).expect("configuration error output");
-    assert!(error.contains("CONFIG_NOT_FOUND"));
-    assert!(error.contains("$ rainy skill doctor"));
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stderr.is_empty());
+    let report = command_data(&output);
+    assert_eq!(report["report"]["status"], "failed");
+    assert!(
+        report["report"]["checks"]
+            .as_array()
+            .expect("doctor checks")
+            .iter()
+            .any(|check| {
+                check["id"] == "project.config" && check["message"] == "rainy.yaml was not found"
+            })
+    );
+}
+
+#[test]
+fn structured_verify_is_shell_free_and_definition_failures_are_reports() {
+    let temp = TempDir::new().expect("verify workspace");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "verify-demo", "--apply"]);
+    let app = temp.path().join("verify-demo");
+    let pack = app.join("verify-packs/structured-verify");
+    write(
+        &pack.join("pack.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: structured-verify
+  version: 0.5.0
+  owner: test
+exports:
+  capabilities:
+    - capabilities/structured-verify.yaml
+"#,
+    );
+    let capability_path = pack.join("capabilities/structured-verify.yaml");
+    let capability = serde_json::json!({
+        "apiVersion": "rainy.dev/v1",
+        "kind": "Capability",
+        "id": "structured-verify",
+        "name": "Structured Verify",
+        "version": "0.5.0",
+        "description": "Cross-platform shell-free verification fixture.",
+        "actions": {"install": []},
+        "validations": [{
+            "id": "rainy-version",
+            "run": {
+                "program": env!("CARGO_BIN_EXE_rainy"),
+                "args": ["--version"]
+            },
+            "workingDirectory": ".",
+            "timeoutSeconds": 30
+        }]
+    });
+    write(
+        &capability_path,
+        &serde_yaml::to_string(&capability).expect("serialize capability"),
+    );
+    inject_registry_source(&app, "verify-packs");
+    let app_path = app.to_string_lossy().to_string();
+    run(&[
+        "--workspace",
+        &app_path,
+        "capability",
+        "add",
+        "structured-verify",
+        "--apply",
+    ]);
+
+    let output = run(&[
+        "--workspace",
+        &app_path,
+        "verify",
+        "--profile",
+        "local",
+        "--json",
+    ]);
+    let data = command_data(&output);
+    let validation = data["report"]["steps"]
+        .as_array()
+        .expect("verify steps")
+        .iter()
+        .find(|step| step["id"] == "structured-verify:rainy-version")
+        .expect("structured validation result");
+    assert_eq!(validation["status"], "passed");
+    assert_eq!(validation["timedOut"], serde_json::Value::Null);
+
+    let unsafe_capability = serde_json::json!({
+        "apiVersion": "rainy.dev/v1",
+        "kind": "Capability",
+        "id": "structured-verify",
+        "name": "Structured Verify",
+        "version": "0.5.0",
+        "actions": {"install": []},
+        "validations": [{
+            "id": "legacy-shell",
+            "command": "rainy --version && echo unsafe"
+        }]
+    });
+    write(
+        &capability_path,
+        &serde_yaml::to_string(&unsafe_capability).expect("serialize unsafe capability"),
+    );
+    let failed = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "verify",
+            "--profile",
+            "local",
+            "--json",
+        ])
+        .output()
+        .expect("run unsafe legacy validation");
+    assert_eq!(failed.status.code(), Some(4));
+    assert!(failed.stderr.is_empty());
+    let data = command_data(&failed);
+    assert_eq!(data["report"]["status"], "failed");
+    assert!(
+        data["report"]["steps"]
+            .as_array()
+            .expect("failed verify steps")
+            .iter()
+            .any(|step| step["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("VERIFY_LEGACY_SHELL_UNSUPPORTED")))
+    );
 }
 
 #[test]
 fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples() {
+    for args in [Vec::new(), vec!["capability"], vec!["skill"]] {
+        let output = rainy().args(&args).output().expect("run help fallback");
+        assert!(output.status.success(), "help fallback returned an error");
+        assert!(output.stderr.is_empty(), "help fallback wrote to stderr");
+        let help = String::from_utf8(output.stdout).expect("help fallback output");
+        assert!(help.contains("Usage:"), "help fallback omitted usage");
+        assert!(
+            help.contains("Commands:"),
+            "help fallback omitted commands for {args:?}: {help}"
+        );
+    }
+
     let help = String::from_utf8(run(&["--help"]).stdout).expect("top-level help");
     assert!(help.contains("Arguments shown as <VALUE> are required values"));
     assert!(!help.contains("\n  init "));
@@ -289,9 +495,9 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
     assert!(!temp.path().join(".rainy/audit.log").exists());
 
     let completion = run(&["--json", "completion", "fish"]);
-    let completion: serde_json::Value =
-        serde_json::from_slice(&completion.stdout).expect("completion JSON");
-    assert_eq!(completion["type"], "completion");
+    let envelope = command_envelope(&completion);
+    assert_eq!(envelope["type"], "completion");
+    let completion = envelope["data"].clone();
     assert_eq!(completion["shell"], "fish");
     assert!(
         completion["script"]
@@ -331,21 +537,20 @@ fn human_output_uses_stable_sections_and_structured_error_details() {
         .output()
         .expect("run invalid schema validation");
     assert!(!failed.status.success());
-    let error = String::from_utf8(failed.stderr).expect("human error output");
-    assert_eq!(error.matches("SCHEMA_VALIDATION_FAILED").count(), 1);
-    assert!(error.contains("Reason  the document does not match the selected schema"));
-    assert!(error.contains("\nChecks\n"));
-    assert!(error.contains("FAIL"));
-    assert!(!error.contains("{\"protocolVersion\""));
-    assert!(error.contains("\nNext steps\n"));
+    assert_eq!(failed.status.code(), Some(4));
+    assert!(failed.stderr.is_empty());
+    let report = String::from_utf8(failed.stdout).expect("human validation report");
+    assert!(report.contains("Schema validation"));
+    assert!(report.contains("Status  Failed"));
+    assert!(report.contains("Additional properties are not allowed"));
 }
 
 #[test]
 fn skill_help_explains_the_workflow_and_each_subcommand() {
     let help = String::from_utf8(run(&["skill", "--help"]).stdout).expect("skill help");
     assert!(help.contains("Manage a project-scoped AI Skill profile"));
-    assert!(help.contains("explicitly confirms installation"));
-    assert!(help.contains("preview unless --apply"));
+    assert!(help.contains("Interactive installs ask for final confirmation and apply immediately"));
+    assert!(help.contains("Non-interactive and JSON callers still require --apply or --yes"));
     assert!(help.contains("rainy skill install --skill release-review --apply"));
     assert!(help.contains("Run 'rainy skill <COMMAND> --help'"));
 
@@ -379,6 +584,7 @@ fn skill_help_explains_the_workflow_and_each_subcommand() {
     let install_help =
         String::from_utf8(run(&["skill", "install", "--help"]).stdout).expect("install help");
     assert!(install_help.contains("--no-custom-skills"));
+    assert!(install_help.contains("pass --dry-run to preview"));
     assert!(install_help.contains("Remove all installed project-owned Skills"));
 
     let registry_sync_help =
@@ -411,9 +617,8 @@ fn skill_install_auto_initializes_and_manages_selected_project_skills() {
         "Review enterprise releases before delivery",
         "--json",
     ]);
-    let preview: serde_json::Value =
-        serde_json::from_slice(&preview.stdout).expect("custom Skill create preview");
-    assert_eq!(preview["status"], "dry-run");
+    let preview = command_envelope(&preview);
+    assert_eq!(preview["status"], "preview");
     assert!(!app.join("rainy-skills/release-review").exists());
 
     run(&[
@@ -456,8 +661,7 @@ fn skill_install_auto_initializes_and_manages_selected_project_skills() {
         "release-review",
         "--json",
     ]);
-    let automatic_preview: serde_json::Value =
-        serde_json::from_slice(&automatic_preview.stdout).expect("automatic install preview");
+    let automatic_preview = command_data(&automatic_preview);
     assert_eq!(automatic_preview["report"]["operation"], "install");
     assert_eq!(automatic_preview["report"]["profile"], "rainy");
     assert_eq!(
@@ -489,8 +693,7 @@ fn skill_install_auto_initializes_and_manages_selected_project_skills() {
     let lock = fs::read_to_string(app.join("skills.lock")).expect("Skill lock");
     assert!(lock.contains("name: release-review"));
     let doctor = run(&["--workspace", &app_path, "skill", "doctor", "--json"]);
-    let doctor: serde_json::Value =
-        serde_json::from_slice(&doctor.stdout).expect("custom Skill doctor report");
+    let doctor = command_data(&doctor);
     let check_ids = doctor["report"]["checks"]
         .as_array()
         .expect("doctor checks")
@@ -605,8 +808,7 @@ fn skill_commands_work_without_a_rainy_project_config() {
         "release-review",
         "--json",
     ]);
-    let preview: serde_json::Value =
-        serde_json::from_slice(&preview.stdout).expect("standalone Skill preview");
+    let preview = command_data(&preview);
     assert_eq!(preview["report"]["operation"], "install");
     assert!(
         preview["report"]["changedFiles"]
@@ -655,8 +857,7 @@ fn skill_commands_work_without_a_rainy_project_config() {
     run(&["--workspace", &workspace, "skill", "status", "--json"]);
     run(&["--workspace", &workspace, "skill", "doctor", "--json"]);
     let sync = run(&["--workspace", &workspace, "skill", "sync", "--json"]);
-    let sync: serde_json::Value =
-        serde_json::from_slice(&sync.stdout).expect("standalone Skill sync");
+    let sync = command_data(&sync);
     assert_eq!(
         sync["report"]["changedFiles"],
         serde_json::json!(["AGENTS.md"])
@@ -694,6 +895,20 @@ fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> Output {
     output
 }
 
+fn command_envelope(output: &Output) -> serde_json::Value {
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Rainy command JSON envelope");
+    assert_eq!(value["protocolVersion"], "rainy.command.v1");
+    assert!(value["type"].is_string(), "missing command result type");
+    assert!(value["status"].is_string(), "missing command result status");
+    assert!(value["data"].is_object(), "missing command result data");
+    value
+}
+
+fn command_data(output: &Output) -> serde_json::Value {
+    command_envelope(output)["data"].clone()
+}
+
 #[test]
 fn self_check_reuses_the_persisted_release_mirror() {
     let temp = TempDir::new().expect("tempdir");
@@ -714,8 +929,7 @@ fn self_check_reuses_the_persisted_release_mirror() {
         "mirrored self check failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let report: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("update report JSON");
+    let report = command_data(&output);
     assert_eq!(report["report"]["latestVersion"], "9.9.9");
     assert!(
         report["report"]["installCommand"]
@@ -723,6 +937,109 @@ fn self_check_reuses_the_persisted_release_mirror() {
             .expect("install command")
             .contains(&release_base)
     );
+}
+
+#[test]
+fn self_update_and_skip_preview_by_default_and_yes_applies() {
+    let temp = TempDir::new().expect("self command state");
+    let rainy_home = temp.path().join("rainy-home");
+
+    let update = rainy()
+        .args(["self", "update", "--version", "v9.9.9", "--json"])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("preview explicit update");
+    assert!(update.status.success());
+    let update = command_envelope(&update);
+    assert_eq!(update["status"], "preview");
+    assert_eq!(update["data"]["report"]["operation"], "update");
+    assert_eq!(update["data"]["report"]["status"], "dry-run");
+    assert_eq!(
+        update["data"]["report"]["applyCommand"],
+        "rainy self update --version v9.9.9 --apply"
+    );
+    let report_path = temp.path().join("update-report.json");
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&update["data"]["report"]).expect("serialize update report"),
+    )
+    .expect("write update report");
+    let validated = run(&[
+        "schema",
+        "validate",
+        "--schema",
+        "update-report",
+        "--file",
+        &report_path.to_string_lossy(),
+        "--json",
+    ]);
+    assert_eq!(command_data(&validated)["report"]["status"], "passed");
+    assert!(!rainy_home.join("update-check.json").exists());
+
+    let preview = rainy()
+        .args(["self", "skip", "v9.9.9", "--json"])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("preview explicit skip");
+    assert!(preview.status.success());
+    let preview = command_envelope(&preview);
+    assert_eq!(preview["status"], "preview");
+    assert_eq!(preview["data"]["report"]["skipped"], false);
+    assert!(!rainy_home.join("update-check.json").exists());
+
+    let applied = rainy()
+        .args(["self", "skip", "v9.9.9", "--yes", "--json"])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("apply explicit skip");
+    assert!(applied.status.success());
+    let applied = command_envelope(&applied);
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["data"]["report"]["status"], "applied");
+    assert_eq!(applied["data"]["report"]["skipped"], true);
+    let state = fs::read_to_string(rainy_home.join("update-check.json")).expect("update state");
+    assert!(state.contains("9.9.9"));
+}
+
+#[test]
+fn read_only_and_preview_commands_do_not_create_audit_or_managed_outputs() {
+    let temp = TempDir::new().expect("preview workspace");
+    let root = temp.path().to_string_lossy().to_string();
+    let schemas = run(&["--workspace", &root, "schema", "list", "--json"]);
+    assert_eq!(command_envelope(&schemas)["status"], "ok");
+    assert!(!temp.path().join(".rainy").exists());
+
+    run(&["--workspace", &root, "new", "preview-demo", "--apply"]);
+    let workspace = temp.path().join("preview-demo");
+    let workspace_arg = workspace.to_string_lossy().to_string();
+    let agents_before = fs::read_to_string(workspace.join("AGENTS.md")).expect("initial AGENTS");
+
+    let agent = run(&["--workspace", &workspace_arg, "agent", "init", "--json"]);
+    assert_eq!(command_envelope(&agent)["status"], "preview");
+    assert_eq!(
+        fs::read_to_string(workspace.join("AGENTS.md")).expect("preview AGENTS"),
+        agents_before
+    );
+    assert!(!workspace.join(".enterprise-agent").exists());
+
+    let evidence = run(&[
+        "--workspace",
+        &workspace_arg,
+        "evidence",
+        "generate",
+        "--json",
+    ]);
+    assert_eq!(command_envelope(&evidence)["status"], "preview");
+    assert!(!workspace.join("evidence/report.md").exists());
+    assert!(!workspace.join("evidence/report.json").exists());
+
+    let sync = run(&["--workspace", &workspace_arg, "skill", "sync", "--json"]);
+    assert_eq!(command_envelope(&sync)["status"], "preview");
+    assert_eq!(
+        fs::read_to_string(workspace.join("AGENTS.md")).expect("sync preview AGENTS"),
+        agents_before
+    );
+    assert!(!workspace.join(".rainy/audit.log").exists());
 }
 
 #[test]
@@ -745,9 +1062,9 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
         "--dry-run",
         "--json",
     ]);
-    let preview_json: serde_json::Value =
-        serde_json::from_slice(&preview.stdout).expect("skill preview json");
-    assert_eq!(preview_json["type"], "skill");
+    let preview_envelope = command_envelope(&preview);
+    assert_eq!(preview_envelope["type"], "skill");
+    let preview_json = preview_envelope["data"].clone();
     assert_eq!(preview_json["report"]["status"], "dry-run");
     assert_eq!(
         preview_json["report"]["applyCommand"],
@@ -839,8 +1156,7 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
         "--json",
     ]);
     let doctor = run(&["--workspace", &app_path, "skill", "doctor", "--json"]);
-    let doctor_json: serde_json::Value =
-        serde_json::from_slice(&doctor.stdout).expect("skill doctor json");
+    let doctor_json = command_data(&doctor);
     assert_eq!(doctor_json["report"]["status"], "passed");
 
     let lock_path = app.join("skills.lock");
@@ -857,13 +1173,21 @@ fn rainy_skill_profile_has_a_safe_project_lifecycle() {
         .output()
         .expect("run unsafe lock doctor");
     assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("SKILL_LOCK_PATH_INVALID"));
+    assert!(rejected.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&rejected.stdout).contains("SKILL_LOCK_PATH_INVALID"));
     fs::write(&lock_path, valid_lock).expect("restore skills lock");
 
     let agents = app.join("AGENTS.md");
     let existing = fs::read_to_string(&agents).expect("AGENTS.md");
     fs::write(&agents, format!("{existing}\n<!-- user-content -->\n")).expect("extend AGENTS.md");
-    run(&["--workspace", &app_path, "skill", "sync", "--json"]);
+    run(&[
+        "--workspace",
+        &app_path,
+        "skill",
+        "sync",
+        "--apply",
+        "--json",
+    ]);
     let synced = fs::read_to_string(&agents).expect("synced AGENTS.md");
     assert!(synced.contains("<!-- user-content -->"));
     assert_eq!(count(&synced, "<!-- rainy:context:start -->"), 1);
@@ -1434,9 +1758,9 @@ fn golden_path_add_minio_verify_and_evidence() {
     let app = temp.path().join("demo-saas");
     let app_path = app.to_string_lossy().to_string();
     let generated_ci = fs::read_to_string(app.join(".github/workflows/ci.yml")).expect("ci yml");
-    assert!(generated_ci.contains("actions/checkout@v5"));
-    assert!(generated_ci.contains("actions/setup-java@v4"));
-    assert!(generated_ci.contains("Install Maven"));
+    assert!(generated_ci.contains("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"));
+    assert!(!generated_ci.contains("actions/setup-java@"));
+    assert!(generated_ci.contains("Install Java and Maven"));
     assert!(generated_ci.contains("pnpm install --frozen-lockfile"));
     assert!(app.join("apps/frontend/pnpm-lock.yaml").exists());
     assert!(generated_ci.contains("Install Rainy CLI"));
@@ -1495,7 +1819,7 @@ fn golden_path_add_minio_verify_and_evidence() {
     let doctor = run(&["--workspace", &app_path, "doctor", "--json"]);
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("DEFAULT_SECRET_VALUE"));
     run_without_external_tools(&["--workspace", &app_path, "verify", "--profile", "local"]);
-    run_without_external_tools(&["--workspace", &app_path, "evidence", "generate"]);
+    run_without_external_tools(&["--workspace", &app_path, "evidence", "generate", "--apply"]);
 
     assert!(app.join("evidence/report.md").exists());
     assert!(app.join("evidence/report.json").exists());
@@ -1549,10 +1873,10 @@ fn new_defaults_to_preview_and_does_not_create_project() {
     ]);
 
     assert!(!temp.path().join("demo-saas").exists());
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("parse new dry-run json");
-    assert_eq!(json["type"], "init");
-    assert_eq!(json["status"], "dry-run");
+    let envelope = command_envelope(&output);
+    assert_eq!(envelope["type"], "init");
+    assert_eq!(envelope["status"], "preview");
+    let json = envelope["data"].clone();
     assert!(
         json["files"]
             .as_array()
@@ -1678,10 +2002,10 @@ templates:
         "com.company.orders",
         "--json",
     ]);
-    let preview: serde_json::Value =
-        serde_json::from_slice(&preview.stdout).expect("template preview JSON");
-    assert_eq!(preview["type"], "project-template");
-    assert_eq!(preview["status"], "dry-run");
+    let envelope = command_envelope(&preview);
+    assert_eq!(envelope["type"], "project-template");
+    assert_eq!(envelope["status"], "preview");
+    let preview = envelope["data"].clone();
     assert_eq!(preview["requested_ref"], commit);
     assert_eq!(preview["source_git_removed"], false);
     assert_eq!(preview["remote_url"], "git@git.example.com:apps/orders.git");
@@ -1744,9 +2068,9 @@ fn standalone_binary_downloads_defaults_and_keeps_schemas_embedded() {
 kind: RainyDefaults
 metadata:
   name: rainy-official
-  version: 0.4.0
+  version: 0.5.0
 requires:
-  rainy: ">=0.4.0, <0.5.0"
+  rainy: ">=0.5.0, <0.6.0"
 paths:
   packs: community-packs
   skills: integrations/skills
@@ -1801,11 +2125,7 @@ paths:
         .env("RAINY_DEFAULTS_REF", &commit)
         .output()
         .expect("check defaults status");
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&status.stdout).expect("status JSON")["report"]
-            ["status"],
-        "missing"
-    );
+    assert_eq!(command_data(&status)["report"]["status"], "missing");
     let offline = rainy()
         .args(["capability", "list", "--json"])
         .current_dir(temp.path())
@@ -1925,7 +2245,81 @@ paths:
     assert!(rainy_home.join("defaults.lock").is_file());
     let lock = fs::read_to_string(rainy_home.join("defaults.lock")).expect("defaults lock");
     assert!(lock.contains(&commit));
-    assert!(lock.contains("packageVersion: 0.4.0"));
+    assert!(lock.contains("packageVersion: 0.5.0"));
+}
+
+#[test]
+fn local_defaults_are_snapshotted_into_rainy_home() {
+    let temp = TempDir::new().expect("tempdir");
+    let rainy_home = temp.path().join("rainy-home");
+    let source = temp.path().join("local-defaults");
+    write(
+        &source.join("rainy-defaults.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: RainyDefaults
+metadata:
+  name: rainy-local
+  version: 0.5.0
+requires:
+  rainy: ">=0.5.0, <0.6.0"
+paths:
+  packs: packs
+  skills: skills
+  templates: templates
+"#,
+    );
+    for directory in ["skills", "templates"] {
+        fs::create_dir_all(source.join(directory)).expect("create defaults directory");
+    }
+    copy_directory(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../community-packs"),
+        &source.join("packs"),
+    );
+
+    let install = rainy()
+        .args([
+            "defaults",
+            "update",
+            "--source",
+            &source.to_string_lossy(),
+            "--ref",
+            "local-worktree",
+            "--apply",
+            "--json",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
+        .output()
+        .expect("install local defaults");
+    assert!(
+        install.status.success(),
+        "local defaults install failed: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let report = command_data(&install)["report"].clone();
+    assert_eq!(report["packageVersion"], "0.5.0");
+    let cache = Path::new(report["cachePath"].as_str().expect("cache path"));
+    assert!(cache.starts_with(rainy_home.join("defaults")));
+    assert_ne!(cache, source);
+    assert!(cache.join("packs/redis/pack.yaml").is_file());
+
+    fs::remove_dir_all(&source).expect("remove local source");
+    for args in [
+        &["defaults", "doctor", "--json"][..],
+        &["capability", "list", "--json"][..],
+    ] {
+        let output = rainy()
+            .args(args)
+            .env("RAINY_HOME", &rainy_home)
+            .env("RAINY_FORCE_REMOTE_DEFAULTS", "1")
+            .output()
+            .expect("use local defaults snapshot");
+        assert!(
+            output.status.success(),
+            "cached defaults command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -1960,10 +2354,15 @@ fn doctor_fails_when_installed_capability_artifact_is_missing() {
         .expect("run rainy");
 
     assert!(!output.status.success());
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("DOCTOR_FAILED"));
-    assert!(stderr.contains("apps/frontend/src/components/file-upload"));
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stderr.is_empty());
+    let report = command_data(&output);
+    assert_eq!(report["report"]["status"], "failed");
+    assert!(
+        report["report"]["checks"]
+            .to_string()
+            .contains("apps/frontend/src/components/file-upload")
+    );
 }
 
 #[test]
@@ -1997,11 +2396,20 @@ fn verify_ci_profile_rejects_unknown_steps() {
         .expect("run rainy");
 
     assert!(!output.status.success());
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("VERIFY_FAILED"));
-    assert!(stderr.contains("unknown-production-step"));
-    assert!(stderr.contains("unknown verify step is not allowed in strict profile"));
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stderr.is_empty());
+    let report = command_data(&output);
+    assert_eq!(report["report"]["status"], "failed");
+    assert!(
+        report["report"]["steps"]
+            .to_string()
+            .contains("unknown-production-step")
+    );
+    assert!(
+        report["report"]["steps"]
+            .to_string()
+            .contains("unknown verify step is not allowed in strict profile")
+    );
 }
 
 #[test]
@@ -2088,7 +2496,7 @@ fn plan_file_apply_remove_upgrade_and_skill_sync() {
         "minio-file-storage",
     ]);
 
-    run(&["--workspace", &app_path, "skill", "sync"]);
+    run(&["--workspace", &app_path, "skill", "sync", "--apply"]);
     assert!(app.join(".enterprise-agent/context.md").exists());
     assert!(app.join(".enterprise-agent/capabilities.md").exists());
     assert!(app.join(".enterprise-agent/commands.md").exists());
@@ -2965,7 +3373,8 @@ fn plugin_install_rejects_builtin_command_shadowing() {
         .output()
         .expect("run rainy");
     assert!(!conformance.status.success());
-    assert!(String::from_utf8_lossy(&conformance.stderr).contains("shadows a built-in"));
+    assert!(conformance.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&conformance.stdout).contains("shadows a built-in"));
 
     let output = rainy()
         .args([
@@ -3105,8 +3514,7 @@ fn plugin_list_warns_about_duplicate_plugin_names() {
         .expect("run rainy");
 
     assert!(plugins.status.success());
-    let json: serde_json::Value =
-        serde_json::from_slice(&plugins.stdout).expect("parse plugin list json");
+    let json = command_data(&plugins);
     let echo = json["plugins"]
         .as_array()
         .expect("plugins array")
@@ -3453,7 +3861,7 @@ packs:
             .contains("id: http-capability")
     );
 
-    run(&["pack", "sign", &cached_pack_path]);
+    run(&["pack", "sign", &cached_pack_path, "--apply"]);
     run(&["pack", "verify", &cached_pack_path]);
     fs::write(cached_pack.join("README.md"), "tampered\n").expect("tamper pack");
     let output = rainy()
@@ -3889,7 +4297,8 @@ fn schema_validation_org_policy_and_http_plugin_adapter_work() {
         .output()
         .expect("run rainy");
     assert!(!bad.status.success());
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("SCHEMA_VALIDATION_FAILED"));
+    assert!(bad.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&bad.stdout).contains("Status  Failed"));
     let bad_empty_name = temp.path().join("bad-empty-name.yaml");
     write(
         &bad_empty_name,
@@ -3916,7 +4325,8 @@ package:
         .output()
         .expect("run rainy");
     assert!(!bad_empty.status.success());
-    assert!(String::from_utf8_lossy(&bad_empty.stderr).contains("SCHEMA_VALIDATION_FAILED"));
+    assert!(bad_empty.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&bad_empty.stdout).contains("Status  Failed"));
 
     let policy_pack = app.join("policy-packs/policy-pack");
     write(
@@ -4270,6 +4680,129 @@ fn wasm_plugin_action_returns_changeset_through_policy_apply() {
         fs::read_to_string(app.join("generated/wasm.txt")).expect("wasm file"),
         "wasm-ok\n"
     );
+}
+
+#[test]
+fn wasm_plugin_limits_fuel_memory_input_and_output() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "demo-saas", "--apply"]);
+    let app = temp.path().join("demo-saas");
+    let app_path = app.to_string_lossy().to_string();
+    let plugin_source = temp.path().join("limited-wasm-plugin");
+
+    write(
+        &plugin_source.join("rainy-limited-wasm"),
+        "#!/bin/sh\necho limited-wasm\n",
+    );
+    for (name, source) in [
+        (
+            "infinite.wasm",
+            r#"(module
+  (memory (export "memory") 1)
+  (func (export "rainy_action") (result i64)
+    (loop $spin (br $spin))
+    unreachable))"#,
+        ),
+        (
+            "memory.wasm",
+            r#"(module
+  (memory (export "memory") 1025)
+  (func (export "rainy_action") (result i64) (i64.const 0)))"#,
+        ),
+        (
+            "output.wasm",
+            r#"(module
+  (memory (export "memory") 1)
+  (func (export "rainy_action") (result i64) (i64.const 5242881)))"#,
+        ),
+        (
+            "input.wasm",
+            r#"(module
+  (memory (export "memory") 1)
+  (func (export "rainy_alloc") (param i32) (result i32) (i32.const 0))
+  (func (export "rainy_action") (param i32 i32) (result i64) (i64.const 0)))"#,
+        ),
+    ] {
+        write_bytes(
+            &plugin_source.join(name),
+            &wat::parse_str(source).expect("compile limited wasm fixture"),
+        );
+    }
+    write(
+        &plugin_source.join("plugin.json"),
+        r#"{
+  "protocolVersion": "rainy.plugin.v1",
+  "name": "limited-wasm",
+  "version": "0.1.0",
+  "description": "Wasm resource limit fixtures",
+  "commands": [{"name": "limited-wasm", "description": "Limit fixture"}],
+  "actions": [
+    {"id": "limit.fuel", "description": "Exhaust fuel", "runtime": "wasm", "wasm": "infinite.wasm"},
+    {"id": "limit.memory", "description": "Exceed memory", "runtime": "wasm", "wasm": "memory.wasm"},
+    {"id": "limit.output", "description": "Exceed output", "runtime": "wasm", "wasm": "output.wasm"},
+    {"id": "limit.input", "description": "Exceed input", "runtime": "wasm", "wasm": "input.wasm"}
+  ],
+  "permissions": {"fs": {"read": [], "write": []}, "network": "none", "secrets": []}
+}
+"#,
+    );
+    let plugin_source_string = plugin_source.to_string_lossy().to_string();
+    run(&[
+        "--workspace",
+        &app_path,
+        "plugin",
+        "install",
+        &plugin_source_string,
+        "--apply",
+    ]);
+
+    for (action, code) in [
+        ("limit.fuel", "PLUGIN_WASM_FAILED"),
+        ("limit.memory", "PLUGIN_WASM_FAILED"),
+        ("limit.output", "PLUGIN_RESPONSE_TOO_LARGE"),
+    ] {
+        let output = rainy()
+            .args([
+                "--workspace",
+                &app_path,
+                "plugin",
+                "call",
+                "limited-wasm",
+                action,
+                "--dry-run",
+            ])
+            .output()
+            .expect("run limited wasm action");
+        assert!(!output.status.success(), "{action} unexpectedly succeeded");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(code),
+            "{action} did not report {code}"
+        );
+    }
+
+    let input = temp.path().join("large-input.json");
+    write(
+        &input,
+        &serde_json::json!({"payload": "x".repeat(1024 * 1024) }).to_string(),
+    );
+    let input_string = input.to_string_lossy().to_string();
+    let output = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "plugin",
+            "call",
+            "limited-wasm",
+            "limit.input",
+            "--input",
+            &input_string,
+            "--dry-run",
+        ])
+        .output()
+        .expect("run oversized wasm input");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("PLUGIN_WASM_INPUT_TOO_LARGE"));
 }
 
 #[test]

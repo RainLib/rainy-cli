@@ -116,6 +116,23 @@ denies cannot be bypassed by pack policy.
 
 ## Validation
 
+Validation commands should use the cross-platform structured form. Rainy executes the program
+directly with a 900-second default timeout and does not invoke `sh -c`:
+
+```yaml
+validations:
+  - id: backend-tests
+    run:
+      program: ./mvnw
+      args: [test]
+    workingDirectory: apps/backend
+    timeoutSeconds: 900
+    platforms: [linux, macos, windows]
+```
+
+The legacy `command` string accepts only a simple executable and arguments. Shell operators,
+redirection, pipes, substitutions, and chained commands are rejected. New packs must use `run`.
+
 Check schemas and conformance before publishing a pack:
 
 ```bash

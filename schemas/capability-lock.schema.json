@@ -11,14 +11,16 @@
       "required": ["name"],
       "properties": {
         "name": { "type": "string" }
-      }
+      },
+      "additionalProperties": false
     },
     "rainy": {
       "type": "object",
       "required": ["version"],
       "properties": {
         "version": { "type": "string" }
-      }
+      },
+      "additionalProperties": false
     },
     "capabilities": {
       "type": "object",
@@ -42,5 +44,5 @@
       "items": { "type": "string" }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

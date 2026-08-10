@@ -27,7 +27,7 @@ The bootstrap script:
 
 1. Uses `RAINY_BIN`, `PATH`, or the default `$HOME/.rainy/bin` installation when available.
 2. Runs `rainy --version` to reject a broken executable.
-3. If absent, downloads the official installer and `installers.sha256` from the latest GitHub Release.
+3. If absent, resolves an immutable release from GitHub or `RAINY_RELEASE_BASE_URL`, then downloads the installer and `installers.sha256` from that version.
 4. Verifies the installer checksum before execution.
 5. Installs Rainy and returns its absolute executable path.
 
@@ -62,8 +62,8 @@ When `rainy-skills.yaml` exists, also run:
 
 If it selects the `comet` profile, load the sibling `rainy-comet` Skill and follow its ownership and phase rules.
 
-When only `rainy-skills.yaml` exists, use `skill status` and `skill doctor`; do not run the top-level
-project doctor, which validates Rainy capability project files.
+When only `rainy-skills.yaml` exists, use `skill status`, `skill doctor`, or top-level
+`doctor --scope auto|skills`. Do not request `doctor --scope project` unless `rainy.yaml` exists.
 
 Read [references/commands.md](references/commands.md) when selecting commands. Read [references/safety.md](references/safety.md) before any mutating workflow or plugin operation.
 
@@ -103,4 +103,7 @@ packs, generated templates, or Skills.
 
 ## Handle Errors
 
-Parse the JSON error body and stable Rainy error code. Address the reported configuration, policy, dependency, or verification problem; do not bypass the failing gate. Preserve the workspace and plan artifacts when escalation is needed.
+Parse `rainy.command.v1`. Successful command-specific fields are under `data`; operational errors are
+under `error` on `stderr`. A Doctor, Verify, Schema, or Conformance failure remains a complete result on
+`stdout` and exits `4`. Address the reported configuration, policy, dependency, or verification problem;
+do not bypass the failing gate. Preserve the workspace and plan artifacts when escalation is needed.

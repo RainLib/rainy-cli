@@ -135,7 +135,17 @@ pub fn init_app(options: InitOptions) -> RainyResult<CommandOutput> {
     write(
         &project_dir,
         ".github/workflows/ci.yml",
-        "name: ci\non:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  rainy:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n      - uses: actions/checkout@v5\n      - uses: actions/setup-java@v4\n        with:\n          distribution: temurin\n          java-version: \"21\"\n      - name: Install Maven\n        run: sudo apt-get update && sudo apt-get install -y maven\n      - uses: pnpm/action-setup@v4\n        with:\n          version: \"10\"\n      - uses: actions/setup-node@v4\n        with:\n          node-version: \"22\"\n          cache: pnpm\n          cache-dependency-path: apps/frontend/pnpm-lock.yaml\n      - name: Install frontend dependencies\n        working-directory: apps/frontend\n        run: pnpm install --frozen-lockfile\n      - name: Install Rainy CLI\n        env:\n          RAINY_VERSION: v0.1.2\n        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.1.2/install.sh | sh\n      - name: Verify Rainy project\n        run: ~/.rainy/bin/rainy verify --profile ci --json\n",
+        concat!(
+            "name: ci\non:\n  pull_request:\njobs:\n  rainy:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n",
+            "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0\n",
+            "      - name: Install Java and Maven\n        run: sudo apt-get update && sudo apt-get install -y openjdk-21-jdk maven\n",
+            "      - name: Enable pinned pnpm\n        run: corepack enable && corepack prepare pnpm@10 --activate\n",
+            "      - name: Install frontend dependencies\n        working-directory: apps/frontend\n        run: pnpm install --frozen-lockfile\n",
+            "      - name: Install Rainy CLI\n        env:\n          RAINY_VERSION: v",
+            env!("CARGO_PKG_VERSION"),
+            "\n        run: curl -fsSL \"https://github.com/RainLib/rainy-cli/releases/download/$RAINY_VERSION/install.sh\" | sh\n",
+            "      - name: Verify Rainy project\n        run: ~/.rainy/bin/rainy verify --profile ci --json\n"
+        ),
         &mut files,
         options.dry_run,
     )?;

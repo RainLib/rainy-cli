@@ -2,12 +2,13 @@ use crate::config;
 use crate::doctor;
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
+use crate::process::{self, Termination};
 use crate::progress::ProgressReporter;
 use crate::registry::{CapabilityDefinition, RegistryClient, ValidationCommand};
 use handlebars::Handlebars;
 use serde::Serialize;
 use std::path::Path;
-use std::time::Instant;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VerifyReport {
@@ -32,6 +33,16 @@ pub struct VerifyCheckResult {
     pub stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    #[serde(rename = "stdoutTruncated", default, skip_serializing_if = "is_false")]
+    pub stdout_truncated: bool,
+    #[serde(rename = "stderrTruncated", default, skip_serializing_if = "is_false")]
+    pub stderr_truncated: bool,
+    #[serde(rename = "timedOut", default, skip_serializing_if = "is_false")]
+    pub timed_out: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn verify_command(
@@ -41,12 +52,6 @@ pub fn verify_command(
     progress: &ProgressReporter,
 ) -> RainyResult<CommandOutput> {
     let report = run_verify_inner(workspace, profile, capability, Some(progress))?;
-    if report.status == "failed" {
-        return Err(RainyError::verify(
-            "VERIFY_FAILED",
-            serde_json::to_string(&report)?,
-        ));
-    }
     Ok(CommandOutput::Verify { report })
 }
 
@@ -129,6 +134,9 @@ fn run_step(
                 command: None,
                 stdout: None,
                 stderr: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                timed_out: false,
             })
         }
         "docker-compose-config" => parse_yaml(workspace, "compose.yaml", step),
@@ -143,6 +151,9 @@ fn run_step(
             command: None,
             stdout: None,
             stderr: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
         }),
         other if crate::policy::check_command(other).is_err() => Ok(VerifyCheckResult {
             id: other.to_string(),
@@ -152,6 +163,9 @@ fn run_step(
             command: Some(other.to_string()),
             stdout: None,
             stderr: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
         }),
         other => {
             let status = if strict { "failed" } else { "warning" };
@@ -167,6 +181,9 @@ fn run_step(
                 command: None,
                 stdout: None,
                 stderr: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                timed_out: false,
             })
         }
     }
@@ -186,6 +203,9 @@ fn exists(workspace: &Path, rel_path: &str, step: &str) -> RainyResult<VerifyChe
         command: None,
         stdout: None,
         stderr: None,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        timed_out: false,
     })
 }
 
@@ -200,6 +220,9 @@ fn parse_yaml(workspace: &Path, rel_path: &str, step: &str) -> RainyResult<Verif
             command: None,
             stdout: None,
             stderr: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
         });
     }
     let content = std::fs::read_to_string(path)?;
@@ -212,6 +235,9 @@ fn parse_yaml(workspace: &Path, rel_path: &str, step: &str) -> RainyResult<Verif
         command: None,
         stdout: None,
         stderr: None,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        timed_out: false,
     })
 }
 
@@ -234,6 +260,9 @@ fn run_capability_validations(
                 command: None,
                 stdout: None,
                 stderr: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                timed_out: false,
             }]);
         }
     };
@@ -259,11 +288,29 @@ fn run_validations_for_capability(
     capability: &CapabilityDefinition,
     strict: bool,
 ) -> RainyResult<Vec<VerifyCheckResult>> {
-    capability
+    Ok(capability
         .validations
         .iter()
-        .map(|validation| run_validation(workspace, config, capability, validation, strict))
-        .collect()
+        .map(|validation| {
+            run_validation(workspace, config, capability, validation, strict).unwrap_or_else(
+                |error| {
+                    let body = error.body();
+                    VerifyCheckResult {
+                        id: format!("{}:{}", capability.id, validation.id),
+                        status: "failed".to_string(),
+                        message: format!("{}: {}", body.code, body.message),
+                        duration_ms: None,
+                        command: None,
+                        stdout: None,
+                        stderr: None,
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        timed_out: false,
+                    }
+                },
+            )
+        })
+        .collect())
 }
 
 fn run_validation(
@@ -273,13 +320,49 @@ fn run_validation(
     validation: &ValidationCommand,
     strict: bool,
 ) -> RainyResult<VerifyCheckResult> {
-    let command = render_string(config, &capability.inputs, &validation.command)?;
+    if !validation.platforms.is_empty()
+        && !validation
+            .platforms
+            .iter()
+            .any(|platform| platform == current_platform() || platform == std::env::consts::OS)
+    {
+        return Ok(VerifyCheckResult {
+            id: format!("{}:{}", capability.id, validation.id),
+            status: "passed".to_string(),
+            message: format!("validation is not applicable to {}", current_platform()),
+            duration_ms: None,
+            command: None,
+            stdout: None,
+            stderr: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
+        });
+    }
+    let (program, args, command, deprecated) =
+        resolve_validation_command(config, capability, validation)?;
+    let command = crate::redaction::text(&command);
     let working_directory = validation
         .working_directory
         .as_deref()
         .map(|dir| render_string(config, &capability.inputs, dir))
         .transpose()?
         .unwrap_or_else(|| ".".to_string());
+    if Path::new(&working_directory).components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(RainyError::verify(
+            "VERIFY_WORKING_DIRECTORY_INVALID",
+            format!(
+                "validation workingDirectory must stay inside the workspace: {working_directory}"
+            ),
+        ));
+    }
     if crate::policy::check_command(&command).is_err() {
         return Ok(VerifyCheckResult {
             id: format!("{}:{}", capability.id, validation.id),
@@ -289,11 +372,14 @@ fn run_validation(
             command: Some(command),
             stdout: None,
             stderr: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
         });
     }
 
     let cwd = workspace.join(&working_directory);
-    if command_executable_missing(&cwd, &command) {
+    if command_executable_missing(&cwd, &program) {
         let status = if strict { "failed" } else { "warning" };
         return Ok(VerifyCheckResult {
             id: format!("{}:{}", capability.id, validation.id),
@@ -307,25 +393,30 @@ fn run_validation(
             command: Some(command),
             stdout: None,
             stderr: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
         });
     }
 
-    let started = Instant::now();
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .current_dir(&cwd)
-        .output()?;
-    let duration_ms = started.elapsed().as_millis();
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let environment_missing = stdout.contains("node_modules missing")
-        || stdout.contains("Local package.json exists")
-        || stderr.contains("command not found")
-        || stderr.contains("not found");
-    let status = if output.status.success() {
+    let timeout = Duration::from_secs(validation.timeout_seconds.unwrap_or(900).max(1));
+    let output = process::run(
+        &program,
+        &args,
+        &cwd,
+        timeout,
+        process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    let environment_missing = output.stdout.contains("node_modules missing")
+        || output.stdout.contains("Local package.json exists")
+        || output.stderr.contains("command not found")
+        || output.stderr.contains("not found");
+    let exit_code = output.status.and_then(|status| status.code());
+    let status = if output.success() && deprecated {
+        "warning"
+    } else if output.success() {
         "passed"
-    } else if !strict && (output.status.code() == Some(127) || environment_missing) {
+    } else if !strict && (exit_code == Some(127) || environment_missing) {
         "warning"
     } else {
         "failed"
@@ -333,19 +424,128 @@ fn run_validation(
     Ok(VerifyCheckResult {
         id: format!("{}:{}", capability.id, validation.id),
         status: status.to_string(),
-        message: if output.status.success() {
+        message: if output.termination == Termination::TimedOut {
+            format!("validation timed out after {} seconds", timeout.as_secs())
+        } else if output.success() && deprecated {
+            "validation passed; legacy command is deprecated, use run.program and run.args"
+                .to_string()
+        } else if output.success() {
             "validation command passed".to_string()
-        } else if !strict && (output.status.code() == Some(127) || environment_missing) {
+        } else if !strict && (exit_code == Some(127) || environment_missing) {
             "validation command skipped because local toolchain/dependencies are unavailable"
                 .to_string()
         } else {
-            format!("validation command failed with status {}", output.status)
+            format!(
+                "validation command failed with status {}",
+                output
+                    .status
+                    .map(|status| status.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            )
         },
-        duration_ms: Some(duration_ms),
+        duration_ms: Some(output.duration.as_millis()),
         command: Some(command),
-        stdout: Some(stdout),
-        stderr: Some(stderr),
+        stdout: Some(output.stdout),
+        stderr: Some(output.stderr),
+        stdout_truncated: output.stdout_truncated,
+        stderr_truncated: output.stderr_truncated,
+        timed_out: output.termination == Termination::TimedOut,
     })
+}
+
+fn resolve_validation_command(
+    config: &config::ProjectConfig,
+    capability: &CapabilityDefinition,
+    validation: &ValidationCommand,
+) -> RainyResult<(String, Vec<String>, String, bool)> {
+    if validation.run.is_some() && validation.command.is_some() {
+        return Err(RainyError::verify(
+            "VERIFY_COMMAND_CONFLICT",
+            format!(
+                "validation {} cannot define both run and command",
+                validation.id
+            ),
+        ));
+    }
+    if let Some(run) = &validation.run {
+        let program = render_string(config, &capability.inputs, &run.program)?;
+        let args = run
+            .args
+            .iter()
+            .map(|argument| render_string(config, &capability.inputs, argument))
+            .collect::<RainyResult<Vec<_>>>()?;
+        if program.trim().is_empty() {
+            return Err(RainyError::verify(
+                "VERIFY_PROGRAM_REQUIRED",
+                format!("validation {} has an empty run.program", validation.id),
+            ));
+        }
+        let display = display_command(&program, &args);
+        return Ok((program, args, display, false));
+    }
+    let legacy = validation.command.as_deref().ok_or_else(|| {
+        RainyError::verify(
+            "VERIFY_COMMAND_REQUIRED",
+            format!(
+                "validation {} must define run.program and run.args",
+                validation.id
+            ),
+        )
+    })?;
+    let legacy = render_string(config, &capability.inputs, legacy)?;
+    if legacy.chars().any(|character| {
+        matches!(
+            character,
+            '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\n' | '\r'
+        )
+    }) {
+        return Err(RainyError::verify(
+            "VERIFY_LEGACY_SHELL_UNSUPPORTED",
+            "legacy validation command contains shell operators; migrate to run.program and run.args",
+        ));
+    }
+    let mut words = shell_words::split(&legacy).map_err(|error| {
+        RainyError::verify(
+            "VERIFY_LEGACY_COMMAND_INVALID",
+            format!("legacy validation command could not be parsed: {error}"),
+        )
+    })?;
+    if words.is_empty() {
+        return Err(RainyError::verify(
+            "VERIFY_PROGRAM_REQUIRED",
+            "legacy validation command is empty",
+        ));
+    }
+    let program = words.remove(0);
+    Ok((program, words, legacy, true))
+}
+
+fn display_command(program: &str, args: &[String]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(|part| {
+            if part
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "-._/:=@".contains(character))
+            {
+                part.to_string()
+            } else {
+                format!("{part:?}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn current_platform() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        _ => "unsupported",
+    }
 }
 
 fn strict_verify_enabled(profile: &str) -> bool {
@@ -358,24 +558,36 @@ fn env_truthy(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn command_executable_missing(cwd: &Path, command: &str) -> bool {
-    let Some(program) = command.split_whitespace().next() else {
-        return true;
-    };
-    if let Some(relative) = program.strip_prefix("./") {
-        return !cwd.join(relative).exists();
-    }
-    if program.contains('/') {
-        return !Path::new(program).exists();
+fn command_executable_missing(cwd: &Path, program: &str) -> bool {
+    let program_path = Path::new(program);
+    if program_path.is_absolute() || program_path.components().count() > 1 {
+        let candidate = if program_path.is_absolute() {
+            program_path.to_path_buf()
+        } else {
+            cwd.join(program_path)
+        };
+        return !executable_candidate_exists(&candidate);
     }
     std::env::var_os("PATH")
         .map(|path| {
-            !std::env::split_paths(&path).any(|dir| {
-                let candidate = dir.join(program);
-                candidate.exists() && candidate.is_file()
-            })
+            !std::env::split_paths(&path).any(|dir| executable_candidate_exists(&dir.join(program)))
         })
         .unwrap_or(true)
+}
+
+fn executable_candidate_exists(candidate: &Path) -> bool {
+    if candidate.is_file() {
+        return true;
+    }
+    #[cfg(windows)]
+    if candidate.extension().is_none() {
+        let path_ext = std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+        return path_ext.to_string_lossy().split(';').any(|extension| {
+            let extension = extension.trim().trim_start_matches('.');
+            !extension.is_empty() && candidate.with_extension(extension).is_file()
+        });
+    }
+    false
 }
 
 fn render_string(

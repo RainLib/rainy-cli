@@ -35,12 +35,6 @@ pub fn handle_schema_command(command: SchemaCommand) -> RainyResult<CommandOutpu
         }),
         SchemaSubcommand::Validate(args) => {
             let report = validate_file(&args.schema, &args.file)?;
-            if report.status == "failed" {
-                return Err(RainyError::config(
-                    "SCHEMA_VALIDATION_FAILED",
-                    serde_json::to_string(&report)?,
-                ));
-            }
             Ok(CommandOutput::SchemaValidation { report })
         }
     }

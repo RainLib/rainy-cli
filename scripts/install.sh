@@ -3,7 +3,8 @@ set -eu
 
 REPO="${RAINY_REPO:-RainLib/rainy-cli}"
 VERSION="${RAINY_VERSION:-${1:-latest}}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.rainy/bin}"
+RAINY_HOME="${RAINY_HOME:-$HOME/.rainy}"
+INSTALL_DIR="${INSTALL_DIR:-$RAINY_HOME/bin}"
 RELEASE_BASE_URL="${RAINY_RELEASE_BASE_URL:-}"
 LATEST_VERSION_URL="${RAINY_LATEST_VERSION_URL:-}"
 
@@ -82,10 +83,18 @@ latest_version() {
 }
 
 validate_download_url() {
+  if printf '%s\n' "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9+.-]*://[^/]*@'; then
+    echo "rainy installer: embedded URL credentials are not allowed" >&2
+    return 1
+  fi
+  if printf '%s\n' "$1" | grep -Eqi '(^|[?&])(access_key|api_?key|authorization|credential|password|secret|signature|token)='; then
+    echo "rainy installer: sensitive authentication query parameters are not allowed" >&2
+    return 1
+  fi
   case "$1" in
     https://* | http://127.0.0.1:* | http://localhost:*) ;;
     *)
-      echo "rainy installer: download URL must use HTTPS or loopback HTTP: $1" >&2
+      echo "rainy installer: download URL must use HTTPS or loopback HTTP" >&2
       return 1
       ;;
   esac
@@ -186,7 +195,7 @@ persist_release_source() {
   if [ -z "$RELEASE_BASE_URL" ]; then
     return
   fi
-  source_home="${RAINY_HOME:-$HOME/.rainy}"
+  source_home="$RAINY_HOME"
   source_file="$source_home/release-source"
   source_tmp="$source_file.tmp.$$"
   mkdir -p "$source_home"

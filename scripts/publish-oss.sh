@@ -61,6 +61,7 @@ done
 # Mutable entrypoints change only after the immutable version is complete.
 ossutil cp "$DIST_DIR/install.sh" "$destination/install.sh" --force
 ossutil cp "$DIST_DIR/install.ps1" "$destination/install.ps1" --force
+ossutil cp "$DIST_DIR/installers.sha256" "$destination/installers.sha256" --force
 latest_file="$(mktemp)"
 trap 'rm -f "$latest_file"' EXIT INT TERM
 printf '%s\n' "$TAG" >"$latest_file"

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "rainy")]
 #[command(version)]
+#[command(arg_required_else_help = true)]
 #[command(
     about = "Orchestrate application capabilities, packs, plugins, and AI agent tooling",
     long_about = "Rainy manages capability-driven application projects from initialization through verification and evidence generation.\n\nArguments shown as <VALUE> are required values. Options shown in [brackets] are optional. Run 'rainy <COMMAND> --help' for command-specific arguments and examples.",
@@ -107,12 +108,25 @@ pub enum Commands {
     SelfCommand(SelfCommand),
     /// Generate shell completion scripts from the current command tree.
     Completion(CompletionCommand),
-    #[command(external_subcommand)]
-    External(Vec<OsString>),
+    #[command(hide = true)]
+    External(ExternalCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct ExternalCommand {
+    /// Installed native plugin command followed by its arguments.
+    #[arg(
+        value_name = "PLUGIN_COMMAND",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    pub args: Vec<OsString>,
 }
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Initialize a Rainy application using a preset",
     after_help = "EXAMPLES:\n  Initialize an application:\n    rainy init app demo-saas --preset spring-nextjs --apply\n\n  Preview without writing files:\n    rainy init app demo-saas --dry-run"
 )]
@@ -149,7 +163,7 @@ pub struct InitAppArgs {
     pub dry_run: bool,
 
     /// Write the generated application files.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -189,12 +203,13 @@ pub struct NewCommand {
     pub dry_run: bool,
 
     /// Write the generated application files.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Add a capability and generate or execute its change plan",
     after_help = "EXAMPLES:\n  Preview a capability change:\n    rainy add capability minio-file-storage --provider minio --dry-run\n\n  Apply the capability change:\n    rainy add capability minio-file-storage --provider minio --apply"
 )]
@@ -227,7 +242,7 @@ pub struct AddCapabilityArgs {
     pub dry_run: bool,
 
     /// Apply the generated or supplied change plan.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 
     /// Write the generated plan to this JSON file.
@@ -258,7 +273,7 @@ pub struct ApplyCommand {
     pub dry_run: bool,
 
     /// Execute the plan and write changes.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 
     /// Continue after explicitly reviewing detected conflicts.
@@ -268,6 +283,7 @@ pub struct ApplyCommand {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Discover and manage application capabilities",
     after_help = "EXAMPLES:\n  List available capabilities:\n    rainy capability list\n\n  Preview adding a capability:\n    rainy capability add minio-file-storage --dry-run\n\n  Explain one capability:\n    rainy capability explain minio-file-storage\n\n  Show installed capabilities:\n    rainy capability installed\n\nRun 'rainy capability <COMMAND> --help' for more examples."
 )]
@@ -351,7 +367,7 @@ pub struct CapabilityChangeArgs {
     pub dry_run: bool,
 
     /// Apply the capability change.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 
     /// Write the generated plan to this JSON file.
@@ -365,6 +381,7 @@ pub struct CapabilityChangeArgs {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Discover, install, sign, and verify capability packs",
     after_help = "EXAMPLES:\n  List loaded packs:\n    rainy pack list\n\n  Inspect a pack:\n    rainy pack inspect minio-file-storage\n\n  Preview installing a local or remote pack:\n    rainy pack install ./community-packs/minio-file-storage --dry-run\n\nRun 'rainy pack <COMMAND> --help' for more examples."
 )]
@@ -403,7 +420,7 @@ pub enum PackSubcommand {
         about = "Sign a capability pack",
         after_help = "EXAMPLES:\n  Sign a local pack:\n    rainy pack sign ./community-packs/minio-file-storage"
     )]
-    Sign(PackPathArgs),
+    Sign(PackSignArgs),
     #[command(
         about = "Verify a capability pack signature and contents",
         after_help = "EXAMPLES:\n  Verify a local pack:\n    rainy pack verify ./community-packs/minio-file-storage"
@@ -475,7 +492,7 @@ pub struct PackInstallArgs {
     pub dry_run: bool,
 
     /// Install the pack and update pinned state.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -486,7 +503,7 @@ pub struct PackUpdateArgs {
     pub dry_run: bool,
 
     /// Download and apply available pack updates.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -498,7 +515,23 @@ pub struct PackPathArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct PackSignArgs {
+    /// Pack directory to sign.
+    #[arg(value_name = "PACK_DIR")]
+    pub path: PathBuf,
+
+    /// Preview the integrity manifest without writing files.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Write the integrity manifest and optional publisher signature.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
+}
+
+#[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Manage named local, Git, HTTP, and archive registries",
     long_about = "Configure multiple enterprise registries, synchronize selected pack modules, and lock resolved Git commits or archive digests. Registry changes preview unless --apply is supplied.",
     after_help = "EXAMPLES:\n  List configured registries:\n    rainy registry list\n\n  Add a GitLab registry:\n    rainy registry add company git+ssh://git@gitlab.example.com/platform/rainy-packs.git --ref main --apply\n\n  Add a verified archive registry:\n    rainy registry add security https://downloads.example.com/security-packs.tar.gz --sha256 <SHA256> --apply\n\n  Pull selected modules:\n    rainy registry sync company --module service-baseline,observability --apply\n\n  Pull all modules from all registries:\n    rainy registry sync --all-registries --all --apply\n\nRun 'rainy registry <COMMAND> --help' for command-specific examples."
@@ -540,6 +573,7 @@ pub enum RegistrySubcommand {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Manage Rainy's official Packs, Skills, and templates",
     long_about = "Install and update Rainy's version-compatible official content package. Content is downloaded from Git into RAINY_HOME/defaults and is not embedded in the CLI binary or copied into project workspaces.",
     after_help = "EXAMPLES:\n  Inspect default content state:\n    rainy defaults status\n\n  Preview the first installation:\n    rainy defaults install\n\n  Install the package:\n    rainy defaults install --apply\n\n  Refresh the pinned package:\n    rainy defaults update --apply\n\n  Validate the cache and compatibility:\n    rainy defaults doctor\n\nRun 'rainy defaults <COMMAND> --help' for command-specific examples."
@@ -558,7 +592,7 @@ pub enum DefaultsSubcommand {
     Status,
     #[command(
         about = "Install the version-compatible default package",
-        after_help = "EXAMPLES:\n  Preview installation:\n    rainy defaults install\n\n  Install the official package:\n    rainy defaults install --apply\n\n  Install from an enterprise mirror:\n    rainy defaults install --source https://git.example.com/rainy/defaults.git --ref v0.4.0 --apply"
+        after_help = "EXAMPLES:\n  Preview installation:\n    rainy defaults install\n\n  Install the official package:\n    rainy defaults install --apply\n\n  Install from an enterprise mirror:\n    rainy defaults install --source https://git.example.com/rainy/defaults.git --ref v0.5.0 --apply"
     )]
     Install(DefaultsChangeArgs),
     #[command(
@@ -588,7 +622,7 @@ pub struct DefaultsChangeArgs {
     pub dry_run: bool,
 
     /// Download, verify, and atomically install the default package.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -619,7 +653,7 @@ pub struct RegistryAddArgs {
     pub dry_run: bool,
 
     /// Persist the registry configuration.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -682,7 +716,7 @@ pub struct RegistrySyncArgs {
     pub dry_run: bool,
 
     /// Download, verify, and atomically replace registry caches.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -697,7 +731,7 @@ pub struct RegistryRemoveArgs {
     pub dry_run: bool,
 
     /// Remove configuration, lock entry, and managed cache.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -715,9 +749,28 @@ pub struct RegistryDoctorArgs {
     after_help = "EXAMPLES:\n  Diagnose the complete workspace:\n    rainy doctor\n\n  Diagnose one capability:\n    rainy doctor --capability minio-file-storage\n\n  Use structured output in CI or automation:\n    rainy doctor --json"
 )]
 pub struct DoctorCommand {
+    /// Check scope. Auto combines runtime checks with discovered project and Skill configuration.
+    #[arg(long, value_enum, value_name = "SCOPE", default_value = "auto")]
+    pub scope: DoctorScope,
+
     /// Limit diagnostics to one capability identifier.
     #[arg(long, value_name = "CAPABILITY_ID")]
     pub capability: Option<String>,
+
+    /// Permit remote registry, defaults, and update endpoint probes.
+    #[arg(long)]
+    pub network: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum DoctorScope {
+    Auto,
+    Project,
+    Skills,
+    Runtime,
+    Defaults,
+    Registries,
+    All,
 }
 
 #[derive(Debug, Args)]
@@ -739,7 +792,7 @@ pub struct VerifyCommand {
 #[derive(Debug, Args)]
 #[command(
     about = "Generate audit and delivery evidence reports",
-    after_help = "EXAMPLES:\n  Generate the default evidence report:\n    rainy evidence generate\n\n  Generate Markdown and JSON reports:\n    rainy evidence generate --format all\n\n  Compatibility form without the generate subcommand:\n    rainy evidence --format json"
+    after_help = "EXAMPLES:\n  Preview the default evidence report:\n    rainy evidence generate\n\n  Generate Markdown and JSON reports:\n    rainy evidence generate --format all --apply\n\n  Compatibility form without the generate subcommand:\n    rainy evidence --format json --apply"
 )]
 pub struct EvidenceCommand {
     #[command(subcommand)]
@@ -748,13 +801,21 @@ pub struct EvidenceCommand {
     /// Output format when the generate subcommand is omitted.
     #[arg(long, value_enum, value_name = "FORMAT")]
     pub format: Option<EvidenceFormat>,
+
+    /// Preview evidence paths without generating reports.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Generate and write the selected evidence reports.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum EvidenceSubcommand {
     #[command(
         about = "Generate evidence from configuration, health checks, and changes",
-        after_help = "EXAMPLES:\n  Generate the default report:\n    rainy evidence generate\n\n  Generate Markdown only:\n    rainy evidence generate --format markdown\n\n  Generate all supported formats:\n    rainy evidence generate --format all"
+        after_help = "EXAMPLES:\n  Preview the default report:\n    rainy evidence generate\n\n  Generate Markdown only:\n    rainy evidence generate --format markdown --apply\n\n  Generate all supported formats:\n    rainy evidence generate --format all --apply"
     )]
     Generate(EvidenceGenerateArgs),
 }
@@ -764,6 +825,14 @@ pub struct EvidenceGenerateArgs {
     /// Evidence output format.
     #[arg(long, value_enum, value_name = "FORMAT")]
     pub format: Option<EvidenceFormat>,
+
+    /// Preview evidence paths without generating reports.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Generate and write the selected evidence reports.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -775,6 +844,7 @@ pub enum EvidenceFormat {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Discover, install, and invoke Rainy plugins",
     after_help = "EXAMPLES:\n  List installed plugins:\n    rainy plugin list\n\n  Inspect a plugin:\n    rainy plugin inspect echo\n\n  Preview a plugin action:\n    rainy plugin call echo write-example --dry-run\n\nRun 'rainy plugin <COMMAND> --help' for more examples."
 )]
@@ -822,7 +892,7 @@ pub struct PluginInstallArgs {
     pub dry_run: bool,
 
     /// Install the plugin and update pinned state.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -844,14 +914,15 @@ pub struct PluginCallArgs {
     pub dry_run: bool,
 
     /// Execute the plugin action and permit declared writes.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Generate AI agent context for the current workspace",
-    after_help = "EXAMPLES:\n  Initialize Rainy's managed AGENTS.md block:\n    rainy agent init\n\n  Print the generated agent context:\n    rainy agent context\n\nRun 'rainy agent <COMMAND> --help' for command-specific details."
+    after_help = "EXAMPLES:\n  Preview Rainy's managed AGENTS.md block:\n    rainy agent init\n\n  Write the managed context:\n    rainy agent init --apply\n\n  Print the generated agent context:\n    rainy agent context\n\nRun 'rainy agent <COMMAND> --help' for command-specific details."
 )]
 pub struct AgentCommand {
     #[command(subcommand)]
@@ -862,9 +933,9 @@ pub struct AgentCommand {
 pub enum AgentSubcommand {
     #[command(
         about = "Create or refresh Rainy's managed AGENTS.md block",
-        after_help = "EXAMPLES:\n  Initialize agent context in the current workspace:\n    rainy agent init\n\n  Initialize another workspace:\n    rainy --workspace ./demo-saas agent init"
+        after_help = "EXAMPLES:\n  Preview agent context changes:\n    rainy agent init\n\n  Initialize agent context in the current workspace:\n    rainy agent init --apply\n\n  Initialize another workspace:\n    rainy --workspace ./demo-saas agent init --apply"
     )]
-    Init,
+    Init(AgentInitArgs),
     #[command(
         about = "Print the generated Rainy agent context",
         after_help = "EXAMPLES:\n  Print agent context:\n    rainy agent context\n\n  Return structured output:\n    rainy agent context --json"
@@ -873,9 +944,21 @@ pub enum AgentSubcommand {
 }
 
 #[derive(Debug, Args)]
+pub struct AgentInitArgs {
+    /// Preview managed context files without writing them.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Create or refresh managed agent context files.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
+}
+
+#[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Manage project-scoped AI agent skills",
-    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts. A standalone Git repository does not need rainy.yaml or capability.lock.\n\nUse rainy skill install as the normal entry point: it initializes missing Skill profile files, lets terminal users select the workflow, target hosts, and project-owned Skills, then explicitly confirms installation. Universal .agents/skills is always included. Non-interactive callers preview unless --apply or --yes is supplied.",
+    long_about = "Manage a project-scoped AI Skill profile for supported agent hosts. A standalone Git repository does not need rainy.yaml or capability.lock.\n\nUse rainy skill install as the normal entry point: it initializes missing Skill profile files and lets terminal users select the workflow, target hosts, and project-owned Skills. Universal .agents/skills is always included. Interactive installs ask for final confirmation and apply immediately; use --dry-run for a preview. Non-interactive and JSON callers still require --apply or --yes to write.",
     after_help = "QUICK START:\n  Initialize when needed and select Skills interactively:\n    rainy skill install\n\n  Create a project-owned rule and optional command package:\n    rainy skill create release-review --description \"Review enterprise releases\" --apply\n\n  Install selected project-owned Skills without prompting:\n    rainy skill install --skill release-review --apply\n\n  Install only the Rainy Skill (no Node.js required):\n    rainy skill install --profile rainy --target codex --apply\n\n  Check an installed profile:\n    rainy skill status\n    rainy skill doctor\n\nRun 'rainy skill <COMMAND> --help' for command-specific examples."
 )]
 pub struct SkillCommand {
@@ -887,14 +970,14 @@ pub struct SkillCommand {
 pub enum SkillSubcommand {
     #[command(
         about = "Create and install a project Skill profile",
-        long_about = "Explicitly create rainy-skills.yaml and install the selected project-scoped Skills.\n\nWhen the profile, target hosts, or project-owned Skills are omitted in a terminal, Rainy opens keyboard-driven selectors and asks whether to install the reviewed selection now. Choosing no, using --dry-run, or running non-interactively without --apply only previews the plan. Most users should run rainy skill install, which invokes this initialization automatically when the profile is missing.",
+        long_about = "Explicitly create rainy-skills.yaml and install the selected project-scoped Skills.\n\nWhen the profile, target hosts, or project-owned Skills are omitted in a terminal, Rainy opens keyboard-driven selectors. Without --apply the reviewed selection is returned as a preview and an exact apply command. Interactive --apply runs ask for final confirmation before writing. Most users should run rainy skill install, which invokes this initialization automatically when the profile is missing.",
         after_help = "EXAMPLES:\n  Explicitly initialize with interactive selectors:\n    rainy skill init\n\n  Apply the interactive selection:\n    rainy skill init --apply\n\n  --yes is an alias for --apply:\n    rainy skill init --yes\n\n  Install Rainy plus one project-owned Skill for Codex:\n    rainy skill init --profile rainy --target codex --skill release-review --apply\n\n  Install the full workflow for multiple hosts without prompting:\n    rainy skill init --profile comet --target codex,claude,cursor --language zh --all-custom-skills --apply\n\n  Explicitly install no project-owned Skills:\n    rainy skill init --profile rainy --target codex --no-custom-skills --apply\n\n  Inspect the machine-readable non-interactive preview:\n    rainy skill init --dry-run --json"
     )]
     Init(SkillInitArgs),
     #[command(
         about = "Initialize, select, install, or repair project Skills",
-        long_about = "Install the configured profile and selected project-owned Skills, or automatically initialize the profile when rainy-skills.yaml is missing. This command works in a standalone repository without rainy.yaml.\n\nWith no selection flags in an interactive terminal, Rainy selects the initial workflow and target hosts when needed, then opens a multi-select for valid Skills found under rainy-skills/ and asks for confirmation. On an existing profile, workflow and hosts remain fixed while project Skill selections may change. Non-interactive callers preview unless --apply or --yes is supplied. Use --force only after reviewing local changes reported as drift.",
-        after_help = "EXAMPLES:\n  Auto-initialize when needed and select Skills interactively:\n    rainy skill install\n\n  Apply the non-interactive default setup when no profile exists:\n    rainy skill install --apply\n\n  Install selected project-owned Skills without prompting:\n    rainy skill install --skill company-java,release-review --apply\n\n  Install every Skill from rainy-skills/ without prompting:\n    rainy skill install --all-custom-skills --apply\n\n  Remove all installed project-owned Skills but keep their sources:\n    rainy skill install --no-custom-skills --apply\n\n  Repair reviewed managed-file drift:\n    rainy skill install --force --apply"
+        long_about = "Install the configured profile and selected project-owned Skills, or automatically initialize the profile when rainy-skills.yaml is missing. This command works in a standalone repository without rainy.yaml.\n\nWith no selection flags in an interactive terminal, Rainy selects the initial workflow and target hosts when needed, then opens a multi-select for valid Skills found under rainy-skills/. On an existing profile, workflow and hosts remain fixed while project Skill selections may change. Interactive installs ask for confirmation and apply immediately; pass --dry-run to preview. Non-interactive and JSON callers require --apply or --yes. Use --force only after reviewing local changes reported as drift.",
+        after_help = "EXAMPLES:\n  Select, confirm, and install interactively:\n    rainy skill install\n\n  Preview an interactive selection without installing:\n    rainy skill install --dry-run\n\n  Apply the non-interactive default setup when no profile exists:\n    rainy skill install --apply\n\n  Install selected project-owned Skills without prompting:\n    rainy skill install --skill company-java,release-review --apply\n\n  Install every Skill from rainy-skills/ without prompting:\n    rainy skill install --all-custom-skills --apply\n\n  Remove all installed project-owned Skills but keep their sources:\n    rainy skill install --no-custom-skills --apply\n\n  Repair reviewed managed-file drift:\n    rainy skill install --force --apply"
     )]
     Install(SkillInstallArgs),
     #[command(
@@ -906,9 +989,9 @@ pub enum SkillSubcommand {
     #[command(
         about = "Refresh Rainy-managed agent context files",
         long_about = "Refresh the Rainy-managed blocks in AGENTS.md and enterprise agent context files while preserving user-authored content outside those blocks.",
-        after_help = "EXAMPLES:\n  Refresh agent context:\n    rainy skill sync\n\n  Return a machine-readable report:\n    rainy skill sync --json"
+        after_help = "EXAMPLES:\n  Preview refreshed agent context:\n    rainy skill sync\n\n  Refresh agent context:\n    rainy skill sync --apply\n\n  Return a machine-readable preview:\n    rainy skill sync --json"
     )]
-    Sync,
+    Sync(SkillSyncArgs),
     #[command(
         about = "Show installed Skill state and drift",
         long_about = "Compare rainy-skills.yaml, skills.lock, and installed Skill files. This command does not modify the workspace.",
@@ -956,6 +1039,17 @@ pub enum SkillTarget {
     GithubCopilot,
     Gemini,
     Opencode,
+}
+
+#[derive(Debug, Args)]
+pub struct SkillSyncArgs {
+    /// Preview managed context files without writing them.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Refresh the managed agent context files.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1062,11 +1156,11 @@ pub struct SkillInstallArgs {
     #[arg(long, conflicts_with_all = ["skill", "all_custom_skills"])]
     pub no_custom_skills: bool,
 
-    /// Preview managed paths without writing files (this is the default mode).
+    /// Preview managed paths without writing files. Interactive installs apply after confirmation.
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Apply the planned changes; --yes is a compatibility alias.
+    /// Apply without an interactive terminal; --yes is a compatibility alias.
     #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 
@@ -1090,7 +1184,7 @@ pub struct SkillCreateArgs {
     pub dry_run: bool,
 
     /// Create the Skill scaffold.
-    #[arg(long)]
+    #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 }
 
@@ -1138,6 +1232,7 @@ pub struct SkillUpdateArgs {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Check packs and plugins against Rainy protocols",
     after_help = "EXAMPLES:\n  Check the current workspace:\n    rainy conformance check\n\n  Check a pack or plugin directory:\n    rainy conformance check --path ./community-packs\n\n  Return structured results:\n    rainy conformance check --path ./community-packs --json"
 )]
@@ -1164,6 +1259,7 @@ pub struct ConformanceCheckArgs {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "List and validate Rainy document schemas",
     after_help = "EXAMPLES:\n  List built-in schemas:\n    rainy schema list\n\n  Validate a capability pack:\n    rainy schema validate --schema capability-pack --file pack.yaml\n\nRun 'rainy schema <COMMAND> --help' for more examples."
 )]
@@ -1199,8 +1295,9 @@ pub struct SchemaValidateArgs {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
     about = "Check, install, or skip Rainy CLI updates",
-    after_help = "EXAMPLES:\n  Check for a new release:\n    rainy self check\n\n  Install the latest release:\n    rainy self update\n\n  Skip one offered version:\n    rainy self skip 0.3.6\n\nRun 'rainy self <COMMAND> --help' for update source and version options."
+    after_help = "EXAMPLES:\n  Check for a new release:\n    rainy self check\n\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Skip one offered version:\n    rainy self skip 0.5.0 --apply\n\nRun 'rainy self <COMMAND> --help' for update source and version options."
 )]
 pub struct SelfCommand {
     #[command(subcommand)]
@@ -1216,12 +1313,12 @@ pub enum SelfSubcommand {
     Check(SelfCheckArgs),
     #[command(
         about = "Download, verify, and install a Rainy CLI release",
-        after_help = "EXAMPLES:\n  Install the latest release:\n    rainy self update\n\n  Install a specific release:\n    rainy self update --version v0.3.5\n\n  Use a different GitHub repository:\n    rainy self update --repo owner/repo --version v0.3.5\n\n  Reinstall the current version:\n    rainy self update --force"
+        after_help = "EXAMPLES:\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Install a specific release:\n    rainy self update --version v0.5.0 --apply\n\n  Use a different GitHub repository:\n    rainy self update --repo owner/repo --version v0.5.0 --apply\n\n  Reinstall the current version after review:\n    rainy self update --force --apply"
     )]
     Update(SelfUpdateArgs),
     #[command(
         about = "Skip update notifications for one release",
-        after_help = "EXAMPLES:\n  Skip a specific offered version:\n    rainy self skip 0.3.6\n\n  Skip the latest offered version:\n    rainy self skip\n\n  Use a different GitHub repository:\n    rainy self skip --repo owner/repo 0.3.6"
+        after_help = "EXAMPLES:\n  Preview skipping a specific offered version:\n    rainy self skip 0.5.0\n\n  Skip the version:\n    rainy self skip 0.5.0 --apply\n\n  Skip the latest offered version:\n    rainy self skip --apply\n\n  Use a different GitHub repository:\n    rainy self skip --repo owner/repo 0.5.0 --apply"
     )]
     Skip(SelfSkipArgs),
 }
@@ -1246,6 +1343,14 @@ pub struct SelfUpdateArgs {
     /// GitHub repository in owner/name form.
     #[arg(long, value_name = "OWNER/REPO")]
     pub repo: Option<String>,
+
+    /// Preview the selected update without installing it.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Download, verify, and install the selected release.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1257,4 +1362,12 @@ pub struct SelfSkipArgs {
     /// GitHub repository in owner/name form.
     #[arg(long, value_name = "OWNER/REPO")]
     pub repo: Option<String>,
+
+    /// Preview the skip-state change without writing it.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Persist the skipped release in the update state.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
 }

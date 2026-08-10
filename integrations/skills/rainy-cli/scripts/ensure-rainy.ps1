@@ -1,15 +1,13 @@
 param(
   [string]$Repo = $(if ($env:RAINY_REPO) { $env:RAINY_REPO } else { "RainLib/rainy-cli" }),
-  [string]$InstallDir = $(if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { Join-Path $HOME ".rainy\bin" }),
+  [string]$InstallDir = $(if ($env:INSTALL_DIR) { $env:INSTALL_DIR } elseif ($env:RAINY_HOME) { Join-Path $env:RAINY_HOME "bin" } elseif ($HOME) { Join-Path $HOME ".rainy\bin" } else { Join-Path $env:USERPROFILE ".rainy\bin" }),
   [string]$ReleaseUrl = $(if ($env:RAINY_SKILL_RELEASE_URL) { $env:RAINY_SKILL_RELEASE_URL } else { "" }),
+  [string]$ReleaseBaseUrl = $(if ($env:RAINY_RELEASE_BASE_URL) { $env:RAINY_RELEASE_BASE_URL } else { "" }),
+  [string]$ReleaseVersion = $(if ($env:RAINY_SKILL_VERSION) { $env:RAINY_SKILL_VERSION } else { "" }),
   [switch]$ForceInstall
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $ReleaseUrl) {
-  $ReleaseUrl = "https://github.com/$Repo/releases/latest/download"
-}
-
 function Resolve-RainyCommand {
   param([string]$Candidate)
   if (-not $Candidate) { return $null }
@@ -41,6 +39,20 @@ function Invoke-RainyDownload {
   }
 }
 
+function Assert-RainyDownloadUrl {
+  param([string]$Uri)
+  try { $Parsed = [System.Uri]$Uri } catch { throw "rainy skill bootstrap: release URL is invalid" }
+  if (-not $Parsed.IsAbsoluteUri) { throw "rainy skill bootstrap: release URL is invalid" }
+  if ($Parsed.UserInfo) { throw "rainy skill bootstrap: embedded URL credentials are not allowed" }
+  if ($Parsed.Query -match '(?i)(^|[?&])(access_key|api_?key|authorization|credential|password|secret|signature|token)=') {
+    throw "rainy skill bootstrap: sensitive authentication query parameters are not allowed"
+  }
+  $LoopbackHttp = $Parsed.Scheme -eq 'http' -and ($Parsed.Host -eq 'localhost' -or $Parsed.Host -eq '127.0.0.1' -or $Parsed.Host -eq '::1')
+  if ($Parsed.Scheme -ne 'https' -and -not $LoopbackHttp) {
+    throw "rainy skill bootstrap: release URL must use HTTPS or loopback HTTP"
+  }
+}
+
 if (-not $ForceInstall -and $env:RAINY_SKILL_FORCE_INSTALL -ne "1") {
   $Resolved = Resolve-RainyCommand -Candidate $env:RAINY_BIN
   if (-not $Resolved) { $Resolved = Resolve-RainyCommand -Candidate "rainy" }
@@ -54,13 +66,27 @@ if (-not $ForceInstall -and $env:RAINY_SKILL_FORCE_INSTALL -ne "1") {
 if ($Repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
   throw "rainy skill bootstrap: invalid repository; expected owner/repo, got $Repo"
 }
-if ($ReleaseUrl -notmatch '^https://' -and $ReleaseUrl -notmatch '^http://(127\.0\.0\.1|localhost)(:\d+)?(/|$)') {
-  throw "rainy skill bootstrap: release URL must use HTTPS or loopback HTTP: $ReleaseUrl"
-}
-
 $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rainy-skill-" + [System.Guid]::NewGuid())
 New-Item -ItemType Directory -Path $TempDir | Out-Null
 try {
+  if (-not $ReleaseUrl -and $ReleaseBaseUrl) {
+    Assert-RainyDownloadUrl -Uri $ReleaseBaseUrl
+    $LatestFile = Join-Path $TempDir "latest.txt"
+    Invoke-RainyDownload -Uri "$($ReleaseBaseUrl.TrimEnd('/'))/latest.txt" -OutFile $LatestFile
+    $ReleaseVersion = (Get-Content $LatestFile | Select-Object -First 1).Trim()
+    $ReleaseUrl = "$($ReleaseBaseUrl.TrimEnd('/'))/$ReleaseVersion"
+  } elseif (-not $ReleaseUrl) {
+    $Latest = Invoke-RestMethod -Headers @{ "User-Agent" = "rainy-skill-bootstrap" } -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 90
+    $ReleaseVersion = $Latest.tag_name
+    $ReleaseUrl = "https://github.com/$Repo/releases/download/$ReleaseVersion"
+  }
+  if (-not $ReleaseVersion) {
+    $ReleaseVersion = Split-Path $ReleaseUrl.TrimEnd('/') -Leaf
+  }
+  if ($ReleaseVersion -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    throw "rainy skill bootstrap: release version is invalid: $ReleaseVersion"
+  }
+  Assert-RainyDownloadUrl -Uri $ReleaseUrl
   $Installer = Join-Path $TempDir "install.ps1"
   $Checksums = Join-Path $TempDir "installers.sha256"
   Write-Host "rainy command not found; installing the verified latest release"
@@ -76,7 +102,7 @@ try {
   $Actual = (Get-FileHash -Algorithm SHA256 $Installer).Hash.ToLowerInvariant()
   if ($Actual -ne $Expected) { throw "rainy skill bootstrap: install.ps1 checksum verification failed" }
 
-  & $Installer -Repo $Repo -Version "latest" -InstallDir $InstallDir
+  & $Installer -Repo $Repo -Version $ReleaseVersion -InstallDir $InstallDir -BaseUrl $ReleaseUrl -ReleaseBaseUrl $ReleaseBaseUrl
   $Resolved = Resolve-RainyCommand -Candidate (Join-Path $InstallDir "rainy.exe")
   if (-not $Resolved) {
     throw "rainy skill bootstrap: Rainy CLI was installed but its executable could not be verified"

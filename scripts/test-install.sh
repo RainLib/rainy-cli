@@ -172,4 +172,17 @@ fi
 grep -q "RAINY_INSTALL_INVALID_VERSION" "${TMPDIR:-/tmp}/rainy-installer-version.err" || fail "invalid version error code was missing"
 rm -f "${TMPDIR:-/tmp}/rainy-installer-version.err"
 
+credential_error="${TMPDIR:-/tmp}/rainy-installer-credential.err"
+if RAINY_VERSION=v0.5.0 \
+  RAINY_INSTALLER_BASE_URL="https://rainy:hunter2@example.com/releases/v0.5.0" \
+  sh "$INSTALLER" >/dev/null 2>"$credential_error"; then
+  fail "installer accepted embedded URL credentials"
+fi
+grep -q "embedded URL credentials are not allowed" "$credential_error" \
+  || fail "credential URL rejection was not explanatory"
+if grep -q "hunter2" "$credential_error"; then
+  fail "credential URL rejection leaked the password"
+fi
+rm -f "$credential_error"
+
 echo "installer tests passed"

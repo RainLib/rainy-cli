@@ -12,6 +12,22 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 const MAX_PLUGIN_RESPONSE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_WASM_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_WASM_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+const WASM_FUEL: u64 = 100_000_000;
+const WASM_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct WasmState {
+    limits: wasmtime::StoreLimits,
+}
+
+struct EpochDeadline(std::sync::mpsc::Sender<()>);
+
+impl Drop for EpochDeadline {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginInfo {
@@ -39,15 +55,20 @@ pub struct PluginManifest {
     pub permissions: serde_json::Value,
     #[serde(default)]
     pub adapter: Option<PluginAdapter>,
+    #[serde(default)]
+    pub extensions: BTreeMap<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub extension_fields: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PluginAdapter {
     Http { url: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginManifestCommand {
     pub name: String,
     #[serde(default)]
@@ -55,6 +76,7 @@ pub struct PluginManifestCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginManifestAction {
     pub id: String,
     #[serde(default)]
@@ -122,35 +144,62 @@ pub fn run_external(
         ensure_plugin_command_allowed(manifest, &args)?;
     }
 
-    let output = std::process::Command::new(&plugin.path)
+    let mut command = std::process::Command::new(&plugin.path);
+    command
         .args(args.into_iter().skip(1))
+        .current_dir(workspace)
         .env(
             "RAINY_PLUGIN_NETWORK",
             plugin_network_permission(manifest.as_ref()),
-        )
-        .output()?;
-    if !output.status.success() {
+        );
+    let output = crate::process::run_command(
+        command,
+        &plugin.path,
+        Duration::from_secs(300),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !output.success() {
+        let truncation = if output.stdout_truncated || output.stderr_truncated {
+            format!(
+                " (output truncated: stdout={}, stderr={})",
+                output.stdout_truncated, output.stderr_truncated
+            )
+        } else {
+            String::new()
+        };
         return Err(RainyError::plugin(
             "PLUGIN_EXECUTION_FAILED",
-            String::from_utf8_lossy(&output.stderr).to_string(),
+            if output.termination == crate::process::Termination::TimedOut {
+                format!("native plugin timed out after 300 seconds{truncation}")
+            } else {
+                format!("{}{truncation}", output.stderr)
+            },
         ));
     }
 
     Ok(CommandOutput::PluginRun {
         plugin: plugin.name,
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        stdout: output.stdout,
+        stderr: output.stderr,
+        stdout_truncated: output.stdout_truncated,
+        stderr_truncated: output.stderr_truncated,
     })
+}
+
+pub fn external_command_exists(workspace: &Path, command: &str) -> bool {
+    let plugin_name = format!("rainy-{command}");
+    discover_plugins(workspace)
+        .is_ok_and(|plugins| plugins.iter().any(|plugin| plugin.name == plugin_name))
 }
 
 fn discover_plugins(workspace: &Path) -> RainyResult<Vec<PluginInfo>> {
     let mut found = BTreeMap::<String, DiscoveredPlugin>::new();
     let mut dirs = Vec::new();
     dirs.push(workspace.join(".rainy/plugins/bin"));
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join(".rainy/plugins/bin"));
+    if let Ok(home) = crate::paths::rainy_home() {
+        dirs.push(home.join("plugins/bin"));
     }
-    dirs.push(PathBuf::from("/opt/rainy/plugins/bin"));
+    dirs.push(crate::paths::system_plugin_bin());
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
@@ -271,6 +320,7 @@ fn install_plugin(
                 format!("unsupported plugin protocol: {}", manifest.protocol_version),
             ));
         }
+        validate_plugin_extensions(&manifest)?;
         validate_plugin_permissions(&manifest)?;
         validate_plugin_actions(&manifest)?;
         wasm_assets = collect_wasm_assets(&manifest, &manifest_path)?;
@@ -431,15 +481,44 @@ fn call_wasm_action(
         ));
     }
 
-    let engine = wasmtime::Engine::default();
+    let mut engine_config = wasmtime::Config::new();
+    engine_config.consume_fuel(true).epoch_interruption(true);
+    let engine = wasmtime::Engine::new(&engine_config).map_err(|err| {
+        RainyError::plugin(
+            "PLUGIN_WASM_RUNTIME_FAILED",
+            format!("could not initialize Wasmtime: {err}"),
+        )
+    })?;
     let module_bytes = std::fs::read(&wasm_path)?;
-    let module = wasmtime::Module::new(&engine, module_bytes).map_err(|err| {
+    let module = wasmtime::Module::new(&engine, &module_bytes).map_err(|err| {
         RainyError::plugin(
             "PLUGIN_WASM_INVALID",
             format!("invalid wasm module {}: {err}", wasm_path.display()),
         )
     })?;
-    let mut store = wasmtime::Store::new(&engine, ());
+    let limits = wasmtime::StoreLimitsBuilder::new()
+        .memory_size(MAX_WASM_MEMORY_BYTES)
+        .instances(1)
+        .memories(1)
+        .tables(2)
+        .build();
+    let mut store = wasmtime::Store::new(&engine, WasmState { limits });
+    store.limiter(|state| &mut state.limits);
+    store.set_fuel(WASM_FUEL).map_err(|err| {
+        RainyError::plugin(
+            "PLUGIN_WASM_RUNTIME_FAILED",
+            format!("could not configure Wasm fuel: {err}"),
+        )
+    })?;
+    store.set_epoch_deadline(1);
+    let (deadline_tx, deadline_rx) = std::sync::mpsc::channel();
+    let deadline_engine = engine.clone();
+    std::thread::spawn(move || {
+        if deadline_rx.recv_timeout(WASM_TIMEOUT).is_err() {
+            deadline_engine.increment_epoch();
+        }
+    });
+    let _deadline = EpochDeadline(deadline_tx);
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).map_err(|err| {
         RainyError::plugin(
             "PLUGIN_WASM_FAILED",
@@ -451,6 +530,12 @@ fn call_wasm_action(
         .ok_or_else(|| RainyError::plugin("PLUGIN_WASM_INVALID", "wasm must export memory"))?;
 
     let input_bytes = serde_json::to_vec(&input)?;
+    if input_bytes.len() > MAX_WASM_INPUT_BYTES {
+        return Err(RainyError::plugin(
+            "PLUGIN_WASM_INPUT_TOO_LARGE",
+            "wasm action input exceeds the 1 MiB limit",
+        ));
+    }
     let packed = match (
         instance.get_typed_func::<i32, i32>(&mut store, "rainy_alloc"),
         instance.get_typed_func::<(i32, i32), i64>(&mut store, "rainy_action"),
@@ -512,14 +597,20 @@ fn call_wasm_action(
     parse_plugin_response(&response)
 }
 
-fn read_wasm_response(
-    store: &wasmtime::Store<()>,
+fn read_wasm_response<T>(
+    store: &wasmtime::Store<T>,
     memory: &wasmtime::Memory,
     packed: i64,
 ) -> RainyResult<String> {
     let packed = packed as u64;
     let ptr = (packed >> 32) as usize;
     let len = (packed & 0xffff_ffff) as usize;
+    if len as u64 > MAX_PLUGIN_RESPONSE_BYTES {
+        return Err(RainyError::plugin(
+            "PLUGIN_RESPONSE_TOO_LARGE",
+            "wasm response exceeds the 5 MiB limit",
+        ));
+    }
     let end = ptr.checked_add(len).ok_or_else(|| {
         RainyError::plugin("PLUGIN_WASM_FAILED", "wasm response pointer overflow")
     })?;
@@ -585,19 +676,19 @@ fn parse_plugin_response(response: &str) -> RainyResult<ChangeSet> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PluginRpcResponse {
     protocol_version: String,
     change_set: ChangeSet,
 }
 
 fn http_post_json(url: &str, body: &serde_json::Value) -> RainyResult<String> {
-    if !url.starts_with("https://") && !is_loopback_http(url) {
-        return Err(RainyError::plugin(
+    crate::security::validate_http(url, true).map_err(|reason| {
+        RainyError::plugin(
             "PLUGIN_ADAPTER_UNSUPPORTED_URL",
-            format!("only HTTPS or loopback HTTP adapters are allowed: {url}"),
-        ));
-    }
+            format!("plugin adapter URL is not allowed: {reason}"),
+        )
+    })?;
     let body = serde_json::to_string(body)?;
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(3))
@@ -634,20 +725,6 @@ fn http_post_json(url: &str, body: &serde_json::Value) -> RainyResult<String> {
         ));
     }
     Ok(response_body)
-}
-
-fn is_loopback_http(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("http://") else {
-        return false;
-    };
-    let host = rest
-        .split_once('/')
-        .map(|(host, _)| host)
-        .unwrap_or(rest)
-        .split(':')
-        .next()
-        .unwrap_or_default();
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 pub(crate) fn validate_plugin_permissions(manifest: &PluginManifest) -> RainyResult<()> {
@@ -934,30 +1011,27 @@ pub(crate) fn shadows_builtin_command(plugin_name: &str) -> bool {
 
 fn prepare_plugin_source(workspace: &Path, source: &str, apply: bool) -> RainyResult<PathBuf> {
     if let Some(git_url) = source.strip_prefix("git+") {
-        if !git_url.starts_with("https://")
-            && !git_url.starts_with("ssh://")
-            && !git_url.starts_with("git@")
-        {
-            return Err(RainyError::plugin(
+        crate::security::validate_git(git_url, false).map_err(|reason| {
+            RainyError::plugin(
                 "PLUGIN_SOURCE_UNSUPPORTED_URL",
-                format!("git plugin source must use HTTPS or SSH: {git_url}"),
-            ));
-        }
+                format!("Git plugin source is not allowed: {reason}"),
+            )
+        })?;
         let target = workspace.join(".rainy/plugins/src").join(slugify(git_url));
         if apply && !target.exists() {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let output = std::process::Command::new("git")
-                .arg("clone")
-                .arg(git_url)
-                .arg(&target)
-                .output()?;
-            if !output.status.success() {
-                return Err(RainyError::plugin(
-                    "PLUGIN_INSTALL_FAILED",
-                    String::from_utf8_lossy(&output.stderr).to_string(),
-                ));
+            let mut command = std::process::Command::new("git");
+            command.arg("clone").arg(git_url).arg(&target);
+            let output = crate::process::run_command(
+                command,
+                "git",
+                Duration::from_secs(900),
+                crate::process::DEFAULT_OUTPUT_LIMIT,
+            )?;
+            if !output.success() {
+                return Err(RainyError::plugin("PLUGIN_INSTALL_FAILED", output.stderr));
             }
         }
         return Ok(target);
@@ -1025,12 +1099,28 @@ fn load_manifest(workspace: &Path, id: &str) -> RainyResult<PluginManifest> {
         .join(".rainy/plugins/manifests")
         .join(format!("{id}.json"));
     let content = std::fs::read_to_string(path)?;
-    serde_json::from_str(&content).map_err(|err| {
+    let manifest: PluginManifest = serde_json::from_str(&content).map_err(|err| {
         RainyError::plugin(
             "PLUGIN_MANIFEST_INVALID",
             format!("invalid plugin manifest: {err}"),
         )
-    })
+    })?;
+    validate_plugin_extensions(&manifest)?;
+    Ok(manifest)
+}
+
+fn validate_plugin_extensions(manifest: &PluginManifest) -> RainyResult<()> {
+    if let Some(field) = manifest
+        .extension_fields
+        .keys()
+        .find(|field| !field.starts_with("x-"))
+    {
+        return Err(RainyError::plugin(
+            "PLUGIN_MANIFEST_UNKNOWN_FIELD",
+            format!("unknown plugin manifest field '{field}'; use extensions or an x-* field"),
+        ));
+    }
+    Ok(())
 }
 
 fn slugify(input: &str) -> String {

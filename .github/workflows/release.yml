@@ -52,13 +52,25 @@ jobs:
         run: cargo test --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: security-tools-cargo-audit-0.22.2-cargo-deny-0.19.4
+      - name: Install security tools
+        run: |
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --version 0.22.2 --locked
+          command -v cargo-deny >/dev/null || cargo install cargo-deny --version 0.19.4 --locked
+      - name: Dependency vulnerability audit
+        run: cargo audit
+      - name: Dependency policy audit
+        run: cargo deny check
       - name: Schema parse
         run: python3 -c "import json, pathlib; [json.loads(path.read_text()) for path in sorted(pathlib.Path('schemas').glob('*.schema.json'))]"
       - name: MCP wrapper syntax
         run: python3 -m py_compile integrations/mcp/rainy_mcp.py
       - name: Skill and installer tests
         shell: bash
-        run: make skill-check installer-check installer-test mirror-test
+        run: make skill-check installer-check installer-test tty-check mirror-test
       - name: Release input tests
         run: sh scripts/test-release.sh
 
@@ -228,3 +240,25 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+      - name: Install and update from the published release
+        shell: bash
+        env:
+          RAINY_NO_MODIFY_PATH: "1"
+          RAINY_NO_UPDATE_CHECK: "1"
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/rainy-release-smoke/bin"
+          installer_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/install.sh"
+          for attempt in 1 2 3 4 5; do
+            if curl -fL --retry 3 --retry-all-errors "$installer_url" -o "$RUNNER_TEMP/install-rainy.sh"; then
+              break
+            fi
+            test "$attempt" -lt 5
+            sleep $((attempt * 3))
+          done
+          RAINY_REPO="$GITHUB_REPOSITORY" RAINY_VERSION="$RELEASE_TAG" \
+            INSTALL_DIR="$install_dir" sh "$RUNNER_TEMP/install-rainy.sh"
+          "$install_dir/rainy" --version | grep -F " ${RELEASE_TAG#v}"
+          "$install_dir/rainy" doctor --scope runtime --json >/dev/null
+          INSTALL_DIR="$install_dir" "$install_dir/rainy" self update \
+            --repo "$GITHUB_REPOSITORY" --version "$RELEASE_TAG" --force --json >/dev/null

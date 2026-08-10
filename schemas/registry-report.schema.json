@@ -12,17 +12,44 @@
       "type": "array",
       "items": {
         "type": "object",
+        "required": ["name", "sourceType", "source", "priority", "modules", "installedSkills", "synced"],
         "properties": {
+          "name": { "type": "string" },
+          "sourceType": { "type": "string" },
+          "source": { "type": "string" },
+          "priority": { "type": "integer" },
+          "requestedRef": { "type": ["string", "null"] },
+          "resolvedRef": { "type": ["string", "null"] },
+          "digest": { "type": ["string", "null"] },
+          "cachePath": { "type": ["string", "null"] },
+          "modules": {
+            "type": "array",
+            "items": { "type": "string" },
+            "uniqueItems": true
+          },
           "installedSkills": {
             "type": "array",
             "items": { "type": "string", "minLength": 1 },
             "uniqueItems": true
-          }
+          },
+          "synced": { "type": "boolean" }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     },
-    "checks": { "type": "array" }
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "message"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "enum": ["passed", "warning", "failed"] },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

@@ -28,7 +28,7 @@
             "items": { "type": "string" }
           }
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     },
     "actions": {
@@ -44,12 +44,79 @@
               "uses": { "type": "string" },
               "with": { "type": "object" }
             },
-            "additionalProperties": true
+            "additionalProperties": false
           }
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
+    "validations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "run": {
+            "type": "object",
+            "required": ["program"],
+            "properties": {
+              "program": { "type": "string", "minLength": 1 },
+              "args": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          },
+          "command": { "type": "string", "minLength": 1 },
+          "workingDirectory": { "type": "string" },
+          "timeoutSeconds": { "type": "integer", "minimum": 1 },
+          "platforms": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
+        },
+        "oneOf": [
+          { "required": ["run"], "not": { "required": ["command"] } },
+          { "required": ["command"], "not": { "required": ["run"] } }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "doctor": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "uses"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "uses": { "type": "string", "minLength": 1 },
+              "with": true
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentRules": { "type": "array", "items": { "type": "string" } },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": { "type": "string", "minLength": 1 },
+          "default": true
+        },
+        "additionalProperties": false
+      }
+    },
+    "status": { "type": "string" },
+    "owner": { "type": "string" },
+    "extensions": { "type": "object" },
     "policy": {
       "type": "object",
       "properties": {
@@ -66,8 +133,9 @@
           "items": { "type": "string" }
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "patternProperties": { "^x-[A-Za-z0-9._-]+$": true },
+  "additionalProperties": false
 }

@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use walkdir::WalkDir;
 
 const DEFAULT_SOURCE: &str = "https://github.com/RainLib/rainy-cli.git";
 const MANIFEST: &str = "rainy-defaults.yaml";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DefaultsManifest {
     api_version: String,
     kind: String,
@@ -22,17 +24,20 @@ struct DefaultsManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DefaultsMetadata {
     name: String,
     version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DefaultsRequires {
     rainy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DefaultsPaths {
     packs: String,
     skills: String,
@@ -40,7 +45,7 @@ struct DefaultsPaths {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DefaultsLock {
     lockfile_version: u32,
     source: String,
@@ -48,6 +53,7 @@ struct DefaultsLock {
     resolved_ref: String,
     cache_path: String,
     package_version: String,
+    digest: String,
     installed_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -71,7 +77,7 @@ pub fn handle_defaults_command(command: DefaultsCommand) -> RainyResult<CommandO
         DefaultsSubcommand::Status => status_report("status")?,
         DefaultsSubcommand::Install(args) => change("install", args, false)?,
         DefaultsSubcommand::Update(args) => change("update", args, true)?,
-        DefaultsSubcommand::Doctor => doctor()?,
+        DefaultsSubcommand::Doctor => doctor_report()?,
     };
     Ok(CommandOutput::Defaults { report })
 }
@@ -99,6 +105,23 @@ pub fn template_path(name: &str) -> RainyResult<PathBuf> {
     Ok(path)
 }
 
+pub fn implicit_fetch_required() -> bool {
+    if development_source().is_some() {
+        return false;
+    }
+    if defaults_override_is_set() {
+        let source = configured_source();
+        let reference = configured_ref();
+        return cache_path(&source, &reference)
+            .map(|path| !path.is_dir() || validate_distribution(&path).is_err())
+            .unwrap_or(true);
+    }
+    !load_lock().is_ok_and(|lock| {
+        let cache = Path::new(&lock.cache_path);
+        cache.is_dir() && validate_distribution(cache).is_ok()
+    })
+}
+
 fn ensure_available() -> RainyResult<PathBuf> {
     if let Some(root) = development_source() {
         validate_distribution(&root)?;
@@ -122,6 +145,8 @@ fn ensure_available() -> RainyResult<PathBuf> {
     if let Ok(lock) = load_lock()
         && Path::new(&lock.cache_path).is_dir()
         && validate_distribution(Path::new(&lock.cache_path)).is_ok()
+        && distribution_digest(Path::new(&lock.cache_path))
+            .is_ok_and(|digest| digest == lock.digest)
     {
         return Ok(PathBuf::from(lock.cache_path));
     }
@@ -148,17 +173,17 @@ fn change(
     let source = args.source.unwrap_or_else(configured_source);
     let reference = args.reference.unwrap_or_else(configured_ref);
     if !args.apply {
-        return Ok(report(operation, "dry-run", source, reference, None, None));
+        let version = reference
+            .strip_prefix('v')
+            .and_then(|value| semver::Version::parse(value).ok())
+            .map(|version| version.to_string());
+        let mut preview = report(operation, "dry-run", source, reference, None, None);
+        preview.package_version = version;
+        return Ok(preview);
     }
     let root = install_distribution(&source, &reference, force_refresh)?;
-    if local_source(&source).is_some() {
-        let version = load_manifest(&root)?.metadata.version;
-        return Ok(
-            report(operation, "applied", source, reference, None, Some(root))
-                .with_package_version(version),
-        );
-    }
     let lock = load_lock()?;
+    let package_version = lock.package_version.clone();
     Ok(report(
         operation,
         "applied",
@@ -166,7 +191,8 @@ fn change(
         lock.requested_ref,
         Some(lock.resolved_ref),
         Some(root),
-    ))
+    )
+    .with_package_version(package_version))
 }
 
 fn status_report(operation: &str) -> RainyResult<DefaultsReport> {
@@ -210,21 +236,29 @@ fn status_report(operation: &str) -> RainyResult<DefaultsReport> {
     }
 }
 
-fn doctor() -> RainyResult<DefaultsReport> {
+pub fn doctor_report() -> RainyResult<DefaultsReport> {
     let mut report = status_report("doctor")?;
     let Some(cache) = report.cache_path.as_deref() else {
         report.status = "failed".to_string();
         return Ok(report);
     };
     let manifest = validate_distribution(Path::new(cache))?;
-    report.status = "passed".to_string();
+    let digest_matches = development_source().is_some()
+        || load_lock().is_ok_and(|lock| {
+            lock.cache_path == cache
+                && distribution_digest(Path::new(cache)).is_ok_and(|digest| digest == lock.digest)
+        });
+    report.status = if digest_matches { "passed" } else { "failed" }.to_string();
     report.package_version = Some(manifest.metadata.version);
     Ok(report)
 }
 
 fn install_distribution(source: &str, reference: &str, force: bool) -> RainyResult<PathBuf> {
+    crate::progress::detail_current(format!(
+        "Preparing default content package at immutable reference {reference}"
+    ));
     if let Some(path) = local_source(source) {
-        let root = path.canonicalize().map_err(|error| {
+        let source_root = path.canonicalize().map_err(|error| {
             RainyError::registry(
                 "DEFAULTS_SOURCE_NOT_FOUND",
                 format!(
@@ -233,19 +267,46 @@ fn install_distribution(source: &str, reference: &str, force: bool) -> RainyResu
                 ),
             )
         })?;
-        let manifest = validate_distribution(&root)?;
+        let manifest = validate_distribution(&source_root)?;
+        let source_identity = source_root.to_string_lossy().to_string();
+        let target = cache_path(&source_identity, reference)?;
+        let _lock = cache_lock(&target)?;
+        if target.is_dir() && !force {
+            let cached_manifest = validate_distribution(&target)?;
+            save_lock(&DefaultsLock {
+                lockfile_version: 1,
+                source: source_identity,
+                requested_ref: reference.to_string(),
+                resolved_ref: "local".to_string(),
+                cache_path: target.to_string_lossy().to_string(),
+                package_version: cached_manifest.metadata.version,
+                digest: distribution_digest(&target)?,
+                installed_at: chrono::Utc::now(),
+            })?;
+            return Ok(target);
+        }
+        let staging = target.with_extension(format!("tmp.{}", std::process::id()));
+        if staging.exists() {
+            std::fs::remove_dir_all(&staging)?;
+        }
+        snapshot_local_distribution(&source_root, &staging, &manifest)?;
+        reject_unsafe_entries(&staging)?;
+        let installed_manifest = validate_distribution(&staging)?;
+        replace_directory(&staging, &target)?;
         save_lock(&DefaultsLock {
             lockfile_version: 1,
-            source: source.to_string(),
+            source: source_identity,
             requested_ref: reference.to_string(),
             resolved_ref: "local".to_string(),
-            cache_path: root.to_string_lossy().to_string(),
-            package_version: manifest.metadata.version,
+            cache_path: target.to_string_lossy().to_string(),
+            package_version: installed_manifest.metadata.version,
+            digest: distribution_digest(&target)?,
             installed_at: chrono::Utc::now(),
         })?;
-        return Ok(root);
+        return Ok(target);
     }
     validate_git_source(source)?;
+    crate::progress::detail_current("Downloading the default content package");
     let target = cache_path(source, reference)?;
     let _lock = cache_lock(&target)?;
     if target.is_dir() && !force {
@@ -258,6 +319,7 @@ fn install_distribution(source: &str, reference: &str, force: bool) -> RainyResu
             resolved_ref,
             cache_path: target.to_string_lossy().to_string(),
             package_version: manifest.metadata.version,
+            digest: distribution_digest(&target)?,
             installed_at: chrono::Utc::now(),
         })?;
         return Ok(target);
@@ -281,18 +343,25 @@ fn install_distribution(source: &str, reference: &str, force: bool) -> RainyResu
         resolved_ref,
         cache_path: target.to_string_lossy().to_string(),
         package_version: manifest.metadata.version,
+        digest: distribution_digest(&target)?,
         installed_at: chrono::Utc::now(),
     })?;
     Ok(target)
 }
 
 fn clone_ref(source: &str, reference: &str, target: &Path) -> RainyResult<()> {
-    let output = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .args(["clone", "--depth", "1", "--no-tags", "--branch", reference])
         .arg(source)
-        .arg(target)
-        .output()?;
-    if output.status.success() {
+        .arg(target);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if output.success() {
         return Ok(());
     }
     if target.exists() {
@@ -309,34 +378,40 @@ fn clone_ref(source: &str, reference: &str, target: &Path) -> RainyResult<()> {
 }
 
 fn run_git(root: &Path, args: &[&str]) -> RainyResult<()> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()?;
-    if output.status.success() {
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(root).args(args);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if output.success() {
         Ok(())
     } else {
         Err(RainyError::registry(
             "DEFAULTS_GIT_FETCH_FAILED",
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            output.stderr.trim().to_string(),
         ))
     }
 }
 
 fn git_output(root: &Path, args: &[&str]) -> RainyResult<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()?;
-    if !output.status.success() {
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(root).args(args);
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !output.success() {
         return Err(RainyError::registry(
             "DEFAULTS_GIT_REF_INVALID",
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            output.stderr.trim().to_string(),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(output.stdout.trim().to_string())
 }
 
 fn validate_distribution(root: &Path) -> RainyResult<DefaultsManifest> {
@@ -453,6 +528,74 @@ fn reject_unsafe_entries(root: &Path) -> RainyResult<()> {
     Ok(())
 }
 
+fn snapshot_local_distribution(
+    source: &Path,
+    target: &Path,
+    manifest: &DefaultsManifest,
+) -> RainyResult<()> {
+    std::fs::create_dir_all(target)?;
+    copy_regular_file(&source.join(MANIFEST), &target.join(MANIFEST))?;
+    for relative in [
+        manifest.paths.packs.as_str(),
+        manifest.paths.skills.as_str(),
+        manifest.paths.templates.as_str(),
+    ] {
+        copy_directory_secure(&source.join(relative), &target.join(relative))?;
+    }
+    Ok(())
+}
+
+fn copy_regular_file(source: &Path, target: &Path) -> RainyResult<()> {
+    let metadata = std::fs::symlink_metadata(source)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(RainyError::registry(
+            "DEFAULTS_SOURCE_UNSAFE_ENTRY",
+            format!(
+                "default package file must be a regular file: {}",
+                source.display()
+            ),
+        ));
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(source, target)?;
+    Ok(())
+}
+
+fn copy_directory_secure(source: &Path, target: &Path) -> RainyResult<()> {
+    for entry in WalkDir::new(source).follow_links(false) {
+        let entry = entry.map_err(|error| {
+            RainyError::registry(
+                "DEFAULTS_SOURCE_INVALID",
+                format!("cannot copy default package content: {error}"),
+            )
+        })?;
+        let relative = entry
+            .path()
+            .strip_prefix(source)
+            .map_err(|error| RainyError::registry("DEFAULTS_SOURCE_INVALID", error.to_string()))?;
+        let destination = target.join(relative);
+        if entry.file_type().is_symlink() {
+            return Err(RainyError::registry(
+                "DEFAULTS_SOURCE_UNSAFE_ENTRY",
+                format!("symbolic links are not allowed: {}", entry.path().display()),
+            ));
+        }
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(destination)?;
+        } else if entry.file_type().is_file() {
+            copy_regular_file(entry.path(), &destination)?;
+        } else {
+            return Err(RainyError::registry(
+                "DEFAULTS_SOURCE_UNSAFE_ENTRY",
+                format!("unsupported filesystem entry: {}", entry.path().display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn report(
     operation: &str,
     status: &str,
@@ -543,18 +686,7 @@ fn defaults_override_is_set() -> bool {
 }
 
 fn defaults_home() -> RainyResult<PathBuf> {
-    if let Some(path) = std::env::var_os("RAINY_HOME") {
-        return Ok(PathBuf::from(path));
-    }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .ok_or_else(|| {
-            RainyError::registry(
-                "RAINY_HOME_NOT_FOUND",
-                "cannot determine Rainy home; set RAINY_HOME to an absolute directory",
-            )
-        })?;
-    Ok(PathBuf::from(home).join(".rainy"))
+    crate::paths::rainy_home()
 }
 
 fn cache_path(source: &str, reference: &str) -> RainyResult<PathBuf> {
@@ -569,9 +701,49 @@ fn lock_path() -> RainyResult<PathBuf> {
 }
 
 fn load_lock() -> RainyResult<DefaultsLock> {
-    Ok(serde_yaml::from_str(&std::fs::read_to_string(
-        lock_path()?
-    )?)?)
+    let lock: DefaultsLock = serde_yaml::from_str(&std::fs::read_to_string(lock_path()?)?)?;
+    if lock.lockfile_version != 1 {
+        return Err(RainyError::config(
+            "DEFAULTS_LOCK_VERSION_UNSUPPORTED",
+            format!(
+                "unsupported defaults.lock lockfileVersion: {}",
+                lock.lockfile_version
+            ),
+        ));
+    }
+    validate_digest(&lock.digest)?;
+    Ok(lock)
+}
+
+fn distribution_digest(root: &Path) -> RainyResult<String> {
+    let mut files = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect::<Vec<_>>();
+    files.sort();
+    let mut digest = Sha256::new();
+    for path in files {
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        digest.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
+        digest.update([0]);
+        digest.update(std::fs::read(path)?);
+        digest.update([0]);
+    }
+    Ok(hex(&digest.finalize()))
+}
+
+fn validate_digest(digest: &str) -> RainyResult<()> {
+    if digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    Err(RainyError::config(
+        "DEFAULTS_LOCK_DIGEST_INVALID",
+        "defaults.lock digest must be a 64-character SHA-256 value",
+    ))
 }
 
 fn save_lock(lock: &DefaultsLock) -> RainyResult<()> {
@@ -644,17 +816,12 @@ fn replace_directory(staging: &Path, target: &Path) -> RainyResult<()> {
 }
 
 fn validate_git_source(source: &str) -> RainyResult<()> {
-    if source.starts_with("https://")
-        || source.starts_with("ssh://")
-        || source.starts_with("git@")
-        || source.starts_with("file://")
-    {
-        return Ok(());
-    }
-    Err(RainyError::registry(
-        "DEFAULTS_SOURCE_UNSUPPORTED",
-        format!("default package source must be a local path or HTTPS/SSH Git URL: {source}"),
-    ))
+    crate::security::validate_git(source, true).map_err(|reason| {
+        RainyError::registry(
+            "DEFAULTS_SOURCE_UNSUPPORTED",
+            format!("default package source is not allowed: {reason}"),
+        )
+    })
 }
 
 fn offline() -> bool {
