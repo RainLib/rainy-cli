@@ -225,6 +225,9 @@ fn next_steps(code: &str) -> &'static [&'static str] {
         "SOURCE_GIT_FETCH_FAILED" | "SOURCE_GIT_REMOTE_FAILED" | "SOURCE_DOWNLOAD_FAILED" => {
             &["rainy source check --help", "rainy source add --help"]
         }
+        "PROJECT_TEMPLATE_GIT_FETCH_FAILED" | "PROJECT_TEMPLATE_REMOTE_FAILED" => {
+            &["rainy template status", "rainy template check --help"]
+        }
         "CANCELLED" => &[],
         _ => &[],
     }

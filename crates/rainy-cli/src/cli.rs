@@ -75,6 +75,8 @@ pub enum Commands {
     Init(InitCommand),
     /// Create a new built-in or enterprise-template application workspace.
     New(NewCommand),
+    /// Inspect the template provenance of a generated project.
+    Template(TemplateCommand),
     /// Discover, validate, cache, and update self-describing content sources.
     Source(SourceCommand),
     /// Legacy alias for `rainy capability add`.
@@ -172,8 +174,8 @@ pub struct InitAppArgs {
 #[derive(Debug, Args)]
 #[command(
     about = "Create a new built-in or enterprise-template application workspace",
-    long_about = "Create a new application from the built-in Golden Path, a legacy ProjectTemplateCatalog, or a validated Rainy Source. A Rainy Source contributes one base project template and optional workspace modules while preserving its resolved version and digest in the generated project.",
-    after_help = "EXAMPLES:\n  Preview the default Golden Path:\n    rainy new demo-saas --dry-run\n\n  Create the built-in application:\n    rainy new demo-saas --golden-path spring-nextjs-saas --package com.example.demo --apply\n\n  Create from a managed Rainy Source:\n    rainy new order-service --source company --template service-base --module backend-a,frontend-b --apply\n\n  Select a cached Source template and modules interactively:\n    rainy new order-service --source company\n\n  Preview a legacy enterprise Git template:\n    rainy new order-service --template enterprise-java-service --template-config ./project-templates.yaml --dry-run"
+    long_about = "Create a new application from the built-in Golden Path, a ProjectTemplateCatalog, or a validated Rainy Source. Rainy automatically discovers template catalogs distributed by synchronized Sources. A composed Source can also contribute one base project template and optional workspace modules while preserving its resolved version and digest in the generated project.",
+    after_help = "EXAMPLES:\n  Select an available creation workflow interactively:\n    rainy new demo-saas\n\n  Preview the built-in Golden Path explicitly:\n    rainy new demo-saas --golden-path spring-nextjs-saas --dry-run\n\n  Create the built-in application:\n    rainy new demo-saas --golden-path spring-nextjs-saas --package com.example.demo --apply\n\n  Create from a managed Rainy Source:\n    rainy new order-service --source company --template service-base --module backend-a,frontend-b --apply\n\n  Select a cached Source template and modules interactively:\n    rainy new order-service --source company\n\n  Select an enterprise template download method interactively:\n    rainy new order-service --template pkulaw-backend-mvc --template-config ./project-templates.yaml\n\n  Use a specific enterprise template Git remote:\n    rainy new order-service --template pkulaw-backend-mvc --template-config ./project-templates.yaml --template-remote ssh --apply"
 )]
 pub struct NewCommand {
     /// Application directory and project name.
@@ -192,7 +194,7 @@ pub struct NewCommand {
     #[arg(long, value_name = "TEMPLATE_ID", conflicts_with = "golden_path")]
     pub template: Option<String>,
 
-    /// ProjectTemplateCatalog YAML. Defaults to RAINY_TEMPLATE_CONFIG or RAINY_HOME/templates.yaml.
+    /// ProjectTemplateCatalog YAML. Defaults to RAINY_TEMPLATE_CONFIG, a local catalog, or RAINY_HOME/templates.yaml.
     #[arg(
         long,
         value_name = "CATALOG_FILE",
@@ -200,6 +202,15 @@ pub struct NewCommand {
         conflicts_with = "source"
     )]
     pub template_config: Option<PathBuf>,
+
+    /// Named Git remote declared by the selected ProjectTemplateCatalog template.
+    #[arg(
+        long,
+        value_name = "REMOTE_ID",
+        requires = "template",
+        conflicts_with_all = ["source", "golden_path"]
+    )]
+    pub template_remote: Option<String>,
 
     /// Workspace modules contributed by the managed Source. Repeat or pass comma-separated IDs.
     #[arg(
@@ -225,6 +236,32 @@ pub struct NewCommand {
     /// Write the generated application files.
     #[arg(long, visible_alias = "yes")]
     pub apply: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    arg_required_else_help = true,
+    about = "Inspect and check the upstream version of a generated project template",
+    long_about = "Read the immutable template provenance stored in .rainy/project-template.lock. Status is offline. Check contacts the declared Git remote and reports whether its requested branch or tag resolves to a newer commit; connectivity failures are warnings and do not modify the project.",
+    after_help = "EXAMPLES:\n  Show the source and resolved commit used to create this project:\n    rainy template status\n\n  Check the upstream branch without changing project files:\n    rainy template check\n\n  Use stable JSON in automation:\n    rainy template check --json"
+)]
+pub struct TemplateCommand {
+    #[command(subcommand)]
+    pub command: TemplateSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TemplateSubcommand {
+    #[command(
+        about = "Show locally recorded project-template provenance",
+        after_help = "EXAMPLES:\n  Show template provenance:\n    rainy template status\n\n  Read the lock in automation:\n    rainy template status --json"
+    )]
+    Status,
+    #[command(
+        about = "Check whether the declared upstream Git ref has changed",
+        after_help = "EXAMPLES:\n  Check the upstream template branch:\n    rainy template check\n\n  Check without treating network failure as a project creation failure:\n    rainy template check --json"
+    )]
+    Check,
 }
 
 #[derive(Debug, Args)]
@@ -753,7 +790,7 @@ pub enum DefaultsSubcommand {
     Status,
     #[command(
         about = "Install the version-compatible default package",
-        after_help = "EXAMPLES:\n  Preview installation:\n    rainy defaults install\n\n  Install the official package:\n    rainy defaults install --apply\n\n  Install from an enterprise mirror:\n    rainy defaults install --source https://git.example.com/rainy/defaults.git --ref v0.5.2 --apply"
+        after_help = "EXAMPLES:\n  Preview installation:\n    rainy defaults install\n\n  Install the official package:\n    rainy defaults install --apply\n\n  Install from an enterprise mirror:\n    rainy defaults install --source https://git.example.com/rainy/defaults.git --ref v0.5.3 --apply"
     )]
     Install(DefaultsChangeArgs),
     #[command(
@@ -1458,7 +1495,7 @@ pub struct SchemaValidateArgs {
 #[command(
     arg_required_else_help = true,
     about = "Check, install, or skip Rainy CLI updates",
-    after_help = "EXAMPLES:\n  Check for a new release:\n    rainy self check\n\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Skip one offered version:\n    rainy self skip 0.5.2 --apply\n\nRun 'rainy self <COMMAND> --help' for update source and version options."
+    after_help = "EXAMPLES:\n  Check for a new release:\n    rainy self check\n\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Skip one offered version:\n    rainy self skip 0.5.3 --apply\n\nRun 'rainy self <COMMAND> --help' for update source and version options."
 )]
 pub struct SelfCommand {
     #[command(subcommand)]
@@ -1474,12 +1511,12 @@ pub enum SelfSubcommand {
     Check(SelfCheckArgs),
     #[command(
         about = "Download, verify, and install a Rainy CLI release",
-        after_help = "EXAMPLES:\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Install a specific release:\n    rainy self update --version v0.5.2 --apply\n\n  Use a different GitHub repository:\n    rainy self update --repo owner/repo --version v0.5.2 --apply\n\n  Reinstall the current version after review:\n    rainy self update --force --apply"
+        after_help = "EXAMPLES:\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Install a specific release:\n    rainy self update --version v0.5.3 --apply\n\n  Use a different GitHub repository:\n    rainy self update --repo owner/repo --version v0.5.3 --apply\n\n  Reinstall the current version after review:\n    rainy self update --force --apply"
     )]
     Update(SelfUpdateArgs),
     #[command(
         about = "Skip update notifications for one release",
-        after_help = "EXAMPLES:\n  Preview skipping a specific offered version:\n    rainy self skip 0.5.2\n\n  Skip the version:\n    rainy self skip 0.5.2 --apply\n\n  Skip the latest offered version:\n    rainy self skip --apply\n\n  Use a different GitHub repository:\n    rainy self skip --repo owner/repo 0.5.2 --apply"
+        after_help = "EXAMPLES:\n  Preview skipping a specific offered version:\n    rainy self skip 0.5.3\n\n  Skip the version:\n    rainy self skip 0.5.3 --apply\n\n  Skip the latest offered version:\n    rainy self skip --apply\n\n  Use a different GitHub repository:\n    rainy self skip --repo owner/repo 0.5.3 --apply"
     )]
     Skip(SelfSkipArgs),
 }

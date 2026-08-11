@@ -20,15 +20,64 @@
           "description": { "type": "string" },
           "source": {
             "type": "object",
-            "required": ["type", "url", "ref"],
+            "required": ["type", "ref"],
             "properties": {
               "type": { "const": "git" },
               "url": { "type": "string", "minLength": 1 },
-              "ref": { "type": "string", "minLength": 1 }
+              "ref": { "type": "string", "minLength": 1 },
+              "defaultRemote": { "type": "string", "minLength": 1 },
+              "allowInsecureHttp": { "type": "boolean", "default": false },
+              "remotes": {
+                "type": "object",
+                "minProperties": 1,
+                "propertyNames": {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "required": ["url"],
+                  "properties": {
+                    "description": { "type": "string" },
+                    "url": { "type": "string", "minLength": 1 },
+                    "allowInsecureHttp": { "type": "boolean", "default": false }
+                  },
+                  "additionalProperties": false
+                }
+              }
             },
+            "oneOf": [
+              {
+                "required": ["url"],
+                "not": { "required": ["remotes"] }
+              },
+              {
+                "required": ["remotes"],
+                "not": { "required": ["url"] }
+              }
+            ],
             "additionalProperties": false
           },
           "subdirectory": { "type": "string", "minLength": 1 },
+          "overlay": { "type": "string", "minLength": 1 },
+          "textReplacements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "find", "replace"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "find": { "type": "string", "minLength": 1, "maxLength": 65536 },
+                "replace": { "type": "string", "maxLength": 65536 },
+                "expectedMatches": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000,
+                  "default": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
           "repository": {
             "type": "object",
             "properties": {

@@ -33,13 +33,25 @@ Registry。详细规则和完整命令见 [source-management.md](source-manageme
 apiVersion: rainy.dev/v1
 kind: ProjectTemplateCatalog
 templates:
-  enterprise-java-service:
-    description: Standard enterprise Java service
+  enterprise-backend:
+    description: Standard enterprise backend service
     source:
       type: git
-      url: ssh://git@git.example.com/platform/project-templates.git
-      ref: v1.2.0
-    subdirectory: java-service
+      ref: main
+      defaultRemote: ssh
+      remotes:
+        ssh:
+          description: SSH key or agent authentication
+          url: git@git.example.com:platform/backend-template.git
+        http:
+          description: Private HTTP through the Git credential helper
+          url: http://192.168.0.20/platform/backend-template.git
+          allowInsecureHttp: true
+    overlay: overlays/enterprise-backend
+    textReplacements:
+      - path: settings.gradle
+        find: "rootProject.name = 'service-template'"
+        replace: "rootProject.name = '{{ project.name }}'"
     repository:
       defaultBranch: main
       remoteUrl: "git@git.example.com:apps/{{ project.name }}.git"
@@ -48,12 +60,19 @@ templates:
 模板目录中以 `.hbs` 结尾的 UTF-8 文件内容和路径可使用 `project.name`、`package.java`、
 `packagePath`，其他文件原样复制。必须包含渲染后可解析的 `rainy.yaml` 和 `capability.lock`。创建流程为：
 临时 clone 固定 ref、记录解析 commit、检查危险条目、渲染到临时目录、校验 Rainy 项目、原子移动到
-目标目录；源 `.git` 永远不会被复制。
+目标目录；源 `.git` 永远不会被复制。`overlay` 相对于 catalog 文件所在目录解析，只能位于该目录树内，
+用于给不包含 Rainy 文件的真实 starter 增加 `rainy.yaml.hbs`、`capability.lock.hbs` 和 Agent 规则。
+少量上游文本适配使用 `textReplacements`，默认要求原文只匹配一次；原文变化会报告
+`PROJECT_TEMPLATE_REPLACEMENT_MISMATCH`，从而阻止过期适配覆盖上游更新。
+
+一个模板可通过 `source.remotes` 声明 SSH、HTTPS 或显式允许的私网 HTTP 下载方式。人工终端会选择；
+CI/Agent 使用 `--template-remote <REMOTE_ID>`。明文 HTTP 仅允许私网/回环 IP，认证交给 Git credential
+helper，禁止在 URL 中写账号、密码或 Token。
 
 ```bash
-rainy new order-service --template enterprise-java-service \
-  --package com.company.orders --dry-run
-rainy new order-service --template enterprise-java-service \
+rainy new order-service --template enterprise-backend
+rainy new order-service --template enterprise-backend \
+  --template-remote ssh \
   --package com.company.orders \
   --git-url git@git.example.com:apps/order-service.git --apply
 ```
@@ -573,7 +592,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install Rainy
-        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.2/install.sh | RAINY_VERSION=v0.5.2 sh
+        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.3/install.sh | RAINY_VERSION=v0.5.3 sh
       - name: Validate packs
         run: |
           for pack in */pack.yaml; do
@@ -603,7 +622,7 @@ validate-rainy-registry:
   image: ubuntu:24.04
   before_script:
     - apt-get update && apt-get install -y curl git ca-certificates
-    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.2/install.sh | RAINY_VERSION=v0.5.2 sh
+    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.3/install.sh | RAINY_VERSION=v0.5.3 sh
   script:
     - find . -name pack.yaml -print0 | xargs -0 -n1 ~/.rainy/bin/rainy schema validate --schema capability-pack --file
     - ~/.rainy/bin/rainy conformance check --path . --json

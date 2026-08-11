@@ -106,14 +106,14 @@ irm https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 | 
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
-RAINY_REPO=owner/repo RAINY_VERSION=v0.5.2 sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.5.3 sh scripts/install.sh
 RAINY_NO_MODIFY_PATH=1 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.5.2 -InstallDir "$HOME\.rainy\bin"
+.\scripts\install.ps1 -Repo owner/repo -Version v0.5.3 -InstallDir "$HOME\.rainy\bin"
 .\scripts\install.ps1 -NoModifyPath
 ```
 
@@ -138,6 +138,10 @@ GitHub 访问不稳定时可以使用 OSS/CDN 静态镜像。镜像配置、目�
 从空目录创建 Golden Path 项目：
 
 ```bash
+# 人工终端可先选择 Golden Path、已缓存 Source 或企业 Git 模板
+rainy new demo-saas
+
+# 自动化调用显式声明创建方式
 rainy new demo-saas --golden-path spring-nextjs-saas --package com.example.demo --apply
 cd demo-saas
 ```
@@ -151,6 +155,10 @@ rainy source inspect \
 rainy source add company \
   git+ssh://git@git.example.com/platform/company-rainy-source.git \
   --ref v1.4.0 --apply
+
+# 已同步 Source 也可分发 project-template-catalog；人工终端会自动聚合选择
+rainy new order-service
+
 rainy new order-service --source company --template service-base \
   --module backend-java,delivery-gitlab \
   --package com.company.orders --apply
@@ -163,7 +171,8 @@ Source 也支持带 SHA-256 的 ZIP/TAR 和 `RainySourceIndex` 发布通道。�
 `.rainy/project-source.lock`。完整版本、更新、回滚和内容接续命令见
 [Source 管理文档](docs/source-management.md)。
 
-旧版 `ProjectTemplateCatalog` 企业 Git 模板仍兼容：
+独立 `ProjectTemplateCatalog` 企业 Git 模板既可直接配置，也可作为
+`project-template-catalog` 内容由上述 Source 统一分发：
 
 ```bash
 rainy schema validate --schema project-template-catalog \
@@ -180,7 +189,13 @@ rainy new order-service --template enterprise-java-service \
 Rainy 会将固定 Git ref 克隆到临时目录，渲染模板并校验 `rainy.yaml` 与 `capability.lock`，但不会把
 模板仓库的 `.git` 带入新工程。创建完成后会输出 `git init`、`git remote add origin`、首次提交与推送
 命令。以 `.hbs` 结尾的文件内容和路径支持变量渲染；其他文件原样复制。模板源也可以统一声明在
-`~/.rainy/templates.yaml`，或由 `RAINY_TEMPLATE_CONFIG` 指定。
+`~/.rainy/templates.yaml`，或由 `RAINY_TEMPLATE_CONFIG` 指定。同一模板可声明多个 `source.remotes`，
+人工终端会选择 SSH/HTTP 等下载方式，CI 使用 `--template-remote <REMOTE_ID>`；`overlay` 可为外部真实
+starter 补充 Rainy 管理文件，而无需把 starter 打包进 Rainy CLI。明文 HTTP 仅允许显式声明的私网
+IP，并使用 Git credential helper 鉴权。
+
+实际创建会写入 `.rainy/project-template.lock`。`rainy template status` 离线显示模板来源和 commit，
+`rainy template check` 只读检查上游 ref；远端变化或网络不可达只提示，不会自动覆盖业务项目。
 
 查看可用能力：
 
@@ -505,16 +520,16 @@ rainy self check --json
 rainy self check --repo owner/repo
 rainy self update                                      # 预览
 rainy self update --apply                              # 安装最新版
-rainy self update --repo owner/repo --version v0.5.2 --apply
-rainy self skip 0.5.2                                  # 预览
-rainy self skip --repo owner/repo 0.5.2 --apply
+rainy self update --repo owner/repo --version v0.5.3 --apply
+rainy self skip 0.5.3                                  # 预览
+rainy self skip --repo owner/repo 0.5.3 --apply
 ```
 
 release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
 
 ```text
 Rainy CLI update available: 0.1.1 -> 0.2.0.
-Run `rainy self update --apply` to update, or `rainy self skip 0.5.2 --apply` to skip this version.
+Run `rainy self update --apply` to update, or `rainy self skip 0.5.3 --apply` to skip this version.
 ```
 
 自动检查默认行为：
@@ -542,8 +557,8 @@ make release-check
 创建并推送版本标签后会触发 release workflow：
 
 ```bash
-git tag -a v0.5.2 -m "Rainy CLI v0.5.2"
-git push origin v0.5.2
+git tag -a v0.5.3 -m "Rainy CLI v0.5.3"
+git push origin v0.5.3
 ```
 
 release workflow 会先执行格式、测试、clippy、audit/deny、schema、MCP wrapper、PTY 和安装脚本检查，然后分别构建并上传：
@@ -613,10 +628,10 @@ Rainy 的核心使用方式是“先计划，再应用”：
 
 已完成：
 
-- Rust CLI 命令树：`new/source/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/schema/conformance/self/completion`。
+- Rust CLI 命令树：`new/template/source/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/schema/conformance/self/completion`。
 - Golden Path 初始化：生成 Spring Boot + Next.js 基础项目、`rainy.yaml`、`capability.lock`、AGENTS.md、CI、compose、evidence 目录。
 - Capability Pack 解析：本地、Git、HTTPS index、校验后的 HTTPS archive 和全局缓存。
-- Rainy Source：自描述根清单、Git/Archive/Index/本地来源、SemVer/commit/digest 感知、不可变用户缓存、项目来源锁、模板与多模块组合。
+- Rainy Source：自描述根清单、Git/Archive/Index/本地来源、SemVer/commit/digest 感知、不可变用户缓存、项目来源锁、模板目录分发与多模块组合。
 - 内置 action：Maven、YAML/JSON/JSONC/TOML merge、模板渲染、文件创建/追加、Docker Compose、package.json、devcontainer、Helm draft 等。
 - Plan / Diff / Apply：支持 dry-run、plan file、事务式 apply 回滚、幂等 no-op。
 - Capability 依赖和 provider 解析：依赖缺失失败、被依赖能力禁止删除、provider 默认/显式/非法场景有稳定错误。

@@ -12,7 +12,7 @@ updates, and rollback.
 | Add dependencies, config, templates, CI, Helm, or SDK files | Capability pack |
 | Publish templates, modules, Packs, Skills, and Plugins as one version | `rainy-source.yaml` plus `rainy source` |
 | Create one project from a template plus selected modules | `rainy new --source --template --module` |
-| Consume a legacy private Git starter | ProjectTemplateCatalog plus `rainy new --template` |
+| Consume a private Git starter | Source-distributed ProjectTemplateCatalog plus `rainy new --template` |
 | Publish and pin internal capability versions | Named Git, archive, or HTTP registry |
 | Deny paths or require approval action IDs | Layered policy |
 | Call approval, IAM, CMDB, artifact, or deployment APIs | Wasm plugin or HTTPS adapter |
@@ -35,7 +35,8 @@ For a self-describing Source, register Git, Archive, Index, or local content wit
 Use explicit `--ref`, `--version`, `--channel`, and `--sha256` values from the user or repository release;
 never invent them. Agents must pass `--template` and every `--module` explicitly instead of opening a
 terminal selector. Use `source resolve` to obtain a validated immutable path before handing a Pack or
-Plugin to its dedicated command. Do not treat a refreshed Source cache as an upgraded generated project.
+Plugin to its dedicated command. A Source may expose `project-template-catalog`; resolve that content and
+pass its `project-templates.yaml` through `--template-config`. Do not treat a refreshed Source cache as an upgraded generated project.
 When `source check --project` reports `project-update-available`, review and migrate differences through
 a PR; never overwrite project files automatically.
 
@@ -54,8 +55,13 @@ accumulate. `allowEdit` entries are additive, so absolute restrictions belong in
 Never generate real credentials. Generate references to the enterprise secret provider and leave value
 injection to workload identity, CI, Vault, or KMS.
 
-For a legacy new project, inspect and validate the selected `ProjectTemplateCatalog`, preview `rainy new
-<PROJECT_NAME> --template <TEMPLATE_ID>`, and require explicit approval before `--apply`. For a Rainy
+For an enterprise new project, inspect and validate the selected `ProjectTemplateCatalog`, preview `rainy new
+<PROJECT_NAME> --template <TEMPLATE_ID> --template-remote <REMOTE_ID>`, and require explicit approval
+before `--apply`. Agents must choose a declared remote explicitly and must never place Git credentials in
+the URL. A catalog overlay may add Rainy files to an upstream starter without copying its source `.git`.
+For a Rainy
 Source project, preview the exact template and module set in the same way. Rainy must exclude source
 `.git`, validate generated Rainy files, record project provenance, and print destination repository setup
 commands. Do not run those Git commands or push until the user has created and confirmed the target URL.
+After creation, run `rainy template status --json`. Use `rainy template check --json` only when a network
+check is intended. An upstream change requires a reviewed migration; never overwrite the generated project.

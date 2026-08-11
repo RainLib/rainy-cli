@@ -62,6 +62,10 @@ When `rainy-skills.yaml` exists, also run:
 
 If it selects the `comet` profile, load the sibling `rainy-comet` Skill and follow its ownership and phase rules.
 
+When `.rainy/project-template.lock` exists, also run `template status --json`. Run `template check --json`
+only when remote access is appropriate; treat an unreachable remote as a warning and an available update as
+a migration review request, never as permission to overwrite project files.
+
 When only `rainy-skills.yaml` exists, use `skill status`, `skill doctor`, or top-level
 `doctor --scope auto|skills`. Do not request `doctor --scope project` unless `rainy.yaml` exists.
 
@@ -100,7 +104,8 @@ internal registries, platform policy, approval, IAM, deployment, or enterprise S
 project changes to capability packs, multi-content distribution to a self-describing Rainy Source,
 project capability selection to a private registry, mandatory boundaries to layered policy, and external
 systems to Wasm plugins or HTTPS adapters. Prefer `rainy source check --project` when a generated project
-contains `.rainy/project-source.lock`. Never put credentials in Source manifests, Rainy config, packs,
+contains `.rainy/project-source.lock`. Use a Source `project-template-catalog` to distribute external Git
+starters across the organization. Never put credentials in Source manifests, Rainy config, packs,
 generated templates, locks, or Skills.
 
 ## Handle Errors

@@ -4,6 +4,24 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Added `project-template-catalog` as a validated Rainy Source content type so multiple enterprise
+  Sources can distribute template catalogs through the existing immutable cache and update flow.
+- Added automatic interactive aggregation of local and Source-managed enterprise templates.
+- Added `.rainy/project-template.lock` provenance plus `rainy template status/check` for offline
+  inspection and non-destructive upstream Git revision checks.
+
+### Changed
+
+- Bumped the development version to 0.5.3 and aligned enterprise package compatibility examples.
+- Doctor now validates project-template provenance when the lock is present.
+
+### Tests
+
+- Added Source catalog validation and template provenance coverage for current, changed, and
+  unreachable upstream refs.
+
 ## [0.4.0] - 2026-07-24
 
 ### Added

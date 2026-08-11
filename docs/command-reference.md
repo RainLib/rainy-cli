@@ -23,6 +23,9 @@ rainy [--workspace <PROJECT_DIR>] [--json] [--verbose] [--quiet] \
 ## 从零创建项目
 
 ```bash
+# 人工终端：选择内置 Golden Path、已缓存 Rainy Source 或可发现的企业 Git 模板
+rainy new demo-saas
+
 # 预览
 rainy new demo-saas --golden-path spring-nextjs-saas \
   --package com.example.demo --dry-run
@@ -45,20 +48,41 @@ rainy verify --profile local
 
 1. `--template-config <CATALOG_FILE>`
 2. `RAINY_TEMPLATE_CONFIG`
-3. `RAINY_HOME/templates.yaml`
-4. `~/.rainy/templates.yaml`
+3. 当前创建目录下的 `project-templates.yaml`
+4. `RAINY_HOME/templates.yaml`（默认 `~/.rainy/templates.yaml`）
+
+此外，交互执行 `rainy new <APP_NAME>` 时会聚合所有已同步 Rainy Source 中声明的
+`project-template-catalog`，并在模板选项中显示 Source 名称和版本。自动化调用先通过
+`rainy source resolve <SOURCE> <CATALOG_CONTENT>` 取得 `resolvedPath`，再显式传
+`--template-config <RESOLVED_PATH>/project-templates.yaml`。
+
+当人工终端执行 `rainy new <APP_NAME>` 且未指定 `--golden-path`、`--source` 或 `--template` 时，
+Rainy 只展示当前可用的创建方式：内置 Golden Path、具有完整校验缓存的 Rainy Source，以及按上述
+规则发现的企业模板 catalog。JSON、CI、管道和重定向输入不会打开选择器；必须显式传入对应参数。
 
 ```yaml
 apiVersion: rainy.dev/v1
 kind: ProjectTemplateCatalog
 templates:
-  enterprise-java-service:
-    description: Standard enterprise Java service
+  enterprise-backend:
+    description: Standard enterprise backend service
     source:
       type: git
-      url: ssh://git@git.example.com/platform/project-templates.git
-      ref: v1.2.0
-    subdirectory: java-service
+      ref: main
+      defaultRemote: ssh
+      remotes:
+        ssh:
+          description: SSH key or agent authentication
+          url: git@git.example.com:platform/backend-template.git
+        http:
+          description: Private HTTP through the Git credential helper
+          url: http://192.168.0.20/platform/backend-template.git
+          allowInsecureHttp: true
+    overlay: overlays/enterprise-backend
+    textReplacements:
+      - path: settings.gradle
+        find: "rootProject.name = 'service-template'"
+        replace: "rootProject.name = '{{ project.name }}'"
     repository:
       defaultBranch: main
       remoteUrl: "git@git.example.com:apps/{{ project.name }}.git"
@@ -71,19 +95,41 @@ rainy schema validate --schema project-template-catalog \
   --file ~/.rainy/templates.yaml
 
 # 省略 --apply 时企业模板始终只预览，不访问 Git
-rainy new order-service --template enterprise-java-service \
-  --package com.company.orders --dry-run
+rainy new order-service --template enterprise-backend
 
-rainy new order-service --template enterprise-java-service \
+rainy new order-service --template enterprise-backend \
+  --template-remote ssh \
   --package com.company.orders \
   --git-url git@git.example.com:apps/order-service.git --apply
 ```
+
+TTY 中存在多个 `source.remotes` 时，省略 `--template-remote` 会打开下载方式选择器。CI、Agent 和重定向
+输入必须显式传该参数，或由 catalog 声明 `defaultRemote`。`allowInsecureHttp` 只允许 catalog 明确配置的
+私网/回环 IP；公网 HTTP、内嵌凭据和敏感查询参数始终拒绝。Git 凭据应由 SSH agent 或 credential
+helper 提供。
+
+创建成功会写入 `.rainy/project-template.lock`，记录模板 ID、下载方式、URL、请求 ref 和实际 commit：
+
+```bash
+# 只读取本地来源锁
+rainy template status
+
+# 只读访问 Git remote；变化或断网均不修改项目
+rainy template check
+rainy template check --json
+```
+
+上游 ref 变化返回 warning 和 `updateAvailable: true`；网络不可达返回 warning 和
+`updateAvailable: null`。Rainy 不自动合并模板更新，业务项目必须把迁移作为正常代码变更审查。
 
 `--git-url` 覆盖配置中的 `repository.remoteUrl`。它只用于生成下一步，不会让 Rainy 自动创建远程仓库
 或推送代码。Rainy 克隆并锁定 `source.ref` 的解析 commit，只复制选定 `subdirectory` 的安全普通文件，
 拒绝符号链接、路径穿越、目标冲突、超限目录和缺失 `rainy.yaml`/`capability.lock` 的模板。以 `.hbs`
 结尾的 UTF-8 文件内容和路径支持 `project.name`、`package.java` 和 `packagePath`，后缀会从目标文件名
-移除；其他文件按原始字节复制，避免误解释业务代码中的大括号。
+移除；其他文件按原始字节复制，避免误解释业务代码中的大括号。`overlay` 是 catalog 同目录下的安全
+相对目录，在上游模板之后合并，用于补充 Rainy 文件或覆盖少量企业适配文件，而无需 fork 上游模板。
+`textReplacements` 对上游 UTF-8 文件执行带匹配数量断言的精确替换；上游原文变化时创建会失败，不会
+用过期 overlay 静默覆盖整份文件。
 
 成功输出中的 `next_commands` 包含：
 

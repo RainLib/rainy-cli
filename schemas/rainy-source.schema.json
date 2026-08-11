@@ -34,7 +34,7 @@
         "properties": {
           "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
           "type": {
-            "enum": ["project-template", "workspace-module", "capability-pack", "skill", "plugin", "defaults"]
+            "enum": ["project-template-catalog", "project-template", "workspace-module", "capability-pack", "skill", "plugin", "defaults"]
           },
           "path": { "type": "string", "minLength": 1 },
           "version": { "type": "string", "minLength": 1 },

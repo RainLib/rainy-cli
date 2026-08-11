@@ -68,6 +68,10 @@ metadata:
 requires:
   rainy: ">=0.5.0, <0.6.0"
 contents:
+  - id: company-project-templates
+    type: project-template-catalog
+    path: catalogs/projects
+    version: 1.4.0
   - id: service-base
     type: project-template
     path: templates/service-base
@@ -98,6 +102,7 @@ x-company-classification: internal
 
 | `type` | 必要内容 | Rainy 处理方式 |
 | --- | --- | --- |
+| `project-template-catalog` | `project-templates.yaml` | 同步到用户缓存；人工执行 `rainy new <NAME>` 时自动聚合并显示其中模板 |
 | `project-template` | 生成后必须存在有效的 `rainy.yaml` 和 `capability.lock` | `rainy new --source` 选择一个作为根模板 |
 | `workspace-module` | `defaultTarget`；普通文件或 `.hbs` 模板 | `rainy new --source --module A,B` 组合多个模块 |
 | `capability-pack` | `pack.yaml`，名称与内容 ID 相同 | 执行 Pack conformance，之后用 `source resolve` 交给 Registry |
@@ -105,7 +110,8 @@ x-company-classification: internal
 | `plugin` | `plugin.json` 或 `.rainy-plugin/plugin.json` | 校验协议、动作和最小权限，安装仍需显式审批 |
 | `defaults` | `rainy-defaults.yaml`，`kind: RainyDefaults` | 校验和跟踪；替换官方默认包仍使用 `rainy defaults` |
 
-一个 Source 可以声明多个 `project-template`，创建时只能选择一个。`workspace-module` 可以多选，
+`project-template-catalog` 用于分发指向独立 Git starter 的目录；`project-template` 则把项目文件直接
+打包在 Source 中，两种方式可以并存。一个 Source 可以声明多个 `project-template`，创建时只能选择一个。`workspace-module` 可以多选，
 `required: true` 的模块会始终启用。多个内容渲染到同一路径时 Rainy 会失败，不会覆盖先前内容。
 
 `.hbs` 文件的内容和路径支持以下变量：
@@ -217,6 +223,9 @@ rainy source inspect \
 rainy source add company \
   git+ssh://git@git.example.com/platform/company-rainy-source.git \
   --ref v1.4.0 --apply
+
+# 人工终端自动聚合本地 catalog 和所有 Source 分发的 project-template-catalog
+rainy new order-service
 ```
 
 开发分支可以省略 `--ref`，此时默认跟踪 `main`。Git 认证使用 SSH agent 或系统 credential helper；

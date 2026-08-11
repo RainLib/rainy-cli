@@ -10,6 +10,7 @@ mod doctor;
 mod error;
 mod evidence;
 mod init;
+mod new_wizard;
 mod output;
 mod patch;
 mod paths;
@@ -295,6 +296,7 @@ fn workspace_marker(command: &Commands) -> workspace::WorkspaceMarker {
         | Commands::Conformance(_)
         | Commands::SelfCommand(_)
         | Commands::Completion(_) => WorkspaceMarker::None,
+        Commands::Template(_) => WorkspaceMarker::Project,
         Commands::Source(command) => match &command.command {
             cli::SourceSubcommand::Check(args) if args.project => WorkspaceMarker::Project,
             cli::SourceSubcommand::Sync(args) | cli::SourceSubcommand::Update(args)
@@ -324,6 +326,9 @@ fn clap_usage(rendered: &str) -> Option<String> {
 fn command_benefits_from_progress(command: &Commands) -> bool {
     match command {
         Commands::Init(_) | Commands::New(_) | Commands::Apply(_) => true,
+        Commands::Template(command) => {
+            matches!(command.command, cli::TemplateSubcommand::Check)
+        }
         Commands::Add(_) => true,
         Commands::Capability(command) => matches!(
             command.command,
@@ -397,6 +402,7 @@ fn command_requires_audit(command: &Commands, interactive: bool) -> bool {
             InitSubcommand::App(args) => args.apply,
         },
         Commands::New(args) => args.apply,
+        Commands::Template(_) => false,
         Commands::Add(command) => match &command.command {
             AddSubcommand::Capability(args) => args.apply,
         },
@@ -482,6 +488,7 @@ fn command_label(command: &Commands) -> &'static str {
         Commands::Pack(_) => "pack",
         Commands::Registry(_) => "registry",
         Commands::Source(_) => "source",
+        Commands::Template(_) => "template",
         Commands::Defaults(_) => "defaults",
         Commands::Doctor(_) => "doctor",
         Commands::Verify(_) => "verify",
@@ -523,7 +530,32 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
                 dry_run: resolve_init_mode(args.dry_run, args.apply)?,
             }),
         },
-        Commands::New(args) => {
+        Commands::New(mut args) => {
+            if args.golden_path.is_none()
+                && args.source.is_none()
+                && args.template.is_none()
+                && context.terminal.interactive
+            {
+                context
+                    .progress
+                    .detail("Discovering available project creation workflows");
+                match new_wizard::select_new_project(
+                    &workspace,
+                    !context.terminal.color,
+                    context.progress,
+                )? {
+                    new_wizard::NewProjectSelection::GoldenPath { id } => {
+                        args.golden_path = Some(id);
+                    }
+                    new_wizard::NewProjectSelection::Source { name } => {
+                        args.source = Some(name);
+                    }
+                    new_wizard::NewProjectSelection::ProjectTemplate { id, catalog_path } => {
+                        args.template = Some(id);
+                        args.template_config = Some(catalog_path);
+                    }
+                }
+            }
             if args.git_url.is_some() && args.source.is_none() && args.template.is_none() {
                 return Err(RainyError::config(
                     "PROJECT_GIT_URL_INVALID",
@@ -559,8 +591,11 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
                     package,
                     template,
                     catalog_path: args.template_config,
+                    template_remote: args.template_remote,
                     git_url: args.git_url,
                     dry_run,
+                    interactive: context.terminal.interactive,
+                    no_color: !context.terminal.color,
                     progress: context.progress,
                 })
             } else {
@@ -579,6 +614,9 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
         }
         Commands::Source(command) => {
             source::handle_source_command(&workspace, command, context.progress)
+        }
+        Commands::Template(command) => {
+            project_template::handle_template_command(&workspace, command)
         }
         Commands::Add(command) => match command.command {
             AddSubcommand::Capability(args) => add_capability(&workspace, args),

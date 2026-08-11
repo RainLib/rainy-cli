@@ -38,6 +38,7 @@ pub enum CommandOutput {
         path: String,
         template: String,
         source: String,
+        source_remote: Option<String>,
         requested_ref: String,
         resolved_ref: Option<String>,
         source_git_removed: bool,
@@ -45,6 +46,9 @@ pub enum CommandOutput {
         default_branch: String,
         remote_url: Option<String>,
         next_commands: Vec<String>,
+    },
+    Template {
+        report: crate::project_template::ProjectTemplateStatusReport,
     },
     SourceProject {
         status: &'static str,
@@ -204,6 +208,7 @@ impl CommandOutput {
             Self::Message { .. } => "message",
             Self::Init { .. } => "init",
             Self::ProjectTemplate { .. } => "project-template",
+            Self::Template { .. } => "template",
             Self::SourceProject { .. } => "source-project",
             Self::DryRun { .. } => "dry-run",
             Self::Applied { .. } => "applied",
@@ -251,6 +256,7 @@ impl CommandOutput {
             Self::Registry { report } => &report.status,
             Self::Source { report } => &report.status,
             Self::Defaults { report } => &report.status,
+            Self::Template { report } => report.status,
             Self::Update { report } => &report.status,
             Self::Completion { .. } => "ok",
             _ => "ok",
@@ -262,7 +268,7 @@ impl CommandOutput {
             "dry-run" | "preview" => "preview",
             "applied" => "applied",
             "failed" | "fail" => "failed",
-            "warning" | "warn" | "degraded" => "warning",
+            "warning" | "warn" | "degraded" | "update-available" => "warning",
             _ => "ok",
         }
     }
@@ -320,6 +326,10 @@ impl CommandOutput {
                 "created {project} from Source {source} template {template} with {} modules and {} files",
                 modules.len(),
                 files.len()
+            ),
+            Self::Template { report } => format!(
+                "template {} {} at {}",
+                report.template, report.status, report.resolved_ref
             ),
             Self::DryRun { capability, .. } => format!("planned capability {capability}"),
             Self::Applied {
@@ -445,6 +455,7 @@ impl CommandOutput {
                 path,
                 template,
                 source,
+                source_remote,
                 requested_ref,
                 resolved_ref,
                 source_git_removed,
@@ -458,6 +469,12 @@ impl CommandOutput {
                     ("Status", result_status_label(status).to_string()),
                     ("Project", project.clone()),
                     ("Template", template.clone()),
+                    (
+                        "Download method",
+                        source_remote
+                            .clone()
+                            .unwrap_or_else(|| "Catalog URL".to_string()),
+                    ),
                     ("Location", path.clone()),
                     ("Source ref", requested_ref.clone()),
                     (
@@ -508,6 +525,43 @@ impl CommandOutput {
                         println!("  $ {command}");
                     }
                     print_paths("Affected locations", files);
+                }
+            }
+            Self::Template { report } => {
+                print_title("Project template provenance");
+                print_summary(&[
+                    ("Status", result_status_label(report.status).to_string()),
+                    ("Template", report.template.clone()),
+                    (
+                        "Download method",
+                        report
+                            .remote
+                            .clone()
+                            .unwrap_or_else(|| "Catalog URL".to_string()),
+                    ),
+                    ("Requested ref", report.requested_ref.clone()),
+                    ("Created from", report.resolved_ref.clone()),
+                    (
+                        "Current upstream",
+                        report
+                            .latest_ref
+                            .clone()
+                            .unwrap_or_else(|| "Not checked".to_string()),
+                    ),
+                    (
+                        "Update available",
+                        report
+                            .update_available
+                            .map(|value| if value { "Yes" } else { "No" }.to_string())
+                            .unwrap_or_else(|| "Unknown".to_string()),
+                    ),
+                ]);
+                print_details(&format!("Template source: {}", report.source));
+                print_details(&report.message);
+                if report.update_available == Some(true) {
+                    print_next_step(
+                        "Review the upstream changes; Rainy will not overwrite the generated project automatically.",
+                    );
                 }
             }
             Self::SourceProject {
@@ -1399,6 +1453,7 @@ fn result_status_label(status: &str) -> &'static str {
         "dry-run" => "Preview only; no files changed",
         "applied" => "Applied",
         "passed" | "pass" | "ok" => "Passed",
+        "update-available" => "Update available",
         "warning" | "warn" | "degraded" => "Needs attention",
         "failed" | "fail" => "Failed",
         _ => "Completed",

@@ -26,6 +26,14 @@ pub fn validate_http(value: &str, allow_loopback_http: bool) -> Result<(), &'sta
 }
 
 pub fn validate_git(value: &str, allow_file: bool) -> Result<(), &'static str> {
+    validate_git_with_private_http(value, allow_file, false)
+}
+
+pub fn validate_git_with_private_http(
+    value: &str,
+    allow_file: bool,
+    allow_private_http: bool,
+) -> Result<(), &'static str> {
     if let Some((user_host, path)) = value.split_once(':')
         && !value.contains("://")
     {
@@ -45,7 +53,16 @@ pub fn validate_git(value: &str, allow_file: bool) -> Result<(), &'static str> {
         "https" if url.username().is_empty() => Ok(()),
         "ssh" if url.username().is_empty() || url.username() == "git" => Ok(()),
         "file" if allow_file && url.username().is_empty() => Ok(()),
+        "http"
+            if allow_private_http
+                && url.username().is_empty()
+                && private_or_loopback_host(&url) =>
+        {
+            Ok(())
+        }
         "https" | "ssh" => Err("embedded URL credentials are not allowed"),
+        "http" if !url.username().is_empty() => Err("embedded URL credentials are not allowed"),
+        "http" => Err("plain HTTP Git sources require an explicit private-network opt-in"),
         _ => Err("Git source must use HTTPS or SSH"),
     }
 }
@@ -83,6 +100,23 @@ fn loopback_host(url: &url::Url) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
+fn private_or_loopback_host(url: &url::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|address| match address {
+            IpAddr::V4(address) => {
+                address.is_private() || address.is_loopback() || address.is_link_local()
+            }
+            IpAddr::V6(address) => {
+                address.is_unique_local()
+                    || address.is_loopback()
+                    || address.is_unicast_link_local()
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +128,12 @@ mod tests {
         assert!(validate_http("http://127.0.0.1:8080/file", true).is_ok());
         assert!(validate_git("git@example.com:company/packs.git", false).is_ok());
         assert!(validate_git("https://user@example.com/packs.git", false).is_err());
+        assert!(validate_git("http://192.168.0.161/packs.git", false).is_err());
+        assert!(
+            validate_git_with_private_http("http://192.168.0.161/packs.git", false, true).is_ok()
+        );
+        assert!(
+            validate_git_with_private_http("http://example.com/packs.git", false, true).is_err()
+        );
     }
 }

@@ -60,6 +60,7 @@ pub struct SourceRequirements {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SourceContentType {
+    ProjectTemplateCatalog,
     ProjectTemplate,
     WorkspaceModule,
     CapabilityPack,
@@ -71,6 +72,7 @@ pub enum SourceContentType {
 impl SourceContentType {
     fn as_str(&self) -> &'static str {
         match self {
+            Self::ProjectTemplateCatalog => "project-template-catalog",
             Self::ProjectTemplate => "project-template",
             Self::WorkspaceModule => "workspace-module",
             Self::CapabilityPack => "capability-pack",
@@ -252,6 +254,18 @@ pub struct SourceProjectOptions<'a> {
     pub interactive: bool,
     pub no_color: bool,
     pub progress: &'a ProgressReporter,
+}
+
+pub struct ProjectSourceChoice {
+    pub name: String,
+    pub version: String,
+    pub description: Option<String>,
+}
+
+pub struct CachedProjectTemplateCatalogChoice {
+    pub source_name: String,
+    pub source_version: String,
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -440,6 +454,101 @@ fn list_sources() -> RainyResult<SourceReport> {
         .map(|(name, config)| info_from_lock(name, config, lock.sources.get(name)))
         .collect();
     Ok(report("list", "passed", sources))
+}
+
+pub fn available_project_sources() -> RainyResult<Vec<ProjectSourceChoice>> {
+    let catalog = load_catalog()?;
+    let lock = load_lock()?;
+    let mut choices = Vec::new();
+    for (name, config) in &catalog.sources {
+        let Some(locked) = lock
+            .sources
+            .get(name)
+            .filter(|locked| lock_matches_config(locked, config))
+        else {
+            continue;
+        };
+        let cache = PathBuf::from(&locked.cache_path);
+        if !cache.is_dir() {
+            continue;
+        }
+        let Ok(manifest_text) = std::fs::read_to_string(cache.join(SOURCE_MANIFEST)) else {
+            continue;
+        };
+        let Ok(manifest) = serde_yaml::from_str::<RainySourceManifest>(&manifest_text) else {
+            continue;
+        };
+        if manifest.api_version != "rainy.dev/v1" || manifest.kind != "RainySource" {
+            continue;
+        }
+        if !manifest.contents.iter().any(|content| {
+            content.content_type == SourceContentType::ProjectTemplate
+                && safe_relative_path(&content.path, "SOURCE_CONTENT_PATH_INVALID")
+                    .is_ok_and(|path| cache.join(path).is_dir())
+        }) {
+            continue;
+        }
+        choices.push(ProjectSourceChoice {
+            name: name.clone(),
+            version: locked.version.clone(),
+            description: manifest.metadata.description,
+        });
+    }
+    Ok(choices)
+}
+
+pub fn available_project_template_catalogs() -> RainyResult<Vec<CachedProjectTemplateCatalogChoice>>
+{
+    let catalog = load_catalog()?;
+    let lock = load_lock()?;
+    let mut choices = Vec::new();
+    for (name, config) in &catalog.sources {
+        let Some(locked) = lock
+            .sources
+            .get(name)
+            .filter(|locked| lock_matches_config(locked, config))
+        else {
+            continue;
+        };
+        let cache = PathBuf::from(&locked.cache_path);
+        if !cache.is_dir() {
+            continue;
+        }
+        let catalog_contents = locked
+            .contents
+            .iter()
+            .filter(|content| {
+                content.content_type == SourceContentType::ProjectTemplateCatalog.as_str()
+            })
+            .collect::<Vec<_>>();
+        if catalog_contents.is_empty() {
+            continue;
+        }
+        if digest_tree(&cache)? != locked.digest {
+            return Err(RainyError::registry(
+                "SOURCE_CACHE_DIGEST_MISMATCH",
+                format!(
+                    "verified Source cache for '{name}' changed; run rainy source sync {name} --apply"
+                ),
+            ));
+        }
+        for content in catalog_contents {
+            let relative = safe_relative_path(&content.path, "SOURCE_CONTENT_PATH_INVALID")?;
+            let path = cache.join(relative).join("project-templates.yaml");
+            crate::project_template::inspect_template_catalog(path.clone())?;
+            choices.push(CachedProjectTemplateCatalogChoice {
+                source_name: name.clone(),
+                source_version: locked.version.clone(),
+                path,
+            });
+        }
+    }
+    choices.sort_by(|left, right| {
+        left.source_name
+            .cmp(&right.source_name)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(choices)
 }
 
 fn check_sources(
@@ -1132,6 +1241,9 @@ fn validate_content(content: &SourceContent, root: &Path) -> RainyResult<()> {
         ));
     }
     match content.content_type {
+        SourceContentType::ProjectTemplateCatalog => {
+            crate::project_template::inspect_template_catalog(root.join("project-templates.yaml"))?;
+        }
         SourceContentType::ProjectTemplate | SourceContentType::WorkspaceModule => {}
         SourceContentType::CapabilityPack => {
             let path = root.join("pack.yaml");
@@ -2122,7 +2234,14 @@ fn safe_path(path: &Path, code: &'static str) -> RainyResult<PathBuf> {
     }) {
         return Err(RainyError::config(code, "path traversal is not allowed"));
     }
-    Ok(path.to_path_buf())
+    Ok(path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value),
+            Component::CurDir => None,
+            _ => None,
+        })
+        .collect())
 }
 
 fn validate_sha256(value: &str) -> RainyResult<()> {

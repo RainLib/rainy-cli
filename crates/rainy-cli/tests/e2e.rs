@@ -977,6 +977,32 @@ fn managed_source_tracks_versions_updates_and_composes_new_projects() {
         .expect("resolved content path");
     assert!(Path::new(resolved_path).join("module.txt.hbs").is_file());
 
+    let template_catalog = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "resolve",
+            "company",
+            "enterprise-project-templates",
+            "--json",
+        ],
+        &envs,
+    );
+    let template_catalog = command_data(&template_catalog);
+    assert_eq!(
+        template_catalog["report"]["sources"][0]["contents"][0]["type"],
+        "project-template-catalog"
+    );
+    let catalog_root = template_catalog["report"]["sources"][0]["contents"][0]["resolvedPath"]
+        .as_str()
+        .expect("resolved project template catalog path");
+    assert!(
+        Path::new(catalog_root)
+            .join("project-templates.yaml")
+            .is_file()
+    );
+
     let repository_preview = run_with_env(
         &[
             "--workspace",
@@ -2300,6 +2326,16 @@ fn new_defaults_to_preview_and_does_not_create_project() {
             .iter()
             .any(|file| file == "rainy.yaml")
     );
+
+    write(
+        &temp.path().join("project-templates.yaml"),
+        "not: a valid catalog\n",
+    );
+    let non_interactive = run(&["--workspace", &root, "--json", "new", "automation-default"]);
+    let envelope = command_envelope(&non_interactive);
+    assert_eq!(envelope["type"], "init");
+    assert_eq!(envelope["status"], "preview");
+    assert!(!temp.path().join("automation-default").exists());
 }
 
 #[test]
@@ -2372,6 +2408,13 @@ skills: []
             .expect("run template git");
         assert!(status.success());
     }
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&source)
+        .args(["branch", "-M", "main"])
+        .status()
+        .expect("name template branch");
+    assert!(status.success());
     let commit = Command::new("git")
         .arg("-C")
         .arg(&source)
@@ -2394,13 +2437,12 @@ templates:
     source:
       type: git
       url: "file://{}"
-      ref: "{}"
+      ref: main
     repository:
       defaultBranch: main
       remoteUrl: "git@git.example.com:apps/{{{{ project.name }}}}.git"
 "#,
-            source.display(),
-            commit
+            source.display()
         ),
     );
     let root = temp.path().to_string_lossy().to_string();
@@ -2422,7 +2464,7 @@ templates:
     assert_eq!(envelope["type"], "project-template");
     assert_eq!(envelope["status"], "preview");
     let preview = envelope["data"].clone();
-    assert_eq!(preview["requested_ref"], commit);
+    assert_eq!(preview["requested_ref"], "main");
     assert_eq!(preview["source_git_removed"], false);
     assert_eq!(preview["remote_url"], "git@git.example.com:apps/orders.git");
     assert!(!temp.path().join("orders").exists());
@@ -2459,6 +2501,7 @@ templates:
     assert!(!project.join("rainy.yaml.hbs").exists());
     assert!(project.join("rainy.yaml").exists());
     assert!(project.join("capability.lock").exists());
+    assert!(project.join(".rainy/project-template.lock").exists());
     assert_eq!(
         fs::read_to_string(project.join("src/orders/package.txt")).expect("rendered package"),
         "com.company.orders\ncom/company/orders\n"
@@ -2470,6 +2513,253 @@ templates:
     let project_config = fs::read_to_string(project.join("rainy.yaml")).expect("rainy config");
     assert!(project_config.contains("name: \"orders\""));
     assert!(project_config.contains("java: \"com.company.orders\""));
+
+    let status = run(&[
+        "--workspace",
+        &project.to_string_lossy(),
+        "template",
+        "status",
+        "--json",
+    ]);
+    let status = command_envelope(&status);
+    assert_eq!(status["type"], "template");
+    assert_eq!(
+        status["data"]["report"]["template"],
+        "enterprise-java-service"
+    );
+    assert_eq!(status["data"]["report"]["resolvedRef"], commit);
+    assert_eq!(
+        status["data"]["report"]["updateAvailable"],
+        serde_json::Value::Null
+    );
+
+    let check = run(&[
+        "--workspace",
+        &project.to_string_lossy(),
+        "template",
+        "check",
+        "--json",
+    ]);
+    let check = command_envelope(&check);
+    assert_eq!(check["status"], "ok");
+    assert_eq!(check["data"]["report"]["updateAvailable"], false);
+    assert_eq!(check["data"]["report"]["latestRef"], commit);
+
+    write(
+        &source.join("upstream-release.txt"),
+        "new upstream release\n",
+    );
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&source)
+        .args(["add", "."])
+        .status()
+        .expect("stage updated template");
+    assert!(status.success());
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&source)
+        .args(["commit", "--quiet", "-m", "update enterprise template"])
+        .status()
+        .expect("commit updated template");
+    assert!(status.success());
+    let changed = run(&[
+        "--workspace",
+        &project.to_string_lossy(),
+        "template",
+        "check",
+        "--json",
+    ]);
+    let changed = command_envelope(&changed);
+    assert_eq!(changed["status"], "warning");
+    assert_eq!(changed["data"]["report"]["status"], "update-available");
+    assert_eq!(changed["data"]["report"]["updateAvailable"], true);
+
+    let lock_path = project.join(".rainy/project-template.lock");
+    let lock = fs::read_to_string(&lock_path).expect("template provenance lock");
+    write(
+        &lock_path,
+        &lock.replace(
+            &format!("file://{}", source.display()),
+            "http://127.0.0.1:1/unreachable.git",
+        ),
+    );
+    let unreachable = run(&[
+        "--workspace",
+        &project.to_string_lossy(),
+        "template",
+        "check",
+        "--json",
+    ]);
+    let unreachable = command_envelope(&unreachable);
+    assert_eq!(unreachable["status"], "warning");
+    assert_eq!(unreachable["data"]["report"]["status"], "warning");
+    assert_eq!(
+        unreachable["data"]["report"]["updateAvailable"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn enterprise_template_selects_named_remote_and_applies_local_overlay() {
+    let temp = TempDir::new().expect("tempdir");
+    let initialize_remote = |path: &Path, marker: &str| {
+        write(&path.join("download-method.txt"), marker);
+        write(&path.join("upstream.txt"), "upstream template\n");
+        write(
+            &path.join("starter/src/main/resources/application.yml"),
+            "---\nspring:\n  application:\n    name: test\n---\nserver:\n  port: 8080\n",
+        );
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "rainy-test@example.com"],
+            vec!["config", "user.name", "Rainy Test"],
+            vec!["add", "."],
+            vec!["commit", "--quiet", "-m", "template remote"],
+            vec!["branch", "-M", "main"],
+        ] {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(path)
+                .args(args)
+                .status()
+                .expect("initialize template remote");
+            assert!(status.success());
+        }
+    };
+    let ssh_source = temp.path().join("ssh-template");
+    let http_source = temp.path().join("http-template");
+    initialize_remote(&ssh_source, "ssh\n");
+    initialize_remote(&http_source, "http\n");
+
+    let overlay = temp.path().join("overlays/pkulaw");
+    write(
+        &overlay.join("rainy.yaml.hbs"),
+        r#"apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: "{{ project.name }}"
+  type: service
+  owner: platform-engineering
+paths:
+  backend: starter
+  frontend: interfaces
+  generated: generated
+  evidence: evidence
+package:
+  java: "{{ package.java }}"
+  npmScope: "@company"
+capabilityRegistry:
+  sources: []
+policy:
+  allowNativePlugins: false
+  allowEdit: [rainy.yaml, capability.lock, generated/**, evidence/**]
+  denyEdit: ["**/.env*", "**/secrets/**"]
+  requireApproval: [deploy.production]
+verify:
+  profiles:
+    local: [doctor]
+    ci: [doctor, security-basic]
+"#,
+    );
+    write(
+        &overlay.join("capability.lock.hbs"),
+        r#"lockfileVersion: 1
+project:
+  name: "{{ project.name }}"
+rainy:
+  version: 0.5.0
+capabilities: {}
+skills: []
+"#,
+    );
+    write(
+        &overlay.join("enterprise-overlay.txt.hbs"),
+        "managed {{ project.name }}\n",
+    );
+    let catalog = temp.path().join("project-templates.yaml");
+    write(
+        &catalog,
+        &format!(
+            r#"apiVersion: rainy.dev/v1
+kind: ProjectTemplateCatalog
+templates:
+  pkulaw-backend-mvc:
+    description: Pkulaw backend service
+    source:
+      type: git
+      ref: main
+      defaultRemote: ssh
+      remotes:
+        ssh:
+          description: SSH authentication
+          url: "file://{}"
+        http:
+          description: HTTP authentication
+          url: "file://{}"
+    overlay: overlays/pkulaw
+    textReplacements:
+      - path: upstream.txt
+        find: upstream template
+        replace: "managed {{{{ project.name }}}}"
+"#,
+            ssh_source.display(),
+            http_source.display()
+        ),
+    );
+
+    let root = temp.path().join("projects");
+    let root_string = root.to_string_lossy().to_string();
+    let catalog_string = catalog.to_string_lossy().to_string();
+    let output = run(&[
+        "--workspace",
+        &root_string,
+        "--json",
+        "new",
+        "orders",
+        "--template",
+        "pkulaw-backend-mvc",
+        "--template-config",
+        &catalog_string,
+        "--template-remote",
+        "http",
+        "--package",
+        "com.pkulaw",
+        "--apply",
+    ]);
+    let data = command_data(&output);
+    assert_eq!(data["source_remote"], "http");
+    assert_eq!(data["source"], format!("file://{}", http_source.display()));
+    assert_eq!(data["source_git_removed"], true);
+
+    let project = root.join("orders");
+    assert!(!project.join(".git").exists());
+    assert_eq!(
+        fs::read_to_string(project.join("download-method.txt")).expect("selected remote marker"),
+        "http\n"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("enterprise-overlay.txt")).expect("overlay marker"),
+        "managed orders\n"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("upstream.txt")).expect("replacement target"),
+        "managed orders\n"
+    );
+    assert!(project.join("rainy.yaml").is_file());
+    assert!(project.join("capability.lock").is_file());
+    let doctor = run(&[
+        "--workspace",
+        &project.to_string_lossy(),
+        "--json",
+        "doctor",
+        "--scope",
+        "auto",
+    ]);
+    assert_eq!(
+        command_envelope(&doctor)["data"]["report"]["status"],
+        "passed"
+    );
 }
 
 #[test]
@@ -5482,6 +5772,10 @@ metadata:
 requires:
   rainy: ">=0.5.0, <0.6.0"
 contents:
+  - id: enterprise-project-templates
+    type: project-template-catalog
+    path: catalogs/enterprise
+    version: {version}
   - id: service-base
     type: project-template
     path: templates/service-base
@@ -5493,6 +5787,21 @@ contents:
 x-company-test: true
 "#,
         ),
+    );
+    write(
+        &root.join("catalogs/enterprise/project-templates.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: ProjectTemplateCatalog
+templates:
+  enterprise-java-service:
+    description: Enterprise Java service
+    source:
+      type: git
+      url: https://git.example.com/templates/enterprise-java-service.git
+      ref: main
+    repository:
+      defaultBranch: main
+"#,
     );
     write(
         &root.join("templates/service-base/rainy.yaml.hbs"),

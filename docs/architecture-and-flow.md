@@ -67,7 +67,9 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 
 ### 1. 初始化项目
 
-`rainy new` 和 `rainy init app` 由 `init.rs` 生成 Golden Path 项目骨架，包括：
+人工终端执行无创建方式参数的 `rainy new <APP_NAME>` 时，`new_wizard.rs` 先发现内置 Golden Path、
+已验证 Source 缓存和可用的 `ProjectTemplateCatalog`，再把选择交给对应创建器。非 TTY 和 JSON 调用
+不会进入向导。`rainy new --golden-path` 和 `rainy init app` 由 `init.rs` 生成 Golden Path 项目骨架，包括：
 
 - `rainy.yaml`
 - `capability.lock`
@@ -114,8 +116,13 @@ return ExecutionPlan + ChangeSet + rendered diff
 如果指定 `--output-plan`，CLI 会把 plan 写成 JSON，后续可通过 `rainy apply --plan` 重放。
 
 企业 Git starter 使用独立的 `project_template.rs`。`rainy new --template` 在项目建立前读取
-`ProjectTemplateCatalog`，把固定 Git ref 拉取到同文件系统临时目录，拒绝不安全条目，过滤所有 `.git`
-元数据，使用严格 Handlebars 变量渲染，并校验 `rainy.yaml`/`capability.lock` 后原子移动到目标位置。
+`ProjectTemplateCatalog`；catalog 可以来自本地配置，也可以作为 `project-template-catalog` 内容由多个
+Rainy Source 分发到经过摘要校验的用户缓存。Rainy 把固定 Git ref 拉取到同文件系统临时目录，拒绝不安全条目，过滤所有 `.git`
+元数据，使用严格 Handlebars 变量渲染，按需合并 catalog 本地 overlay，并校验
+`rainy.yaml`/`capability.lock` 后原子移动到目标位置。一个模板可以声明多个命名 Git remote；TTY 选择
+下载方式，非交互调用通过 `--template-remote` 或 `defaultRemote` 确定来源。私网 HTTP 必须显式启用，
+且认证只交给 Git credential helper。创建成功写入 `.rainy/project-template.lock`；`template status` 离线
+读取，`template check` 通过受监管的 Git 子进程只读比较远端 commit，网络故障降级为 warning。
 目标 Git 初始化和 remote 设置只作为结构化 Next steps 输出，不隐式执行。
 
 新的企业组合入口由 `source.rs` 处理。`rainy new --source <name>` 只读取已经完整校验的用户缓存，

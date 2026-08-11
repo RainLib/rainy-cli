@@ -5,7 +5,7 @@ use crate::output::CommandOutput;
 use crate::progress::ProgressReporter;
 use crate::registry::{CapabilityDefinition, DoctorCheckSpec, RegistryClient};
 use handlebars::Handlebars;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 const SENSITIVE_KEYS: &[&str] = &[
@@ -72,6 +72,18 @@ pub fn doctor_command(
                         format!("{}: {}", body.code, body.message),
                     ));
                 }
+            }
+            match crate::project_template::validate_project_template_lock(workspace) {
+                Ok(Some(message)) => checks.push(DoctorCheckResult {
+                    id: "project.template-provenance".to_string(),
+                    status: "passed".to_string(),
+                    message,
+                }),
+                Ok(None) => {}
+                Err(error) => checks.push(failed_check(
+                    "project.template-provenance",
+                    format!("{}: {}", error.body().code, error.body().message),
+                )),
             }
         } else {
             checks.push(failed_check("project.config", "rainy.yaml was not found"));
@@ -377,8 +389,10 @@ fn default_secret_checks(
             continue;
         }
         let content = std::fs::read_to_string(&path)?;
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&content)?;
-        collect_default_secret_checks(&rel_path, &yaml, &mut Vec::new(), &mut checks);
+        for document in serde_yaml::Deserializer::from_str(&content) {
+            let yaml = serde_yaml::Value::deserialize(document)?;
+            collect_default_secret_checks(&rel_path, &yaml, &mut Vec::new(), &mut checks);
+        }
     }
     Ok(checks)
 }
