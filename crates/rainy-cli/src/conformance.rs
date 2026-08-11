@@ -36,7 +36,7 @@ pub fn handle_conformance_command(command: ConformanceCommand) -> RainyResult<Co
     }
 }
 
-fn check_path(path: &Path) -> RainyResult<ConformanceReport> {
+pub(crate) fn check_path(path: &Path) -> RainyResult<ConformanceReport> {
     let mut checks = Vec::new();
     let mut capability_ids = BTreeSet::new();
     let pack_roots = pack_roots(path)?;

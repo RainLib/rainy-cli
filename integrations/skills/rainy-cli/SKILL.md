@@ -1,6 +1,6 @@
 ---
 name: rainy-cli
-description: Safely inspect, plan, apply, verify, audit, and manage model Skill profiles for Rainy-managed software projects through Rainy CLI. Use when an agent needs to initialize a Rainy project, manage capability packs or OpenSpec/Superpowers/Comet integration, inspect project or Skill health, apply a reviewed execution plan, generate evidence, or troubleshoot rainy.yaml, capability.lock, rainy-skills.yaml, and skills.lock. Also use when Rainy CLI may not be installed because this skill bootstraps the verified official release before continuing.
+description: Safely inspect, version, compose, plan, apply, verify, audit, and manage Rainy software projects through Rainy CLI. Use when an agent needs to consume a self-describing enterprise Rainy Source, initialize a project, manage capability packs or OpenSpec/Superpowers/Comet integration, inspect project or Skill health, apply a reviewed execution plan, generate evidence, or troubleshoot Rainy manifests and locks. Also use when Rainy CLI may not be installed because this skill bootstraps the verified official release before continuing.
 ---
 
 # Rainy CLI
@@ -97,9 +97,11 @@ Use `--trace-id` for a user request that spans multiple Rainy commands. Never ad
 
 Read [references/enterprise.md](references/enterprise.md) when the request involves company packages,
 internal registries, platform policy, approval, IAM, deployment, or enterprise Skills. Route declarative
-project changes to capability packs, distribution to a private registry, mandatory boundaries to layered
-policy, and external systems to Wasm plugins or HTTPS adapters. Never put credentials in Rainy config,
-packs, generated templates, or Skills.
+project changes to capability packs, multi-content distribution to a self-describing Rainy Source,
+project capability selection to a private registry, mandatory boundaries to layered policy, and external
+systems to Wasm plugins or HTTPS adapters. Prefer `rainy source check --project` when a generated project
+contains `.rainy/project-source.lock`. Never put credentials in Source manifests, Rainy config, packs,
+generated templates, locks, or Skills.
 
 ## Handle Errors
 

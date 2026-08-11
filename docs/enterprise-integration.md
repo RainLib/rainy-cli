@@ -6,11 +6,14 @@ evidence 和 audit 边界；企业仓库负责定义能力、分发内容和连�
 从零创建 GitHub/GitLab 企业能力仓库时，先阅读
 [企业 Git 能力仓库制作规范](enterprise-git-authoring.md)。该文档包含可直接采用的目录、Pack、
 Capability、模板、Skill、Plugin、Policy、CI、发布、更新和回滚规范；本文重点说明接入边界。
+需要把这些内容放进一个带版本清单的 Git/ZIP 企业交付包时，继续阅读
+[Rainy Source 企业内容分发与版本管理](source-management.md)。
 
 ## 内容应该放在哪里
 
 | 企业内容 | Rainy 承载方式 | 典型内容 |
 | --- | --- | --- |
+| 统一内容清单和版本感知 | Rainy Source | 项目模板、可组合模块、Pack、Skill、Plugin、Defaults |
 | 可声明的项目变更 | Capability Pack | 依赖、配置、模板、CI、Helm、可观测、SDK |
 | 能力发现与版本分发 | 私有 Registry | pack 版本、文件 URL、SHA-256 |
 | 强制安全边界 | 分层 Policy | 禁止路径、审批 action、可编辑范围 |
@@ -42,6 +45,7 @@ enterprise-rainy/
 Registry 根目录必须自身包含 `pack.yaml`，或直接包含上述 Pack 目录；不要额外增加 `packs/` 包装层。
 
 Rainy 主仓库的 [examples/enterprise](../examples/enterprise) 提供一个可本地执行的最小样例。
+[`examples/enterprise-source`](../examples/enterprise-source) 提供自描述 Source、根模板和多模块组合样例。
 
 ## 1. 定义 Capability Pack
 

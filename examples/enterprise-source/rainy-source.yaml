@@ -1,0 +1,20 @@
+apiVersion: rainy.dev/v1
+kind: RainySource
+metadata:
+  name: enterprise-example
+  version: 1.0.0
+  description: Minimal enterprise project template and workspace module
+requires:
+  rainy: ">=0.5.0, <0.6.0"
+contents:
+  - id: service-base
+    type: project-template
+    path: templates/service-base
+    description: Minimal Rainy service project
+    required: true
+  - id: backend-java
+    type: workspace-module
+    path: modules/backend-java
+    description: Java backend ownership notes
+    defaultTarget: services/backend
+x-company-classification: internal

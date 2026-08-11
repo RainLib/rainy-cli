@@ -15,6 +15,7 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 - `crates/rainy-cli`: CLI 主程序，当前以单 crate 形式实现核心能力。
 - `community-packs`: 开源 Golden Path 能力包。
 - `examples/enterprise`: 可本地验证的企业 pack、project policy 和接入样例。
+- `examples/enterprise-source`: 带根清单、项目模板和可组合模块的最小企业 Source。
 - `schemas`: Rainy 项目、能力包、计划、变更、报告、插件等 JSON Schema。
 - `integrations/skills/rainy-cli`: Rainy CLI 执行、安全审批和跨平台 bootstrap Skill。
 - `integrations/skills/rainy-comet`: OpenSpec + Superpowers + Comet 与 Rainy 的职责交接 Skill。
@@ -26,6 +27,8 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 企业平台团队从零建设 GitHub/GitLab 能力仓库，请从
 [企业 Git 能力仓库制作规范](docs/enterprise-git-authoring.md) 开始；其中给出了仓库目录、Pack、
 Capability、模板、Skill、Plugin、Policy、CI、版本发布、项目消费、更新和回滚的完整约定。
+需要把模板、模块、Pack、Skill 和 Plugin 作为一个可版本化交付包统一分发时，使用
+[Rainy Source 企业内容分发与版本管理](docs/source-management.md)。
 
 官方默认包中的 community packs 覆盖以下主流研发闭环：
 
@@ -103,14 +106,14 @@ irm https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 | 
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
-RAINY_REPO=owner/repo RAINY_VERSION=v0.5.0 sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.5.1 sh scripts/install.sh
 RAINY_NO_MODIFY_PATH=1 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.5.0 -InstallDir "$HOME\.rainy\bin"
+.\scripts\install.ps1 -Repo owner/repo -Version v0.5.1 -InstallDir "$HOME\.rainy\bin"
 .\scripts\install.ps1 -NoModifyPath
 ```
 
@@ -139,7 +142,28 @@ rainy new demo-saas --golden-path spring-nextjs-saas --package com.example.demo 
 cd demo-saas
 ```
 
-从企业 Git 模板创建项目：
+推荐的企业 Source 流程会先校验根目录 `rainy-source.yaml`，再把不可变内容存入用户级缓存：
+
+```bash
+rainy source inspect \
+  git+ssh://git@git.example.com/platform/company-rainy-source.git \
+  --ref v1.4.0
+rainy source add company \
+  git+ssh://git@git.example.com/platform/company-rainy-source.git \
+  --ref v1.4.0 --apply
+rainy new order-service --source company --template service-base \
+  --module backend-java,delivery-gitlab \
+  --package com.company.orders --apply
+cd order-service
+rainy source check --project
+```
+
+Source 也支持带 SHA-256 的 ZIP/TAR 和 `RainySourceIndex` 发布通道。配置和缓存位于
+`RAINY_HOME`，不会把整个分发仓库下载到当前目录；生成项目只包含选中的模板和模块，并记录
+`.rainy/project-source.lock`。完整版本、更新、回滚和内容接续命令见
+[Source 管理文档](docs/source-management.md)。
+
+旧版 `ProjectTemplateCatalog` 企业 Git 模板仍兼容：
 
 ```bash
 rainy schema validate --schema project-template-catalog \
@@ -448,6 +472,10 @@ rainy agent context
 rainy skill sync --apply
 ```
 
+`rainy agent init` can be used in an ordinary repository or empty directory. It updates only the
+managed block in `AGENTS.md`; when both `rainy.yaml` and `capability.lock` exist, it also refreshes
+the project-specific `.enterprise-agent/` context files.
+
 Skill profile 管理：
 
 ```bash
@@ -477,16 +505,16 @@ rainy self check --json
 rainy self check --repo owner/repo
 rainy self update                                      # 预览
 rainy self update --apply                              # 安装最新版
-rainy self update --repo owner/repo --version v0.5.0 --apply
-rainy self skip 0.5.0                                  # 预览
-rainy self skip --repo owner/repo 0.5.0 --apply
+rainy self update --repo owner/repo --version v0.5.1 --apply
+rainy self skip 0.5.1                                  # 预览
+rainy self skip --repo owner/repo 0.5.1 --apply
 ```
 
 release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
 
 ```text
 Rainy CLI update available: 0.1.1 -> 0.2.0.
-Run `rainy self update --apply` to update, or `rainy self skip 0.5.0 --apply` to skip this version.
+Run `rainy self update --apply` to update, or `rainy self skip 0.5.1 --apply` to skip this version.
 ```
 
 自动检查默认行为：
@@ -514,8 +542,8 @@ make release-check
 创建并推送版本标签后会触发 release workflow：
 
 ```bash
-git tag -a v0.5.0 -m "Rainy CLI v0.5.0"
-git push origin v0.5.0
+git tag -a v0.5.1 -m "Rainy CLI v0.5.1"
+git push origin v0.5.1
 ```
 
 release workflow 会先执行格式、测试、clippy、audit/deny、schema、MCP wrapper、PTY 和安装脚本检查，然后分别构建并上传：
@@ -585,9 +613,10 @@ Rainy 的核心使用方式是“先计划，再应用”：
 
 已完成：
 
-- Rust CLI 命令树：`new/init/add/apply/capability/pack/doctor/verify/evidence/plugin/agent/skill/schema/conformance`。
+- Rust CLI 命令树：`new/source/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/schema/conformance/self/completion`。
 - Golden Path 初始化：生成 Spring Boot + Next.js 基础项目、`rainy.yaml`、`capability.lock`、AGENTS.md、CI、compose、evidence 目录。
 - Capability Pack 解析：本地、Git、HTTPS index、校验后的 HTTPS archive 和全局缓存。
+- Rainy Source：自描述根清单、Git/Archive/Index/本地来源、SemVer/commit/digest 感知、不可变用户缓存、项目来源锁、模板与多模块组合。
 - 内置 action：Maven、YAML/JSON/JSONC/TOML merge、模板渲染、文件创建/追加、Docker Compose、package.json、devcontainer、Helm draft 等。
 - Plan / Diff / Apply：支持 dry-run、plan file、事务式 apply 回滚、幂等 no-op。
 - Capability 依赖和 provider 解析：依赖缺失失败、被依赖能力禁止删除、provider 默认/显式/非法场景有稳定错误。
@@ -645,6 +674,7 @@ make installer-test
 - Command reference: [docs/command-reference.md](docs/command-reference.md)
 - Enterprise integration: [docs/enterprise-integration.md](docs/enterprise-integration.md)
 - Enterprise Git registry authoring: [docs/enterprise-git-authoring.md](docs/enterprise-git-authoring.md)
+- Enterprise Source distribution and versioning: [docs/source-management.md](docs/source-management.md)
 - CLI output style: [docs/cli-output-style.md](docs/cli-output-style.md)
 - Capability Pack authoring: [docs/capability-pack-authoring.md](docs/capability-pack-authoring.md)
 - Plugin protocol: [docs/plugin-protocol.md](docs/plugin-protocol.md)

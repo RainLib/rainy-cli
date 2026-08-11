@@ -46,6 +46,19 @@ pub enum CommandOutput {
         remote_url: Option<String>,
         next_commands: Vec<String>,
     },
+    SourceProject {
+        status: &'static str,
+        project: String,
+        path: String,
+        source: String,
+        source_version: String,
+        resolved_ref: String,
+        template: String,
+        modules: Vec<String>,
+        files: Vec<String>,
+        remote_url: Option<String>,
+        next_commands: Vec<String>,
+    },
     DryRun {
         status: &'static str,
         capability: String,
@@ -84,6 +97,9 @@ pub enum CommandOutput {
     },
     Registry {
         report: crate::registry::RegistryReport,
+    },
+    Source {
+        report: crate::source::SourceReport,
     },
     Defaults {
         report: crate::defaults::DefaultsReport,
@@ -188,6 +204,7 @@ impl CommandOutput {
             Self::Message { .. } => "message",
             Self::Init { .. } => "init",
             Self::ProjectTemplate { .. } => "project-template",
+            Self::SourceProject { .. } => "source-project",
             Self::DryRun { .. } => "dry-run",
             Self::Applied { .. } => "applied",
             Self::ChangeDryRun { .. } => "change-dry-run",
@@ -198,6 +215,7 @@ impl CommandOutput {
             Self::Installed { .. } => "installed",
             Self::Packs { .. } => "packs",
             Self::Registry { .. } => "registry",
+            Self::Source { .. } => "source",
             Self::Defaults { .. } => "defaults",
             Self::Doctor { .. } => "doctor",
             Self::Verify { .. } => "verify",
@@ -219,6 +237,7 @@ impl CommandOutput {
             Self::Message { status, .. }
             | Self::Init { status, .. }
             | Self::ProjectTemplate { status, .. }
+            | Self::SourceProject { status, .. }
             | Self::DryRun { status, .. }
             | Self::Applied { status, .. }
             | Self::ChangeDryRun { status, .. }
@@ -230,6 +249,7 @@ impl CommandOutput {
             Self::SchemaValidation { report } => &report.status,
             Self::Skill { report } => &report.status,
             Self::Registry { report } => &report.status,
+            Self::Source { report } => &report.status,
             Self::Defaults { report } => &report.status,
             Self::Update { report } => &report.status,
             Self::Completion { .. } => "ok",
@@ -264,8 +284,12 @@ impl CommandOutput {
             }
             | Self::ProjectTemplate {
                 status: "dry-run", ..
+            }
+            | Self::SourceProject {
+                status: "dry-run", ..
             } => true,
             Self::Skill { report } => report.status == "dry-run",
+            Self::Source { report } => report.status == "dry-run",
             _ => false,
         }
     }
@@ -283,6 +307,18 @@ impl CommandOutput {
                 ..
             } => format!(
                 "created {project} from template {template} with {} files",
+                files.len()
+            ),
+            Self::SourceProject {
+                project,
+                source,
+                template,
+                modules,
+                files,
+                ..
+            } => format!(
+                "created {project} from Source {source} template {template} with {} modules and {} files",
+                modules.len(),
                 files.len()
             ),
             Self::DryRun { capability, .. } => format!("planned capability {capability}"),
@@ -311,6 +347,9 @@ impl CommandOutput {
             Self::Packs { packs } => format!("listed {} packs", packs.len()),
             Self::Registry { report } => {
                 format!("registry {} {}", report.operation, report.status)
+            }
+            Self::Source { report } => {
+                format!("source {} {}", report.operation, report.status)
             }
             Self::Defaults { report } => {
                 format!("defaults {} {}", report.operation, report.status)
@@ -463,6 +502,59 @@ impl CommandOutput {
                     println!(
                         "  Remote URL      {}",
                         remote_url.as_deref().unwrap_or("Not configured")
+                    );
+                    print_next_step("Create the destination Git repository, then run:");
+                    for command in next_commands {
+                        println!("  $ {command}");
+                    }
+                    print_paths("Affected locations", files);
+                }
+            }
+            Self::SourceProject {
+                status,
+                project,
+                path,
+                source,
+                source_version,
+                resolved_ref,
+                template,
+                modules,
+                files,
+                remote_url,
+                next_commands,
+            } => {
+                print_title("Rainy Source project");
+                print_summary(&[
+                    ("Status", result_status_label(status).to_string()),
+                    ("Project", project.clone()),
+                    ("Location", path.clone()),
+                    ("Source", source.clone()),
+                    ("Source version", source_version.clone()),
+                    ("Resolved revision", resolved_ref.clone()),
+                    ("Template", template.clone()),
+                    ("Modules", list_or_none(modules)),
+                    (
+                        "Target remote",
+                        remote_url
+                            .clone()
+                            .unwrap_or_else(|| "Not configured".to_string()),
+                    ),
+                    (
+                        "Files",
+                        if *status == "dry-run" {
+                            "Not written".to_string()
+                        } else {
+                            files.len().to_string()
+                        },
+                    ),
+                ]);
+                if *status == "dry-run" {
+                    print_next_step(
+                        "Review the selected Source template and modules, then rerun with --apply.",
+                    );
+                } else {
+                    print_details(
+                        "Origin metadata was recorded in .rainy/project-source.lock for later checks.",
                     );
                     print_next_step("Create the destination Git repository, then run:");
                     for command in next_commands {
@@ -685,6 +777,62 @@ impl CommandOutput {
                     print_next_step(
                         "Review the registry plan, then rerun the same command with --apply.",
                     );
+                }
+            }
+            Self::Source { report } => {
+                print_title(&format!("Source {}", report.operation));
+                print_summary(&[
+                    ("Status", result_status_label(&report.status).to_string()),
+                    ("Sources", report.sources.len().to_string()),
+                ]);
+                if !report.sources.is_empty() {
+                    println!();
+                    println!("Sources");
+                }
+                for source in &report.sources {
+                    print_columns(&[
+                        &source.name,
+                        &source.state,
+                        source.current_version.as_deref().unwrap_or("-"),
+                        &source.source,
+                    ]);
+                    if let Some(latest) = &source.latest_version
+                        && source.current_version.as_ref() != Some(latest)
+                    {
+                        println!("    latest    {latest}");
+                    }
+                    if let Some(resolved) = &source.resolved_ref {
+                        println!("    revision  {resolved}");
+                    }
+                    if let Some(message) = &source.message {
+                        println!("    result    {message}");
+                    }
+                    if !source.contents.is_empty() {
+                        println!("    contents");
+                        for content in &source.contents {
+                            println!(
+                                "      {}  {}  {}",
+                                content.id, content.content_type, content.path
+                            );
+                            if report.operation == "resolve"
+                                && let Some(path) = &content.resolved_path
+                            {
+                                println!("        resolved  {path}");
+                            }
+                        }
+                    }
+                    if verbose && let Some(cache) = &source.cache_path {
+                        println!("    cache     {cache}");
+                    }
+                }
+                match report.status.as_str() {
+                    "dry-run" => print_next_step(
+                        "Review the Source and rerun the same command with --apply.",
+                    ),
+                    "warning" => print_next_step(
+                        "Cached Sources remain usable. Restore connectivity, then rerun source check or update.",
+                    ),
+                    _ => {}
                 }
             }
             Self::Defaults { report } => {

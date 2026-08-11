@@ -24,6 +24,7 @@ mod runtime;
 mod schema;
 mod security;
 mod skills;
+mod source;
 mod update;
 mod verify;
 mod workspace;
@@ -294,6 +295,15 @@ fn workspace_marker(command: &Commands) -> workspace::WorkspaceMarker {
         | Commands::Conformance(_)
         | Commands::SelfCommand(_)
         | Commands::Completion(_) => WorkspaceMarker::None,
+        Commands::Source(command) => match &command.command {
+            cli::SourceSubcommand::Check(args) if args.project => WorkspaceMarker::Project,
+            cli::SourceSubcommand::Sync(args) | cli::SourceSubcommand::Update(args)
+                if args.selection.project =>
+            {
+                WorkspaceMarker::Project
+            }
+            _ => WorkspaceMarker::None,
+        },
         Commands::Skill(_) => WorkspaceMarker::Skills,
         Commands::Doctor(_) | Commands::Plugin(_) | Commands::External(_) => {
             WorkspaceMarker::Either
@@ -333,6 +343,14 @@ fn command_benefits_from_progress(command: &Commands) -> bool {
                 | cli::RegistrySubcommand::Sync(_)
                 | cli::RegistrySubcommand::Remove(_)
         ),
+        Commands::Source(command) => matches!(
+            command.command,
+            cli::SourceSubcommand::Inspect(_)
+                | cli::SourceSubcommand::Add(_)
+                | cli::SourceSubcommand::Check(_)
+                | cli::SourceSubcommand::Sync(_)
+                | cli::SourceSubcommand::Update(_)
+        ),
         Commands::Defaults(command) => matches!(
             command.command,
             cli::DefaultsSubcommand::Install(_) | cli::DefaultsSubcommand::Update(_)
@@ -355,7 +373,7 @@ fn command_benefits_from_progress(command: &Commands) -> bool {
 fn command_uses_default_content(command: &Commands) -> bool {
     match command {
         Commands::Init(_) | Commands::Add(_) | Commands::Apply(_) | Commands::Capability(_) => true,
-        Commands::New(args) => args.template.is_none(),
+        Commands::New(args) => args.template.is_none() && args.source.is_none(),
         Commands::Pack(command) => matches!(
             command.command,
             cli::PackSubcommand::List
@@ -399,6 +417,15 @@ fn command_requires_audit(command: &Commands, interactive: bool) -> bool {
             cli::RegistrySubcommand::Sync(args) => args.apply,
             cli::RegistrySubcommand::Remove(args) => args.apply,
             _ => false,
+        },
+        Commands::Source(command) => match &command.command {
+            cli::SourceSubcommand::Add(args) => args.apply,
+            cli::SourceSubcommand::Sync(args) | cli::SourceSubcommand::Update(args) => args.apply,
+            cli::SourceSubcommand::Remove(args) => args.apply,
+            cli::SourceSubcommand::Inspect(_)
+            | cli::SourceSubcommand::List
+            | cli::SourceSubcommand::Resolve(_)
+            | cli::SourceSubcommand::Check(_) => false,
         },
         Commands::Defaults(command) => match &command.command {
             cli::DefaultsSubcommand::Install(args) | cli::DefaultsSubcommand::Update(args) => {
@@ -454,6 +481,7 @@ fn command_label(command: &Commands) -> &'static str {
         },
         Commands::Pack(_) => "pack",
         Commands::Registry(_) => "registry",
+        Commands::Source(_) => "source",
         Commands::Defaults(_) => "defaults",
         Commands::Doctor(_) => "doctor",
         Commands::Verify(_) => "verify",
@@ -496,7 +524,13 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
             }),
         },
         Commands::New(args) => {
-            let dry_run = if args.template.is_some() {
+            if args.git_url.is_some() && args.source.is_none() && args.template.is_none() {
+                return Err(RainyError::config(
+                    "PROJECT_GIT_URL_INVALID",
+                    "--git-url is available only with --source or --template",
+                ));
+            }
+            let dry_run = if args.template.is_some() || args.source.is_some() {
                 resolve_template_init_mode(args.dry_run, args.apply)?
             } else {
                 resolve_init_mode(args.dry_run, args.apply)?
@@ -504,7 +538,21 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
             let package = args
                 .package
                 .unwrap_or_else(|| "com.example.demo".to_string());
-            if let Some(template) = args.template {
+            if let Some(source_name) = args.source {
+                source::create_project(source::SourceProjectOptions {
+                    base_dir: workspace,
+                    name: args.name,
+                    package,
+                    source: source_name,
+                    template: args.template,
+                    modules: args.module,
+                    git_url: args.git_url,
+                    dry_run,
+                    interactive: context.terminal.interactive,
+                    no_color: !context.terminal.color,
+                    progress: context.progress,
+                })
+            } else if let Some(template) = args.template {
                 project_template::create_project(project_template::ProjectTemplateOptions {
                     base_dir: workspace,
                     name: args.name,
@@ -528,6 +576,9 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
                     dry_run,
                 })
             }
+        }
+        Commands::Source(command) => {
+            source::handle_source_command(&workspace, command, context.progress)
         }
         Commands::Add(command) => match command.command {
             AddSubcommand::Capability(args) => add_capability(&workspace, args),

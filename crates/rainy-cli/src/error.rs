@@ -207,6 +207,24 @@ fn next_steps(code: &str) -> &'static [&'static str] {
         "DEFAULTS_GIT_FETCH_FAILED" | "DEFAULTS_GIT_REF_INVALID" => {
             &["rainy defaults status", "rainy defaults install --help"]
         }
+        "SOURCE_NOT_FOUND" => &["rainy source list", "rainy source add --help"],
+        "SOURCE_NOT_SYNCHRONIZED" | "SOURCE_CACHE_DIGEST_MISMATCH" => {
+            &["rainy source list --verbose", "rainy source sync --help"]
+        }
+        "SOURCE_PROJECT_LOCK_NOT_FOUND" | "SOURCE_PROJECT_LOCK_VERSION_UNSUPPORTED" => {
+            &["rainy new --help", "rainy source check --help"]
+        }
+        "SOURCE_MANIFEST_NOT_FOUND"
+        | "SOURCE_MANIFEST_INVALID"
+        | "SOURCE_CONTENT_INVALID"
+        | "SOURCE_CONTENT_IDENTITY_MISMATCH"
+        | "SOURCE_RELEASE_IDENTITY_MISMATCH" => &[
+            "rainy schema validate --help",
+            "rainy source inspect --help",
+        ],
+        "SOURCE_GIT_FETCH_FAILED" | "SOURCE_GIT_REMOTE_FAILED" | "SOURCE_DOWNLOAD_FAILED" => {
+            &["rainy source check --help", "rainy source add --help"]
+        }
         "CANCELLED" => &[],
         _ => &[],
     }

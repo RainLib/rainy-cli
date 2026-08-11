@@ -96,6 +96,54 @@ git commit -m 'Initial commit'
 git push -u origin <DEFAULT_BRANCH>
 ```
 
+### 从自描述企业 Source 创建
+
+推荐的新接入方式要求 Git 仓库或 Archive 根目录包含 `rainy-source.yaml`。Source 配置、版本锁和内容
+缓存位于 `RAINY_HOME`，不会把整个企业分发仓库放入当前目录：
+
+```bash
+rainy source inspect \
+  git+ssh://git@git.example.com/platform/company-rainy-source.git \
+  --ref v1.4.0
+rainy source add company \
+  git+ssh://git@git.example.com/platform/company-rainy-source.git \
+  --ref v1.4.0 --apply
+
+rainy source list
+rainy source check company
+rainy new order-service --source company --template service-base \
+  --module backend-java,delivery-gitlab \
+  --package com.company.orders --apply
+```
+
+Source 中可声明多个根模板和多个 `workspace-module`。交互终端省略 `--template`/`--module` 时执行
+选择器；CI、JSON 或重定向环境必须显式提供模板，未选择的非必需模块不会安装。生成项目通过
+`.rainy/project-source.lock` 固定 Source 版本、revision、digest、模板和模块：
+
+```bash
+cd order-service
+rainy source check --project
+rainy source update --project          # 检查
+rainy source update --project --apply  # 只刷新用户缓存
+rainy source check --project
+```
+
+项目锁还保存不含凭据的来源地址和 ref/channel。新开发者克隆项目后可以直接检查；执行
+`source update --project --apply` 会在该用户的 `RAINY_HOME` 恢复验证缓存和 Source 关联。跨机器恢复
+适用于 Git/Index/Archive；本地目录 Source 需要在新机器重新关联可访问路径。
+
+缓存更新不会覆盖已生成的项目文件。出现 `project-update-available` 时应对照新模板或模块通过 PR
+迁移。解析其他已校验内容：
+
+```bash
+rainy source resolve company observability
+rainy source resolve company observability --json
+```
+
+Git `main` 通过远端 commit 感知变化；发布索引直接报告 channel 中的新 SemVer；直接 Archive 依靠
+配置摘要或 `<URL>.sha256`。远端暂时不可达且已有缓存时返回 warning 并继续使用旧缓存。完整清单、
+发布索引和企业步骤见 [source-management.md](source-management.md)。
+
 `rainy init app` 是兼容的 preset 初始化入口：
 
 ```bash
@@ -232,6 +280,10 @@ rainy agent context
 rainy skill sync --apply
 ```
 
+`rainy agent init --apply` is valid in any directory and writes only `AGENTS.md` until the workspace
+is a complete Rainy project (`rainy.yaml` and `capability.lock`). Complete projects also receive
+`.enterprise-agent/` context files.
+
 创建当前项目拥有的 Skill 规则和命令包：
 
 ```bash
@@ -296,7 +348,7 @@ rainy schema validate --schema <SCHEMA_ID> --file <DOCUMENT_FILE>
 rainy conformance check --path <PACK_OR_PLUGIN_DIR>
 ```
 
-内置 schema 覆盖项目、capability、pack、registry、plan、plugin、Skill profile 和企业 policy。
+内置 schema 覆盖项目、capability、pack、registry、Source、plan、plugin、Skill profile 和企业 policy。
 
 ## 自更新
 

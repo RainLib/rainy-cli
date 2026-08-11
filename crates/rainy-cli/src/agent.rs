@@ -16,7 +16,8 @@ pub fn handle_agent_command(workspace: &Path, command: AgentCommand) -> RainyRes
                     "--dry-run and --apply cannot be used together",
                 ));
             }
-            let context = build_context(workspace)?;
+            let complete_rainy_project = is_complete_rainy_project(workspace);
+            let context = build_agent_context(workspace, complete_rainy_project)?;
             if !args.apply {
                 return Ok(CommandOutput::Message {
                     status: "dry-run",
@@ -24,23 +25,28 @@ pub fn handle_agent_command(workspace: &Path, command: AgentCommand) -> RainyRes
                 });
             }
             write_agent_context(workspace, &context)?;
-            write_enterprise_agent_files(workspace, &context)?;
+            if complete_rainy_project {
+                write_enterprise_agent_files(workspace, &context)?;
+            }
             Ok(CommandOutput::Message {
                 status: "applied",
-                message: "Generated AGENTS.md and .enterprise-agent context".to_string(),
+                message: if complete_rainy_project {
+                    "Generated AGENTS.md and .enterprise-agent context".to_string()
+                } else {
+                    "Generated standalone AGENTS.md context".to_string()
+                },
             })
         }
         AgentSubcommand::Context => Ok(CommandOutput::AgentContext {
-            context: build_context(workspace)?,
+            context: build_agent_context(workspace, is_complete_rainy_project(workspace))?,
         }),
     }
 }
 
 pub fn sync_skills_command(workspace: &Path) -> RainyResult<CommandOutput> {
-    let complete_rainy_project =
-        workspace.join("rainy.yaml").is_file() && workspace.join("capability.lock").is_file();
-    if !complete_rainy_project && workspace.join("rainy-skills.yaml").is_file() {
-        let context = build_skill_context(workspace)?;
+    let complete_rainy_project = is_complete_rainy_project(workspace);
+    if !complete_rainy_project {
+        let context = build_standalone_context(workspace)?;
         write_agent_context(workspace, &context)?;
         return Ok(CommandOutput::message(
             "Synced Rainy agent skills and standalone project context",
@@ -57,7 +63,7 @@ pub fn sync_skills_command(workspace: &Path) -> RainyResult<CommandOutput> {
 
 pub fn skill_sync_paths(workspace: &Path) -> Vec<String> {
     let mut paths = vec!["AGENTS.md".to_string()];
-    if workspace.join("rainy.yaml").is_file() && workspace.join("capability.lock").is_file() {
+    if is_complete_rainy_project(workspace) {
         paths.extend(
             [
                 ".enterprise-agent/context.md",
@@ -71,9 +77,21 @@ pub fn skill_sync_paths(workspace: &Path) -> Vec<String> {
     paths
 }
 
-fn build_skill_context(workspace: &Path) -> RainyResult<String> {
+fn is_complete_rainy_project(workspace: &Path) -> bool {
+    workspace.join("rainy.yaml").is_file() && workspace.join("capability.lock").is_file()
+}
+
+fn build_agent_context(workspace: &Path, complete_rainy_project: bool) -> RainyResult<String> {
+    if complete_rainy_project {
+        build_context(workspace)
+    } else {
+        build_standalone_context(workspace)
+    }
+}
+
+fn build_standalone_context(workspace: &Path) -> RainyResult<String> {
     let mut out = String::from(
-        "# AGENTS.md\n\n## Project Rules\n- Use installed project Skills for repository-specific guidance.\n- Review Skill scripts before running them.\n- Require explicit approval before mutating protected resources.\n\n",
+        "# AGENTS.md\n\n## Project Rules\n- Use installed project Skills for repository-specific guidance.\n- Review Skill scripts before running them.\n- Require explicit approval before mutating protected resources.\n\n## Commands\n- `rainy skill install`\n- `rainy skill status`\n- `rainy skill doctor`\n\n",
     );
     if let Some(summary) = crate::skills::context_summary(workspace)? {
         out.push_str("## Skill Workflow\n");

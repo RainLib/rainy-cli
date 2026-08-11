@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/source-report.schema.json",
+  "title": "Rainy Source Command Report",
+  "type": "object",
+  "required": ["protocolVersion", "operation", "status", "sources"],
+  "properties": {
+    "protocolVersion": { "const": "rainy.source-report.v1" },
+    "operation": { "enum": ["inspect", "add", "list", "resolve", "check", "sync", "update", "remove"] },
+    "status": { "enum": ["dry-run", "applied", "passed", "warning", "failed"] },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "sourceType", "source", "state", "contents"],
+        "properties": {
+          "name": { "type": "string" },
+          "sourceType": { "type": "string" },
+          "source": { "type": "string" },
+          "requestedRef": { "type": ["string", "null"] },
+          "resolvedRef": { "type": ["string", "null"] },
+          "currentVersion": { "type": ["string", "null"] },
+          "latestVersion": { "type": ["string", "null"] },
+          "digest": { "type": ["string", "null"] },
+          "cachePath": { "type": ["string", "null"] },
+          "updateAvailable": { "type": ["boolean", "null"] },
+          "state": { "enum": ["preview", "available", "current", "update-available", "project-update-available", "updated", "cached", "unreachable", "invalid", "removed"] },
+          "message": { "type": ["string", "null"] },
+          "contents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "type", "path"],
+              "properties": {
+                "id": { "type": "string" },
+                "type": { "type": "string" },
+                "path": { "type": "string" },
+                "version": { "type": ["string", "null"] },
+                "defaultTarget": { "type": ["string", "null"] },
+                "required": { "type": "boolean" },
+                "resolvedPath": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

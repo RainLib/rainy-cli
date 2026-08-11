@@ -30,11 +30,18 @@ Plan -> Diff -> Policy -> Apply -> Doctor -> Verify -> Evidence
 工作区、输出模式、终端能力、trace id、取消状态和进度实例；`workspace.rs` 负责向上发现项目，
 `paths.rs` 统一 `RAINY_HOME`、`HOME`、`USERPROFILE` 和系统目录。
 
-`cli.rs` 定义命令树和参数结构。当前命令包括 `new/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/conformance/schema/self`。只有发现同名已安装插件时才启用顶层 external forwarding；其他拼写错误保留 Clap 建议。
+`cli.rs` 定义命令树和参数结构。当前命令包括 `new/source/init/add/apply/capability/pack/registry/defaults/doctor/verify/evidence/plugin/agent/skill/conformance/schema/self/completion`。只有发现同名已安装插件时才启用顶层 external forwarding；其他拼写错误保留 Clap 建议。
 
 `config.rs` 负责 `rainy.yaml` 和 `capability.lock` 的读写。`rainy.yaml` 描述项目、路径、registry source、policy、verify 配置；`capability.lock` 记录已安装能力、provider、版本、artifacts 和 skills。
 
 `defaults.rs` 管理官方内容分发。`rainy-defaults.yaml` 声明 CLI 兼容范围以及 Packs、Skills、模板目录；Git source 按 ref 解析到 commit，下载到 `RAINY_HOME/defaults`，通过全局 lock、跨进程文件锁和原子目录替换保证一致性。Debug 构建可直接读取工作区；release 二进制始终按默认包流程运行，除非显式配置开发源。
+
+`source.rs` 管理企业自描述内容分发。Git、Archive、Source Index 或本地根目录必须包含
+`rainy-source.yaml`；CLI 校验 Source SemVer、Rainy 兼容范围、内容身份、嵌套 Pack/Skill/Plugin
+协议和目录摘要，再写入 `RAINY_HOME/sources/<name>/<digest-prefix>` 不可变缓存。用户级
+`sources.yaml` 保存请求来源，`sources.lock` 保存解析 commit、版本、digest 和内容路径。`rainy new
+--source` 从一个项目模板组合多个 workspace module，并在项目中写入 `.rainy/project-source.lock`；
+`source check --project` 可区分远端 Source 更新与项目模板版本落后。缓存更新从不自动覆盖业务项目文件。
 
 `skills.rs` 负责项目级模型 Skill 生命周期。它可独立运行于没有 `rainy.yaml` 的普通仓库，发现并校验 `rainy-skills/` 中项目拥有的规则与命令包，读取 `rainy-skills.yaml`，从默认分发包安装 Rainy Skills，调用固定版本 Comet 的官方 CLI 安装 OpenSpec/Comet，并通过固定版本 `skills` CLI 安装固定版本 Superpowers，生成 `skills.lock`，执行内容摘要和依赖 doctor，并提供 create/init/install/status/update/uninstall。完整 Rainy 工程额外同步 capability 上下文；核心能力 profile 不启用时不会要求 Node.js。
 
@@ -110,6 +117,10 @@ return ExecutionPlan + ChangeSet + rendered diff
 `ProjectTemplateCatalog`，把固定 Git ref 拉取到同文件系统临时目录，拒绝不安全条目，过滤所有 `.git`
 元数据，使用严格 Handlebars 变量渲染，并校验 `rainy.yaml`/`capability.lock` 后原子移动到目标位置。
 目标 Git 初始化和 remote 设置只作为结构化 Next steps 输出，不隐式执行。
+
+新的企业组合入口由 `source.rs` 处理。`rainy new --source <name>` 只读取已经完整校验的用户缓存，
+选择一个 `project-template` 和零到多个 `workspace-module`，在同文件系统临时目录完成路径/内容渲染、
+冲突检查和项目配置解析后再原子移动。远端无法连接不会影响已有缓存创建；没有验证缓存时明确失败。
 
 ### 4. 应用能力变更
 

@@ -1260,6 +1260,28 @@ fn parse_custom_skill_metadata(content: &str) -> RainyResult<CustomSkillMetadata
     })
 }
 
+pub(crate) fn validate_source_skill(root: &Path, expected_id: &str) -> RainyResult<()> {
+    validate_custom_skill_id(expected_id)?;
+    let path = root.join("SKILL.md");
+    let metadata = parse_custom_skill_metadata(&std::fs::read_to_string(&path)?)?;
+    if metadata.name != expected_id {
+        return Err(RainyError::config(
+            "SOURCE_CONTENT_IDENTITY_MISMATCH",
+            format!(
+                "Source content id {expected_id} does not match SKILL.md name {}",
+                metadata.name
+            ),
+        ));
+    }
+    if metadata.description.trim().is_empty() {
+        return Err(RainyError::config(
+            "SOURCE_CONTENT_INVALID",
+            format!("Source Skill {expected_id} must declare a non-empty description"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_custom_skill_id(id: &str) -> RainyResult<()> {
     let valid = !id.is_empty()
         && id.len() <= 64

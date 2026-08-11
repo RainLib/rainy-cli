@@ -6,10 +6,11 @@
 
 ## 1. 先选择正确的仓库类型
 
-Rainy 支持三类用途不同的 Git 仓库。
+Rainy 支持四类用途不同的 Git 仓库。Rainy Source 是推荐的统一发布外壳，其他三类是具体消费协议。
 
 | 仓库类型 | 用途 | 消费入口 | 是否推荐日常业务使用 |
 | --- | --- | --- | --- |
+| 企业 Rainy Source | 统一声明模板、模块、Pack、Skill、Plugin 和版本 | `rainy source add/check/new/resolve` | 是，推荐新建 |
 | 企业 Capability Registry | 业务能力、团队 Skill、可选 Plugin | `rainy registry add/sync` | 是 |
 | 企业 Defaults 镜像 | 替换官方基础 Packs、Rainy Skills、Golden Path 模板 | `rainy defaults install/update` | 仅平台团队维护 |
 | 企业项目模板仓库 | 拉取完整 starter，渲染后移除源 `.git` | `rainy new --template` | 新项目创建时使用 |
@@ -17,6 +18,11 @@ Rainy 支持三类用途不同的 Git 仓库。
 普通业务团队应该制作 Capability Registry。完整 starter 放项目模板仓库；只有需要内网镜像、统一修改
 官方基础能力或完全隔离公网时，才制作 Defaults 镜像。企业不需要 fork Rainy CLI，也不需要重新编译
 自己的 `rainy` 命令。
+
+如果同一平台团队需要同时发布 starter、可选模块、Pack 和 Skill，应在仓库根增加
+`rainy-source.yaml`，由 Source 统一做身份、SemVer、digest、缓存和版本检查，再把解析后的 Pack 交给
+Registry。详细规则和完整命令见 [source-management.md](source-management.md)。旧的
+`ProjectTemplateCatalog` 仍兼容，但不能统一感知仓库中其他内容类型的版本。
 
 ### 企业项目模板目录
 
@@ -567,7 +573,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install Rainy
-        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.0/install.sh | RAINY_VERSION=v0.5.0 sh
+        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.1/install.sh | RAINY_VERSION=v0.5.1 sh
       - name: Validate packs
         run: |
           for pack in */pack.yaml; do
@@ -597,7 +603,7 @@ validate-rainy-registry:
   image: ubuntu:24.04
   before_script:
     - apt-get update && apt-get install -y curl git ca-certificates
-    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.0/install.sh | RAINY_VERSION=v0.5.0 sh
+    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.1/install.sh | RAINY_VERSION=v0.5.1 sh
   script:
     - find . -name pack.yaml -print0 | xargs -0 -n1 ~/.rainy/bin/rainy schema validate --schema capability-pack --file
     - ~/.rainy/bin/rainy conformance check --path . --json

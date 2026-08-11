@@ -215,6 +215,11 @@ Running `rainy skill init` again with the same configuration is idempotent. It r
 
 Comet-managed blocks and user-authored content outside this block are preserved. Old projects without `rainy-skills.yaml` retain the original context-only `rainy skill sync` behavior.
 
+`rainy agent init` also works before a Rainy project has been initialized. In an ordinary repository
+or empty directory it creates or refreshes only the managed `AGENTS.md` block. When both `rainy.yaml`
+and `capability.lock` are present, it additionally writes the project-specific `.enterprise-agent/`
+context files.
+
 ## Approval Rule
 
 Comet phase completion never authorizes Rainy mutation. Commands containing `--apply`, native plugin trust, deployment, database migration, and secret writes retain their own explicit approval boundaries.

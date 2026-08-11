@@ -864,6 +864,422 @@ fn skill_commands_work_without_a_rainy_project_config() {
     );
 }
 
+#[test]
+fn agent_commands_work_without_a_rainy_project_config() {
+    let temp = TempDir::new().expect("tempdir");
+    let workspace = temp.path().to_string_lossy().to_string();
+
+    let preview = run(&["--workspace", &workspace, "agent", "init", "--json"]);
+    let preview = command_envelope(&preview);
+    assert_eq!(preview["status"], "preview");
+    assert_eq!(preview["data"]["message"], "Would refresh AGENTS.md");
+    assert!(!temp.path().join("AGENTS.md").exists());
+
+    run(&[
+        "--workspace",
+        &workspace,
+        "agent",
+        "init",
+        "--apply",
+        "--json",
+    ]);
+    let agents = fs::read_to_string(temp.path().join("AGENTS.md")).expect("AGENTS.md");
+    assert!(agents.contains("rainy:context:start"));
+    assert!(agents.contains("rainy skill install"));
+    assert!(!temp.path().join(".enterprise-agent").exists());
+
+    let context = run(&["--workspace", &workspace, "agent", "context", "--json"]);
+    let context = command_data(&context);
+    assert!(
+        context["context"]
+            .as_str()
+            .expect("context")
+            .contains("Project Rules")
+    );
+}
+
+#[test]
+fn managed_source_tracks_versions_updates_and_composes_new_projects() {
+    let temp = TempDir::new().expect("tempdir");
+    let source = temp.path().join("company-source");
+    let rainy_home = temp.path().join("rainy-home");
+    write_source_fixture(&source, "1.0.0", "module version 1");
+    let workspace = temp.path().to_string_lossy().to_string();
+    let source_path = source.to_string_lossy().to_string();
+    let rainy_home_path = rainy_home.to_string_lossy().to_string();
+    let envs = [("RAINY_HOME", rainy_home_path.as_str())];
+
+    let inspect = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "inspect",
+            &source_path,
+            "--json",
+        ],
+        &envs,
+    );
+    let inspect = command_data(&inspect);
+    assert_eq!(inspect["report"]["operation"], "inspect");
+    assert_eq!(inspect["report"]["sources"][0]["currentVersion"], "1.0.0");
+
+    let preview = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "add",
+            "company",
+            &source_path,
+            "--json",
+        ],
+        &envs,
+    );
+    assert_eq!(command_envelope(&preview)["status"], "preview");
+    assert!(!rainy_home.join("sources.yaml").exists());
+
+    run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "add",
+            "company",
+            &source_path,
+            "--apply",
+            "--json",
+        ],
+        &envs,
+    );
+    assert!(rainy_home.join("sources.yaml").is_file());
+    assert!(rainy_home.join("sources.lock").is_file());
+
+    let resolved = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "resolve",
+            "company",
+            "backend-a",
+            "--json",
+        ],
+        &envs,
+    );
+    let resolved = command_data(&resolved);
+    assert_eq!(
+        resolved["report"]["sources"][0]["contents"][0]["type"],
+        "workspace-module"
+    );
+    let resolved_path = resolved["report"]["sources"][0]["contents"][0]["resolvedPath"]
+        .as_str()
+        .expect("resolved content path");
+    assert!(Path::new(resolved_path).join("module.txt.hbs").is_file());
+
+    let repository_preview = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "new",
+            "repository-preview",
+            "--source",
+            "company",
+            "--git-url",
+            "git@git.example.com:apps/repository-preview.git",
+            "--json",
+        ],
+        &envs,
+    );
+    let repository_preview = command_envelope(&repository_preview);
+    assert_eq!(repository_preview["type"], "source-project");
+    assert_eq!(
+        repository_preview["data"]["remote_url"],
+        "git@git.example.com:apps/repository-preview.git"
+    );
+
+    let current = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "check",
+            "company",
+            "--json",
+        ],
+        &envs,
+    );
+    let current = command_data(&current);
+    assert_eq!(current["report"]["sources"][0]["state"], "current");
+    assert_eq!(current["report"]["sources"][0]["updateAvailable"], false);
+
+    let created = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "new",
+            "source-project",
+            "--source",
+            "company",
+            "--template",
+            "service-base",
+            "--module",
+            "backend-a",
+            "--package",
+            "com.example.source",
+            "--apply",
+            "--json",
+        ],
+        &envs,
+    );
+    assert_eq!(command_envelope(&created)["type"], "source-project");
+    let project = temp.path().join("source-project");
+    assert!(project.join("rainy.yaml").is_file());
+    assert!(project.join("services/backend-a/module.txt").is_file());
+    assert!(project.join(".rainy/project-source.lock").is_file());
+    assert!(
+        fs::read_to_string(project.join("rainy.yaml"))
+            .expect("project config")
+            .contains("com.example.source")
+    );
+
+    let portable_home = temp.path().join("portable-rainy-home");
+    let portable_home_path = portable_home.to_string_lossy().to_string();
+    let portable_env = [("RAINY_HOME", portable_home_path.as_str())];
+    let portable = run_with_env(
+        &[
+            "--workspace",
+            &project.to_string_lossy(),
+            "source",
+            "check",
+            "--project",
+            "--json",
+        ],
+        &portable_env,
+    );
+    let portable = command_data(&portable);
+    assert_eq!(portable["report"]["sources"][0]["state"], "current");
+    run_with_env(
+        &[
+            "--workspace",
+            &project.to_string_lossy(),
+            "source",
+            "update",
+            "--project",
+            "--apply",
+            "--json",
+        ],
+        &portable_env,
+    );
+    assert!(portable_home.join("sources.yaml").is_file());
+    assert!(portable_home.join("sources.lock").is_file());
+
+    let nested = rainy()
+        .current_dir(project.join("services/backend-a"))
+        .env("RAINY_HOME", &rainy_home)
+        .args(["source", "check", "--project", "--json"])
+        .output()
+        .expect("check project Source from a nested directory");
+    assert!(nested.status.success());
+    assert_eq!(
+        command_data(&nested)["report"]["sources"][0]["state"],
+        "current"
+    );
+
+    write_source_fixture(&source, "1.1.0", "module version 2");
+    let changed = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "check",
+            "company",
+            "--json",
+        ],
+        &envs,
+    );
+    let changed = command_data(&changed);
+    assert_eq!(changed["report"]["sources"][0]["state"], "update-available");
+    assert_eq!(changed["report"]["sources"][0]["latestVersion"], "1.1.0");
+
+    let project_changed = run_with_env(
+        &[
+            "--workspace",
+            &project.to_string_lossy(),
+            "source",
+            "check",
+            "--project",
+            "--json",
+        ],
+        &envs,
+    );
+    let project_changed = command_data(&project_changed);
+    assert_eq!(
+        project_changed["report"]["sources"][0]["state"],
+        "update-available"
+    );
+    assert_eq!(
+        project_changed["report"]["sources"][0]["currentVersion"],
+        "1.0.0"
+    );
+
+    let updated = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "update",
+            "company",
+            "--apply",
+            "--json",
+        ],
+        &envs,
+    );
+    let updated = command_data(&updated);
+    assert_eq!(updated["report"]["sources"][0]["currentVersion"], "1.1.0");
+    assert_eq!(updated["report"]["sources"][0]["state"], "updated");
+
+    let project_stale = run_with_env(
+        &[
+            "--workspace",
+            &project.to_string_lossy(),
+            "source",
+            "check",
+            "--project",
+            "--json",
+        ],
+        &envs,
+    );
+    let project_stale = command_data(&project_stale);
+    assert_eq!(
+        project_stale["report"]["sources"][0]["state"],
+        "project-update-available"
+    );
+    assert_eq!(
+        project_stale["report"]["sources"][0]["currentVersion"],
+        "1.0.0"
+    );
+    assert_eq!(
+        project_stale["report"]["sources"][0]["latestVersion"],
+        "1.1.0"
+    );
+
+    write(
+        &rainy_home.join("sources.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: RainySourceCatalog
+sources:
+  company:
+    source: http://127.0.0.1:1/unreachable.zip
+    channel: stable
+"#,
+    );
+    let offline = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "check",
+            "company",
+            "--json",
+        ],
+        &envs,
+    );
+    let offline = command_envelope(&offline);
+    assert_eq!(offline["status"], "warning");
+    assert_eq!(
+        offline["data"]["report"]["sources"][0]["state"],
+        "unreachable"
+    );
+    assert!(rainy_home.join("sources.lock").is_file());
+
+    let provenance = run_with_env(
+        &[
+            "--workspace",
+            &project.to_string_lossy(),
+            "source",
+            "check",
+            "--project",
+            "--json",
+        ],
+        &envs,
+    );
+    let provenance = command_data(&provenance);
+    assert_eq!(
+        provenance["report"]["sources"][0]["state"],
+        "project-update-available"
+    );
+    assert_eq!(provenance["report"]["sources"][0]["latestVersion"], "1.1.0");
+}
+
+#[test]
+fn source_index_installs_a_verified_zip_release() {
+    let temp = TempDir::new().expect("tempdir");
+    let source = temp.path().join("source-content");
+    let server = temp.path().join("server");
+    let rainy_home = temp.path().join("rainy-home");
+    write_source_fixture(&source, "1.2.0", "zip module");
+    fs::create_dir_all(&server).expect("server root");
+    let archive = server.join("company-source-1.2.0.zip");
+    create_zip_from_directory(&source, &archive, "company-source");
+    let digest = file_sha256(&archive);
+    let base_url = serve_static(server.clone(), 3);
+    write(
+        &server.join("rainy-source-index.yaml"),
+        &format!(
+            r#"apiVersion: rainy.dev/v1
+kind: RainySourceIndex
+metadata:
+  name: company-source
+releases:
+  - version: 1.2.0
+    url: company-source-1.2.0.zip
+    sha256: {digest}
+    channel: stable
+x-company-mirror: true
+"#,
+        ),
+    );
+    let workspace = temp.path().to_string_lossy().to_string();
+    let rainy_home_path = rainy_home.to_string_lossy().to_string();
+    let index_url = format!("{base_url}/rainy-source-index.yaml");
+    let envs = [("RAINY_HOME", rainy_home_path.as_str())];
+
+    let installed = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "add",
+            "company-release",
+            &index_url,
+            "--channel",
+            "stable",
+            "--apply",
+            "--json",
+        ],
+        &envs,
+    );
+    let installed = command_data(&installed);
+    assert_eq!(installed["report"]["sources"][0]["sourceType"], "index");
+    assert_eq!(installed["report"]["sources"][0]["currentVersion"], "1.2.0");
+
+    let checked = run_with_env(
+        &[
+            "--workspace",
+            &workspace,
+            "source",
+            "check",
+            "company-release",
+            "--json",
+        ],
+        &envs,
+    );
+    let checked = command_data(&checked);
+    assert_eq!(checked["report"]["sources"][0]["state"], "current");
+    assert_eq!(checked["report"]["sources"][0]["latestVersion"], "1.2.0");
+}
+
 fn rainy() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rainy"));
     command.env("RAINY_ALLOW_NATIVE_PLUGIN", "1");
@@ -5052,6 +5468,105 @@ fn write(path: &Path, content: &str) {
         fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, content).expect("write file");
+}
+
+fn write_source_fixture(root: &Path, version: &str, module_content: &str) {
+    write(
+        &root.join("rainy-source.yaml"),
+        &format!(
+            r#"apiVersion: rainy.dev/v1
+kind: RainySource
+metadata:
+  name: company-source
+  version: {version}
+requires:
+  rainy: ">=0.5.0, <0.6.0"
+contents:
+  - id: service-base
+    type: project-template
+    path: templates/service-base
+    required: true
+  - id: backend-a
+    type: workspace-module
+    path: modules/backend-a
+    defaultTarget: services/backend-a
+x-company-test: true
+"#,
+        ),
+    );
+    write(
+        &root.join("templates/service-base/rainy.yaml.hbs"),
+        r#"apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: "{{ project.name }}"
+  type: service
+paths:
+  backend: services/backend-a
+  frontend: apps/frontend
+  generated: generated
+  evidence: evidence
+package:
+  java: "{{ package.java }}"
+capabilityRegistry:
+  sources: []
+policy: {}
+verify:
+  profiles: {}
+"#,
+    );
+    write(
+        &root.join("templates/service-base/capability.lock.hbs"),
+        r#"lockfileVersion: 1
+project:
+  name: "{{ project.name }}"
+rainy:
+  version: "0.5.0"
+capabilities: {}
+skills: []
+"#,
+    );
+    write(
+        &root.join("modules/backend-a/module.txt.hbs"),
+        &format!("{module_content} for {{{{ project.name }}}}\n"),
+    );
+}
+
+fn create_zip_from_directory(source: &Path, archive: &Path, prefix: &str) {
+    let file = fs::File::create(archive).expect("create source archive");
+    let mut archive = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    add_directory_to_zip(&mut archive, source, source, prefix, options);
+    archive.finish().expect("finish source archive");
+}
+
+fn add_directory_to_zip(
+    archive: &mut zip::ZipWriter<fs::File>,
+    root: &Path,
+    current: &Path,
+    prefix: &str,
+    options: zip::write::SimpleFileOptions,
+) {
+    for entry in fs::read_dir(current).expect("read source fixture") {
+        let entry = entry.expect("source fixture entry");
+        let path = entry.path();
+        let relative = path.strip_prefix(root).expect("relative source path");
+        let name = format!("{prefix}/{}", relative.to_string_lossy().replace('\\', "/"));
+        if entry.file_type().expect("source fixture type").is_dir() {
+            archive
+                .add_directory(format!("{name}/"), options)
+                .expect("add source archive directory");
+            add_directory_to_zip(archive, root, &path, prefix, options);
+        } else {
+            archive
+                .start_file(name, options)
+                .expect("add source archive file");
+            archive
+                .write_all(&fs::read(path).expect("read source archive file"))
+                .expect("write source archive file");
+        }
+    }
 }
 
 fn copy_directory(source: &Path, target: &Path) {

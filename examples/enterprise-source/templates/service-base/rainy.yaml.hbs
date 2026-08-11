@@ -1,0 +1,17 @@
+apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: "{{ project.name }}"
+  type: service
+paths:
+  backend: services/backend
+  frontend: apps/frontend
+  generated: generated
+  evidence: evidence
+package:
+  java: "{{ package.java }}"
+capabilityRegistry:
+  sources: []
+policy: {}
+verify:
+  profiles: {}

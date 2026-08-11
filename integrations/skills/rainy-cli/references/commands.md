@@ -22,6 +22,19 @@ Only initialize when explicitly requested:
 "$RAINY_BIN" --workspace "$PARENT" new <name> --golden-path spring-nextjs-saas --package <java-package> --apply --json
 ```
 
+For an enterprise Source, inspect and register the exact immutable release before project creation:
+
+```sh
+"$RAINY_BIN" --workspace "$PARENT" source inspect "$SOURCE_URL" --ref "$SOURCE_REF" --json
+"$RAINY_BIN" --workspace "$PARENT" source add "$SOURCE_NAME" "$SOURCE_URL" --ref "$SOURCE_REF" --dry-run --json
+"$RAINY_BIN" --workspace "$PARENT" source add "$SOURCE_NAME" "$SOURCE_URL" --ref "$SOURCE_REF" --apply --json
+"$RAINY_BIN" --workspace "$PARENT" new <name> --source "$SOURCE_NAME" --template "$TEMPLATE" --module "$MODULES" --package <java-package> --dry-run --json
+"$RAINY_BIN" --workspace "$PARENT" new <name> --source "$SOURCE_NAME" --template "$TEMPLATE" --module "$MODULES" --package <java-package> --apply --json
+```
+
+Use `--channel`/`--version` for a Rainy Source Index and `--sha256` for a direct archive. Do not combine
+transport-specific options or infer source/module selections.
+
 ## Plan And Apply
 
 Create and review a stable plan file:
@@ -122,6 +135,11 @@ Never infer `--apply` approval from a Comet transition. Use `--force` only after
 "$RAINY_BIN" defaults status --json
 "$RAINY_BIN" defaults install --dry-run --json
 "$RAINY_BIN" defaults doctor --json
+"$RAINY_BIN" source list --json
+"$RAINY_BIN" --workspace "$WORKSPACE" source check --project --json
+"$RAINY_BIN" --workspace "$WORKSPACE" source update --project --json
+"$RAINY_BIN" --workspace "$WORKSPACE" source update --project --apply --json
+"$RAINY_BIN" source resolve "$SOURCE_NAME" "$CONTENT_ID" --json
 "$RAINY_BIN" schema validate --schema org-policy --file "$WORKSPACE/.rainy/org-policy.yaml" --json
 "$RAINY_BIN" conformance check --path "$PACK_ROOT" --json
 "$RAINY_BIN" --workspace "$WORKSPACE" pack install "$PACK_SOURCE" --dry-run --json
@@ -134,3 +152,6 @@ Never infer `--apply` approval from a Comet transition. Use `--force` only after
 Use `git+https://...` for Git, an HTTPS archive plus `--sha256`, or `http+https://.../index.json`.
 Remote content is stored under `RAINY_HOME/registries`; never copy registry caches into the project.
 Require a reviewed plan, checksums, strict verification, and evidence before reporting completion.
+Self-describing Source content is stored under `RAINY_HOME/sources`; generated projects commit only
+`.rainy/project-source.lock`, selected template/module output, and normal project files. Source update
+refreshes the managed cache but never rewrites generated project files.
