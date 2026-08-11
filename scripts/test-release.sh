@@ -24,4 +24,21 @@ if sh "$SCRIPT" main >/dev/null 2>&1; then
   exit 1
 fi
 
+RELEASE_WORKFLOW=".github/workflows/release.yml"
+grep -q '^  push:$' "$RELEASE_WORKFLOW"
+grep -q '^    tags:$' "$RELEASE_WORKFLOW"
+grep -q '^      - "v\*\.\*\.\*"$' "$RELEASE_WORKFLOW"
+if grep -Eq '^  (branches|pull_request|pull_request_target|schedule|workflow_dispatch):' "$RELEASE_WORKFLOW"; then
+  echo "release test: release workflow has a non-tag trigger" >&2
+  exit 1
+fi
+
+for workflow in .github/workflows/ci.yml .github/workflows/security.yml; do
+  grep -q '^  workflow_dispatch:$' "$workflow"
+  if grep -Eq '^  (push|pull_request|pull_request_target|schedule):' "$workflow"; then
+    echo "release test: $workflow has an automatic trigger" >&2
+    exit 1
+  fi
+done
+
 printf '%s\n' 'release input tests passed'

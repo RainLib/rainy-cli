@@ -113,10 +113,11 @@ impl ProgressReporter {
     }
 
     pub fn suspend(&self) -> ProgressSuspension<'_> {
-        if let Some(shared) = &self.shared {
-            if shared.suspended.fetch_add(1, Ordering::SeqCst) == 0 && !self.plain {
-                clear_terminal_line();
-            }
+        if let Some(shared) = &self.shared
+            && shared.suspended.fetch_add(1, Ordering::SeqCst) == 0
+            && !self.plain
+        {
+            clear_terminal_line();
         }
         ProgressSuspension {
             reporter: self,

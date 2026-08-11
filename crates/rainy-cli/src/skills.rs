@@ -2094,16 +2094,15 @@ fn validate_lock(lock: &SkillLock) -> RainyResult<()> {
         if let Some((name, digest)) = managed_paths.insert(
             skill.path.clone(),
             (skill.name.clone(), skill.digest.clone()),
-        ) {
-            if name != skill.name || digest != skill.digest {
-                return Err(RainyError::config(
-                    "SKILL_LOCK_DUPLICATE_PATH",
-                    format!(
-                        "managed Skill path {} has conflicting lock entries",
-                        skill.path
-                    ),
-                ));
-            }
+        ) && (name != skill.name || digest != skill.digest)
+        {
+            return Err(RainyError::config(
+                "SKILL_LOCK_DUPLICATE_PATH",
+                format!(
+                    "managed Skill path {} has conflicting lock entries",
+                    skill.path
+                ),
+            ));
         }
     }
     for id in &lock.custom_skills {

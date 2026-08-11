@@ -196,9 +196,9 @@ rainy skill doctor
 
 ### 8. 发布、安装和自更新
 
-普通 `main` push 不触发 Action。Pull request 运行完整质量门禁、依赖安全策略和三系统原生测试。
-推送 `vX.Y.Z` tag 后，release workflow 再次执行质量与安全门禁，然后统一完成五目标构建和发布；
-打 tag 前应在本地执行 `make production-check`。CodeQL 和依赖扫描还保留每周定时与手动触发入口。
+普通分支 push、`main` push、Pull request 和定时任务都不会自动触发 Action。CI 与 Security
+workflow 仅保留手动诊断入口。推送 `vX.Y.Z` tag 后，release workflow 执行质量与安全门禁，
+然后统一完成五目标构建和发布；打 tag 前应在本地执行 `make production-check`。
 
 Release workflow 仅在推送版本 tag 时运行：
 

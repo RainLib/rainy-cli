@@ -753,7 +753,7 @@ pub enum DefaultsSubcommand {
     Status,
     #[command(
         about = "Install the version-compatible default package",
-        after_help = "EXAMPLES:\n  Preview installation:\n    rainy defaults install\n\n  Install the official package:\n    rainy defaults install --apply\n\n  Install from an enterprise mirror:\n    rainy defaults install --source https://git.example.com/rainy/defaults.git --ref v0.5.1 --apply"
+        after_help = "EXAMPLES:\n  Preview installation:\n    rainy defaults install\n\n  Install the official package:\n    rainy defaults install --apply\n\n  Install from an enterprise mirror:\n    rainy defaults install --source https://git.example.com/rainy/defaults.git --ref v0.5.2 --apply"
     )]
     Install(DefaultsChangeArgs),
     #[command(
@@ -1458,7 +1458,7 @@ pub struct SchemaValidateArgs {
 #[command(
     arg_required_else_help = true,
     about = "Check, install, or skip Rainy CLI updates",
-    after_help = "EXAMPLES:\n  Check for a new release:\n    rainy self check\n\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Skip one offered version:\n    rainy self skip 0.5.1 --apply\n\nRun 'rainy self <COMMAND> --help' for update source and version options."
+    after_help = "EXAMPLES:\n  Check for a new release:\n    rainy self check\n\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Skip one offered version:\n    rainy self skip 0.5.2 --apply\n\nRun 'rainy self <COMMAND> --help' for update source and version options."
 )]
 pub struct SelfCommand {
     #[command(subcommand)]
@@ -1474,12 +1474,12 @@ pub enum SelfSubcommand {
     Check(SelfCheckArgs),
     #[command(
         about = "Download, verify, and install a Rainy CLI release",
-        after_help = "EXAMPLES:\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Install a specific release:\n    rainy self update --version v0.5.1 --apply\n\n  Use a different GitHub repository:\n    rainy self update --repo owner/repo --version v0.5.1 --apply\n\n  Reinstall the current version after review:\n    rainy self update --force --apply"
+        after_help = "EXAMPLES:\n  Preview the latest release update:\n    rainy self update\n\n  Install the latest release:\n    rainy self update --apply\n\n  Install a specific release:\n    rainy self update --version v0.5.2 --apply\n\n  Use a different GitHub repository:\n    rainy self update --repo owner/repo --version v0.5.2 --apply\n\n  Reinstall the current version after review:\n    rainy self update --force --apply"
     )]
     Update(SelfUpdateArgs),
     #[command(
         about = "Skip update notifications for one release",
-        after_help = "EXAMPLES:\n  Preview skipping a specific offered version:\n    rainy self skip 0.5.1\n\n  Skip the version:\n    rainy self skip 0.5.1 --apply\n\n  Skip the latest offered version:\n    rainy self skip --apply\n\n  Use a different GitHub repository:\n    rainy self skip --repo owner/repo 0.5.1 --apply"
+        after_help = "EXAMPLES:\n  Preview skipping a specific offered version:\n    rainy self skip 0.5.2\n\n  Skip the version:\n    rainy self skip 0.5.2 --apply\n\n  Skip the latest offered version:\n    rainy self skip --apply\n\n  Use a different GitHub repository:\n    rainy self skip --repo owner/repo 0.5.2 --apply"
     )]
     Skip(SelfSkipArgs),
 }

@@ -106,14 +106,14 @@ irm https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 | 
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
-RAINY_REPO=owner/repo RAINY_VERSION=v0.5.1 sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.5.2 sh scripts/install.sh
 RAINY_NO_MODIFY_PATH=1 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.5.1 -InstallDir "$HOME\.rainy\bin"
+.\scripts\install.ps1 -Repo owner/repo -Version v0.5.2 -InstallDir "$HOME\.rainy\bin"
 .\scripts\install.ps1 -NoModifyPath
 ```
 
@@ -505,16 +505,16 @@ rainy self check --json
 rainy self check --repo owner/repo
 rainy self update                                      # 预览
 rainy self update --apply                              # 安装最新版
-rainy self update --repo owner/repo --version v0.5.1 --apply
-rainy self skip 0.5.1                                  # 预览
-rainy self skip --repo owner/repo 0.5.1 --apply
+rainy self update --repo owner/repo --version v0.5.2 --apply
+rainy self skip 0.5.2                                  # 预览
+rainy self skip --repo owner/repo 0.5.2 --apply
 ```
 
 release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
 
 ```text
 Rainy CLI update available: 0.1.1 -> 0.2.0.
-Run `rainy self update --apply` to update, or `rainy self skip 0.5.1 --apply` to skip this version.
+Run `rainy self update --apply` to update, or `rainy self skip 0.5.2 --apply` to skip this version.
 ```
 
 自动检查默认行为：
@@ -528,9 +528,9 @@ Run `rainy self update --apply` to update, or `rainy self skip 0.5.1 --apply` to
 
 ## 发布流程
 
-普通 `main` push 不触发任何 Action。Pull request 会运行质量门禁、依赖漏洞/许可证策略检查和
-Linux/macOS/Windows 原生测试；只有推送 `vX.Y.Z` tag 才会执行完整安全门禁、五目标构建与发布。
-CodeQL 与依赖扫描另保留每周定时和手动触发入口。开发者应在打 tag 前本地执行
+普通分支 push、`main` push、Pull request 和定时任务都不会自动触发 Action。CI 与 Security
+workflow 只保留 `workflow_dispatch` 人工诊断入口；只有推送 `vX.Y.Z` tag 才会自动执行完整
+安全门禁、五目标构建与 GitHub Release 发布。开发者应在打 tag 前本地执行
 `make production-check`，本机必须已安装固定主版本的 `cargo-audit` 与 `cargo-deny`。
 
 GitHub Release 由 `.github/workflows/release.yml` 负责。发版前建议本地先跑：
@@ -542,8 +542,8 @@ make release-check
 创建并推送版本标签后会触发 release workflow：
 
 ```bash
-git tag -a v0.5.1 -m "Rainy CLI v0.5.1"
-git push origin v0.5.1
+git tag -a v0.5.2 -m "Rainy CLI v0.5.2"
+git push origin v0.5.2
 ```
 
 release workflow 会先执行格式、测试、clippy、audit/deny、schema、MCP wrapper、PTY 和安装脚本检查，然后分别构建并上传：

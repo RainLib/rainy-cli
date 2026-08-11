@@ -738,10 +738,8 @@ impl CommandOutput {
                         if !registry.installed_skills.is_empty() {
                             println!("    skills   {}", registry.installed_skills.join(", "));
                         }
-                        if verbose {
-                            if let Some(cache_path) = &registry.cache_path {
-                                println!("    cache    {cache_path}");
-                            }
+                        if verbose && let Some(cache_path) = &registry.cache_path {
+                            println!("    cache    {cache_path}");
                         }
                     }
                 }
