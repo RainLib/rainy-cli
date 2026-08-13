@@ -28,6 +28,9 @@ RELEASE_WORKFLOW=".github/workflows/release.yml"
 grep -q '^  push:$' "$RELEASE_WORKFLOW"
 grep -q '^    tags:$' "$RELEASE_WORKFLOW"
 grep -q '^      - "v\*\.\*\.\*"$' "$RELEASE_WORKFLOW"
+grep -q '^          make_latest: true$' "$RELEASE_WORKFLOW"
+grep -q '^      - name: Verify published latest release assets$' "$RELEASE_WORKFLOW"
+grep -q 'releases/latest/download/install.sh' "$RELEASE_WORKFLOW"
 if grep -Eq '^  (branches|pull_request|pull_request_target|schedule|workflow_dispatch):' "$RELEASE_WORKFLOW"; then
   echo "release test: release workflow has a non-tag trigger" >&2
   exit 1

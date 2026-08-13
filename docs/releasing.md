@@ -5,9 +5,10 @@
    Pushes to `main` and pull requests do not trigger GitHub builds.
 3. Create an annotated `vX.Y.Z` tag whose version matches Cargo exactly.
 4. Push the tag. Do not move or reuse an existing release tag.
-5. Confirm all five CLI archives, both Skill archives in tar/zip form, their
-   checksums, both installers, `latest.txt`, SBOM, and build provenance are
-   attached to the GitHub Release.
+5. Confirm the Release is marked **Latest** and all five CLI archives, both Skill
+   archives in tar/zip form, their checksums, both installers, `latest.txt`, SBOM,
+   and build provenance are attached to the GitHub Release. The workflow checks the
+   expected asset names through the GitHub API before its latest-download smoke test.
 6. Run the Unix and Windows installation acceptance tests against the published
    version and verify `rainy --version`.
 7. When an OSS mirror is configured, download the complete release assets and
