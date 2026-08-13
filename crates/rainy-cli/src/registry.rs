@@ -2191,6 +2191,7 @@ fn install_external_registry_skill(
     source: &str,
     skills_package: &str,
 ) -> RainyResult<String> {
+    let legacy_lock = crate::skills::capture_legacy_upstream_lock(workspace)?;
     let agent = skills_agent_name(target)?;
     let executable = std::env::var_os("RAINY_SKILLS_BIN").unwrap_or_else(|| {
         if cfg!(windows) {
@@ -2220,6 +2221,7 @@ fn install_external_registry_skill(
         crate::process::DEFAULT_OUTPUT_LIMIT,
     )?;
     if output.success() {
+        crate::skills::finalize_generated_upstream_lock(workspace, legacy_lock.as_deref())?;
         let destination = workspace.join(registry_skill_target_root(target)?).join(id);
         if !destination.is_dir() || !destination.join("SKILL.md").is_file() {
             return Err(RainyError::registry(
@@ -2232,6 +2234,7 @@ fn install_external_registry_skill(
         }
         return registry_digest(&destination);
     }
+    crate::skills::restore_legacy_upstream_lock(workspace, legacy_lock.as_deref())?;
     Err(RainyError::registry(
         "REGISTRY_EXTERNAL_SKILL_INSTALL_FAILED",
         format!(

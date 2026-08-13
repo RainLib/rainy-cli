@@ -25,6 +25,8 @@ use walkdir::WalkDir;
 const PROFILE_PATH: &str = "rainy-skills.yaml";
 const LOCK_PATH: &str = "skills.lock";
 const CUSTOM_SKILLS_ROOT: &str = "rainy-skills";
+const UPSTREAM_LOCK_PATH: &str = ".rainy/skills/upstream-lock.json";
+const LEGACY_UPSTREAM_LOCK_PATH: &str = "skills-lock.json";
 const COMET_PACKAGE: &str = "@rpamis/comet";
 const SKILLS_PACKAGE: &str = "skills";
 const SUPERPOWERS_PACKAGE: &str = "obra/superpowers";
@@ -839,7 +841,7 @@ fn uninstall(
         }
     }
     if remove_superpowers_local_lock(workspace)? {
-        changed_files.push("skills-lock.json".to_string());
+        changed_files.push(UPSTREAM_LOCK_PATH.to_string());
     }
     for path in [workspace.join(LOCK_PATH), workspace.join(PROFILE_PATH)] {
         if path.exists() {
@@ -1675,8 +1677,8 @@ fn apply_install(
                 changed_files.extend(paths.iter().map(|path| relative_string(workspace, path)));
             }
         }
-        if workspace.join("skills-lock.json").is_file() {
-            changed_files.push("skills-lock.json".to_string());
+        if upstream_lock_path(workspace).is_file() {
+            changed_files.push(UPSTREAM_LOCK_PATH.to_string());
         }
         Some(combine_digests(&comet_digest, &superpowers_digest))
     } else {
@@ -2505,7 +2507,7 @@ fn scan_upstream_for_target(
 }
 
 fn locked_superpowers_names(workspace: &Path) -> RainyResult<BTreeSet<String>> {
-    let path = workspace.join("skills-lock.json");
+    let path = readable_upstream_lock_path(workspace);
     if !path.is_file() {
         return Ok(BTreeSet::new());
     }
@@ -2528,7 +2530,7 @@ fn is_superpowers_lock_entry(value: &serde_json::Value) -> bool {
 }
 
 fn remove_superpowers_local_lock(workspace: &Path) -> RainyResult<bool> {
-    let path = workspace.join("skills-lock.json");
+    let path = readable_upstream_lock_path(workspace);
     if !path.is_file() {
         return Ok(false);
     }
@@ -2616,6 +2618,7 @@ fn run_comet(
 }
 
 fn run_superpowers(workspace: &Path, profile: &SkillProfileConfig) -> RainyResult<String> {
+    let legacy_lock = capture_legacy_upstream_lock(workspace)?;
     let (program, prefix) = skills_program(profile)?;
     let mut command = Command::new(&program);
     command.args(prefix);
@@ -2628,6 +2631,7 @@ fn run_superpowers(workspace: &Path, profile: &SkillProfileConfig) -> RainyResul
         crate::process::DEFAULT_OUTPUT_LIMIT,
     )?;
     if !output.success() {
+        restore_legacy_upstream_lock(workspace, legacy_lock.as_deref())?;
         return Err(RainyError::action(
             "SKILL_SUPERPOWERS_FAILED",
             format!(
@@ -2642,10 +2646,105 @@ fn run_superpowers(workspace: &Path, profile: &SkillProfileConfig) -> RainyResul
             ),
         ));
     }
+    finalize_generated_upstream_lock(workspace, legacy_lock.as_deref())?;
     let mut hasher = Sha256::new();
     hasher.update(output.stdout.as_bytes());
     hasher.update(output.stderr.as_bytes());
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn upstream_lock_path(workspace: &Path) -> PathBuf {
+    workspace.join(UPSTREAM_LOCK_PATH)
+}
+
+fn legacy_upstream_lock_path(workspace: &Path) -> PathBuf {
+    workspace.join(LEGACY_UPSTREAM_LOCK_PATH)
+}
+
+fn readable_upstream_lock_path(workspace: &Path) -> PathBuf {
+    let managed = upstream_lock_path(workspace);
+    if managed.is_file() {
+        managed
+    } else {
+        legacy_upstream_lock_path(workspace)
+    }
+}
+
+pub(crate) fn capture_legacy_upstream_lock(workspace: &Path) -> RainyResult<Option<String>> {
+    let path = legacy_upstream_lock_path(workspace);
+    path.is_file()
+        .then(|| std::fs::read_to_string(path).map_err(Into::into))
+        .transpose()
+}
+
+pub(crate) fn restore_legacy_upstream_lock(
+    workspace: &Path,
+    legacy_lock: Option<&str>,
+) -> RainyResult<()> {
+    let path = legacy_upstream_lock_path(workspace);
+    if let Some(original) = legacy_lock {
+        write_text_atomic(&path, original)?;
+    } else if path.is_file() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn finalize_generated_upstream_lock(
+    workspace: &Path,
+    legacy_lock: Option<&str>,
+) -> RainyResult<()> {
+    let result = migrate_generated_upstream_lock(workspace, legacy_lock);
+    if result.is_err() {
+        restore_legacy_upstream_lock(workspace, legacy_lock)?;
+    }
+    result
+}
+
+fn migrate_generated_upstream_lock(workspace: &Path, legacy_lock: Option<&str>) -> RainyResult<()> {
+    let legacy = legacy_upstream_lock_path(workspace);
+    if !legacy.is_file() {
+        return Ok(());
+    }
+
+    let generated: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&legacy)?)?;
+    let managed = upstream_lock_path(workspace);
+    let merged = if managed.is_file() {
+        let existing: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&managed)?)?;
+        merge_upstream_locks(existing, generated)
+    } else {
+        generated
+    };
+    write_json_atomic(&managed, &merged)?;
+    if legacy_lock.is_some() {
+        restore_legacy_upstream_lock(workspace, legacy_lock)?;
+    } else {
+        std::fs::remove_file(legacy)?;
+    }
+    Ok(())
+}
+
+fn merge_upstream_locks(
+    mut existing: serde_json::Value,
+    generated: serde_json::Value,
+) -> serde_json::Value {
+    let Some(generated_skills) = generated
+        .get("skills")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return generated;
+    };
+    let Some(existing_skills) = existing
+        .get_mut("skills")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return generated;
+    };
+    for (name, entry) in generated_skills {
+        existing_skills.insert(name.clone(), entry.clone());
+    }
+    existing
 }
 
 fn process_status(output: &crate::process::ProcessOutput) -> String {

@@ -684,9 +684,9 @@ rainy registry sync --all-registries --all --apply
 ```bash
 rainy capability list --json
 rainy capability add service-baseline --provider standard \
-  --output-plan plans/service-baseline.json --dry-run
-rainy apply --plan plans/service-baseline.json --dry-run
-rainy apply --plan plans/service-baseline.json --apply
+  --output-plan .rainy/plans/service-baseline.json --dry-run
+rainy apply --plan .rainy/plans/service-baseline.json --dry-run
+rainy apply --plan .rainy/plans/service-baseline.json --apply
 rainy doctor --capability service-baseline --json
 rainy verify --profile ci --capability service-baseline --json
 rainy evidence generate --format all --apply --json

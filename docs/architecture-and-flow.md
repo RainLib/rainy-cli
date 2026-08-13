@@ -135,7 +135,7 @@ Rainy Source 分发到经过摘要校验的用户缓存。Rainy 把固定 Git re
 
 ```text
 rainy capability add <id> --apply
-rainy apply --plan plans/<id>.json --apply
+rainy apply --plan .rainy/plans/<id>.json --apply
 ```
 
 apply 流程是：

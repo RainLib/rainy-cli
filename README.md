@@ -56,6 +56,9 @@ Capability、模板、Skill、Plugin、Policy、CI、版本发布、项目消费
 
 ## 快速开始
 
+日常开发者从安装、创建企业后端、安装 Agent Skill 到项目检查的完整操作，请阅读
+[Rainy CLI 使用手册](docs/user-guide-zh.md)。
+
 查看所有常用维护命令：
 
 ```bash
@@ -420,9 +423,9 @@ rainy capability remove minio-file-storage --dry-run
 计划文件工作流：
 
 ```bash
-rainy capability add minio-file-storage --provider minio --output-plan plans/minio.json
-rainy apply --plan plans/minio.json --dry-run
-rainy apply --plan plans/minio.json --apply
+rainy capability add minio-file-storage --provider minio --output-plan .rainy/plans/minio.json
+rainy apply --plan .rainy/plans/minio.json --dry-run
+rainy apply --plan .rainy/plans/minio.json --apply
 ```
 
 Pack 管理：

@@ -744,7 +744,7 @@ fn resolve_template_init_mode(dry_run: bool, apply: bool) -> RainyResult<bool> {
 fn add_capability(workspace: &Path, args: cli::AddCapabilityArgs) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let result = if let Some(plan_path) = args.plan {
-        let plan = read_plan(&plan_path)?;
+        let plan = read_plan(workspace, &plan_path)?;
         if plan.capability != args.id {
             return Err(RainyError::plan(
                 "PLAN_CAPABILITY_MISMATCH",
@@ -765,7 +765,7 @@ fn add_capability(workspace: &Path, args: cli::AddCapabilityArgs) -> RainyResult
     };
 
     if let Some(path) = args.output_plan {
-        write_json(&path, &result.plan)?;
+        write_json(workspace, &path, &result.plan)?;
     }
 
     finish_capability_changes(workspace, result, apply)
@@ -773,7 +773,7 @@ fn add_capability(workspace: &Path, args: cli::AddCapabilityArgs) -> RainyResult
 
 fn apply_plan_command(workspace: &Path, args: cli::ApplyCommand) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
-    let plan = read_plan(&args.plan)?;
+    let plan = read_plan(workspace, &args.plan)?;
     let result = actions::plan_from_execution_plan(workspace, plan, args.force)?;
     finish_capability_changes(workspace, result, apply)
 }
@@ -785,7 +785,7 @@ fn upgrade_capability(
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let result = actions::plan_upgrade_capability(workspace, &args.id, args.force)?;
     if let Some(path) = args.output_plan {
-        write_json(&path, &result.plan)?;
+        write_json(workspace, &path, &result.plan)?;
     }
     finish_capability_changes(workspace, result, apply)
 }
@@ -797,7 +797,7 @@ fn remove_capability(
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let result = actions::plan_remove_capability(workspace, &args.id)?;
     if let Some(path) = args.output_plan {
-        write_json(&path, &result.plan)?;
+        write_json(workspace, &path, &result.plan)?;
     }
     finish_capability_changes(workspace, result, apply)
 }
@@ -827,16 +827,26 @@ fn finish_capability_changes(
     }
 }
 
-fn read_plan(path: &Path) -> RainyResult<actions::ExecutionPlan> {
+fn read_plan(workspace: &Path, path: &Path) -> RainyResult<actions::ExecutionPlan> {
+    let path = workspace_relative_path(workspace, path);
     let content = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&content)?)
 }
 
-fn write_json(path: &PathBuf, value: &impl serde::Serialize) -> RainyResult<()> {
+fn write_json(workspace: &Path, path: &Path, value: &impl serde::Serialize) -> RainyResult<()> {
+    let path = workspace_relative_path(workspace, path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let content = serde_json::to_string_pretty(value)?;
     std::fs::write(path, format!("{content}\n"))?;
     Ok(())
+}
+
+fn workspace_relative_path(workspace: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    }
 }

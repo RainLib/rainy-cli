@@ -156,7 +156,7 @@ on the next install.
 - Selected project Skill IDs, installed host paths, and SHA-256 content digests
 - Installer output digest and installation timestamp
 
-`skills-lock.json` is the pinned `skills` CLI's project index and should be committed as well. Rainy reads only entries sourced from `obra/superpowers`; unrelated Skill entries are preserved during uninstall.
+Rainy stores the `skills` CLI index that it creates at `.rainy/skills/upstream-lock.json`, keeping generated JSON out of the project root. If an existing tool owns root-level `skills-lock.json`, Rainy preserves it and records the installer output in `.rainy/skills/upstream-lock.json`; existing root-level locks remain readable for compatibility. Rainy reads only entries sourced from `obra/superpowers`; unrelated Skill entries are preserved during uninstall.
 
 `.comet/config.yaml` remains Comet-owned. Rainy merges `auto_transition: false` into it after install/update.
 

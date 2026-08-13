@@ -1945,9 +1945,11 @@ printf '%s\n' '{"status":"ok"}'
     assert!(!app.join(".agents/skills/using-superpowers").exists());
     assert!(!app.join(".agents/skills/brainstorming").exists());
     assert!(!app.join(".agents/skills/custom-superpower").exists());
-    let upstream_lock = fs::read_to_string(app.join("skills-lock.json")).expect("upstream lock");
+    let upstream_lock = fs::read_to_string(app.join(".rainy/skills/upstream-lock.json"))
+        .expect("managed upstream lock");
     assert!(upstream_lock.contains("unrelated"));
     assert!(!upstream_lock.contains("using-superpowers"));
+    assert!(!app.join("skills-lock.json").exists());
     assert!(!app.join("rainy-skills.yaml").exists());
 }
 
@@ -3158,6 +3160,32 @@ fn plan_file_apply_remove_upgrade_and_skill_sync() {
         serde_json::from_slice(&fs::read(&legacy_plan_path).expect("legacy plan"))
             .expect("legacy plan JSON");
     assert_eq!(canonical, legacy, "legacy add command changed behavior");
+    run(&[
+        "--workspace",
+        &app_path,
+        "capability",
+        "add",
+        "minio-file-storage",
+        "--dry-run",
+        "--output-plan",
+        ".rainy/plans/minio-plan.json",
+    ]);
+    assert!(
+        app.join(".rainy/plans/minio-plan.json").is_file(),
+        "relative output plan belongs to the selected workspace"
+    );
+    assert!(
+        !Path::new(".rainy/plans/minio-plan.json").is_file(),
+        "relative output plan must not be written under the caller directory"
+    );
+    run(&[
+        "--workspace",
+        &app_path,
+        "apply",
+        "--plan",
+        ".rainy/plans/minio-plan.json",
+        "--dry-run",
+    ]);
     run(&[
         "--workspace",
         &app_path,
@@ -4822,7 +4850,7 @@ fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
     );
     write(
         &runner,
-        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > \"$RAINY_TEST_SKILLS_INVOCATION\"\nmkdir -p \"$PWD/.agents/skills/dependencies-gradle-common\"\nprintf '%s\\n' '---' 'name: dependencies-gradle-common' 'description: test external skill' '---' > \"$PWD/.agents/skills/dependencies-gradle-common/SKILL.md\"\n",
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > \"$RAINY_TEST_SKILLS_INVOCATION\"\nmkdir -p \"$PWD/.agents/skills/dependencies-gradle-common\"\nprintf '%s\\n' '---' 'name: dependencies-gradle-common' 'description: test external skill' '---' > \"$PWD/.agents/skills/dependencies-gradle-common/SKILL.md\"\nprintf '%s\\n' '{\"version\":1,\"skills\":{\"dependencies-gradle-common\":{\"source\":\"https://git.example.com/build/dependencies-gradle-common\"}}}' > \"$PWD/skills-lock.json\"\n",
     );
     let mut permissions = fs::metadata(&runner)
         .expect("runner metadata")
@@ -4849,6 +4877,8 @@ fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
         "{}",
         String::from_utf8_lossy(&add.stderr)
     );
+    let legacy_lock = "{\"version\":1,\"skills\":{\"user-owned\":{\"source\":\"https://example.com/user-skill\"}}}\n";
+    fs::write(app.join("skills-lock.json"), legacy_lock).expect("write user-owned root lock");
 
     let sync = rainy()
         .args([
@@ -4884,6 +4914,13 @@ fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
         app.join(".agents/skills/dependencies-gradle-common/SKILL.md")
             .is_file()
     );
+    assert_eq!(
+        fs::read_to_string(app.join("skills-lock.json")).expect("preserved root lock"),
+        legacy_lock
+    );
+    let upstream_lock = fs::read_to_string(app.join(".rainy/skills/upstream-lock.json"))
+        .expect("managed external Skill lock");
+    assert!(upstream_lock.contains("dependencies-gradle-common"));
     let lock = fs::read_to_string(app.join(".rainy/registry.lock")).expect("registry lock");
     assert!(lock.contains("kind: external"));
     assert!(lock.contains("source: https://git.example.com/build/dependencies-gradle-common"));

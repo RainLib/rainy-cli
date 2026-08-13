@@ -409,7 +409,7 @@ pub struct SourceRemoveArgs {
 #[command(
     arg_required_else_help = true,
     about = "Add a capability and generate or execute its change plan",
-    after_help = "EXAMPLES:\n  Preview a capability change:\n    rainy add capability minio-file-storage --provider minio --dry-run\n\n  Apply the capability change:\n    rainy add capability minio-file-storage --provider minio --apply"
+    after_help = "EXAMPLES:\n  Preview a capability change:\n    rainy add capability minio-file-storage --provider minio --dry-run\n\n  Save a reviewable plan:\n    rainy add capability minio-file-storage --output-plan .rainy/plans/minio-file-storage.json\n\n  Apply the capability change:\n    rainy add capability minio-file-storage --provider minio --apply"
 )]
 pub struct AddCommand {
     #[command(subcommand)]
@@ -420,7 +420,7 @@ pub struct AddCommand {
 pub enum AddSubcommand {
     #[command(
         about = "Add a capability to the workspace",
-        after_help = "EXAMPLES:\n  Preview a provider selection:\n    rainy add capability minio-file-storage --provider minio --dry-run\n\n  Save the generated plan for review:\n    rainy add capability minio-file-storage --output-plan plans/minio.json\n\n  Apply a reviewed plan:\n    rainy add capability minio-file-storage --plan plans/minio.json --apply"
+        after_help = "EXAMPLES:\n  Preview a provider selection:\n    rainy add capability minio-file-storage --provider minio --dry-run\n\n  Save the generated plan for review:\n    rainy add capability minio-file-storage --output-plan .rainy/plans/minio.json\n\n  Apply a reviewed plan:\n    rainy add capability minio-file-storage --plan .rainy/plans/minio.json --apply"
     )]
     Capability(AddCapabilityArgs),
 }
@@ -459,7 +459,7 @@ pub struct AddCapabilityArgs {
 #[derive(Debug, Args)]
 #[command(
     about = "Apply a previously generated Rainy change plan",
-    after_help = "EXAMPLES:\n  Preview a saved plan:\n    rainy apply --plan plans/minio.json --dry-run\n\n  Apply a reviewed plan:\n    rainy apply --plan plans/minio.json --apply\n\n  Continue after reviewing conflicts:\n    rainy apply --plan plans/minio.json --apply --force"
+    after_help = "EXAMPLES:\n  Preview a saved plan:\n    rainy apply --plan .rainy/plans/minio.json --dry-run\n\n  Apply a reviewed plan:\n    rainy apply --plan .rainy/plans/minio.json --apply\n\n  Continue after reviewing conflicts:\n    rainy apply --plan .rainy/plans/minio.json --apply --force"
 )]
 pub struct ApplyCommand {
     /// Rainy JSON change plan to execute.
@@ -494,7 +494,7 @@ pub struct CapabilityCommand {
 pub enum CapabilitySubcommand {
     #[command(
         about = "Add a capability to the workspace",
-        after_help = "EXAMPLES:\n  Preview a provider selection:\n    rainy capability add minio-file-storage --provider minio --dry-run\n\n  Save the generated plan for review:\n    rainy capability add minio-file-storage --output-plan plans/minio.json\n\n  Apply a reviewed plan:\n    rainy capability add minio-file-storage --plan plans/minio.json --apply"
+        after_help = "EXAMPLES:\n  Preview a provider selection:\n    rainy capability add minio-file-storage --provider minio --dry-run\n\n  Save the generated plan for review:\n    rainy capability add minio-file-storage --output-plan .rainy/plans/minio.json\n\n  Apply a reviewed plan:\n    rainy capability add minio-file-storage --plan .rainy/plans/minio.json --apply"
     )]
     Add(AddCapabilityArgs),
     #[command(

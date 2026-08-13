@@ -217,6 +217,8 @@ rainy doctor --capability <CAPABILITY_ID>
 rainy verify --profile local --capability <CAPABILITY_ID>
 ```
 
+Relative `--plan` and `--output-plan` paths are resolved from the selected workspace. Use an absolute path only when a plan intentionally belongs outside that workspace.
+
 升级和删除同样默认只预览：
 
 ```bash
