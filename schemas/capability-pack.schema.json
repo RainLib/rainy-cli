@@ -33,6 +33,21 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "externalSkills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "source", "skillsPackage"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+              "source": { "type": "string", "minLength": 1 },
+              "skillsPackage": { "type": "string", "pattern": "^skills@[^@*^~]+$" },
+              "allowPrivateHttp": { "type": "boolean", "default": false },
+              "description": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
         "plugins": {
           "type": "array",
           "items": { "type": "string" }

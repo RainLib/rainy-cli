@@ -160,6 +160,9 @@ fn check_pack(
             checks,
         );
     }
+    for external_skill in &pack.exports.external_skills {
+        check_external_skill_export(&pack.metadata.name, external_skill, checks);
+    }
     for plugin_path in &pack.exports.plugins {
         check_pack_export(
             root,
@@ -171,6 +174,64 @@ fn check_pack(
         );
     }
     Ok(())
+}
+
+fn check_external_skill_export(
+    pack_name: &str,
+    skill: &crate::registry::ExternalSkillExport,
+    checks: &mut Vec<ConformanceCheck>,
+) {
+    let id = skill.id.as_str();
+    let valid_id = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    checks.push(if valid_id {
+        passed(
+            format!("external-skill:{pack_name}:{id}:id"),
+            "external Skill ID is valid",
+        )
+    } else {
+        failed(
+            format!("external-skill:{pack_name}:{id}:id"),
+            "external Skill ID must contain 1-64 ASCII letters, digits, '-' or '_'",
+        )
+    });
+    let source_ok = crate::security::validate_git_with_private_http(
+        &skill.source,
+        false,
+        skill.allow_private_http,
+    )
+    .is_ok();
+    checks.push(if source_ok {
+        passed(
+            format!("external-skill:{pack_name}:{id}:source"),
+            "external Skill source is an allowed Git URL",
+        )
+    } else {
+        failed(
+            format!("external-skill:{pack_name}:{id}:source"),
+            "external Skill source must be HTTPS, SSH, or explicitly allowed private HTTP without credentials",
+        )
+    });
+    let pinned_installer = skill
+        .skills_package
+        .strip_prefix("skills@")
+        .is_some_and(|version| {
+            !version.is_empty() && version != "latest" && !version.contains(['*', '^', '~'])
+        });
+    checks.push(if pinned_installer {
+        passed(
+            format!("external-skill:{pack_name}:{id}:installer"),
+            "external Skill installer is pinned",
+        )
+    } else {
+        failed(
+            format!("external-skill:{pack_name}:{id}:installer"),
+            "external Skill skillsPackage must use an exact skills@<VERSION> value",
+        )
+    });
 }
 
 fn check_pack_export(

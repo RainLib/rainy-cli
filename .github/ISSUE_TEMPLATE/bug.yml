@@ -6,7 +6,7 @@ body:
     id: version
     attributes:
       label: Rainy version
-      placeholder: rainy 0.5.3
+      placeholder: rainy 0.5.4
     validations:
       required: true
   - type: input

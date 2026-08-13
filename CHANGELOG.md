@@ -6,6 +6,8 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ### Added
 
+- Added Pack-managed `externalSkills`: enterprise packages can expose a reviewed Git Skill source
+  installed only after explicit selection through a pinned `skills@<VERSION>` CLI.
 - Added `project-template-catalog` as a validated Rainy Source content type so multiple enterprise
   Sources can distribute template catalogs through the existing immutable cache and update flow.
 - Added automatic interactive aggregation of local and Source-managed enterprise templates.
@@ -14,7 +16,7 @@ All notable changes are documented here. Rainy follows Semantic Versioning.
 
 ### Changed
 
-- Bumped the development version to 0.5.3 and aligned enterprise package compatibility examples.
+- Bumped the development version to 0.5.4 and aligned enterprise package compatibility examples.
 - Doctor now validates project-template provenance when the lock is present.
 
 ### Tests

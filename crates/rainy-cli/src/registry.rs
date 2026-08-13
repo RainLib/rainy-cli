@@ -14,6 +14,7 @@ use inquire::{InquireError, MultiSelect};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -62,8 +63,25 @@ pub struct PackExports {
     pub validators: Vec<String>,
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Skills maintained in another Git repository and installed through the pinned
+    /// `skills` CLI. They are intentionally separate from local directory exports.
+    #[serde(rename = "externalSkills", default)]
+    pub external_skills: Vec<ExternalSkillExport>,
     #[serde(default)]
     pub plugins: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalSkillExport {
+    pub id: String,
+    pub source: String,
+    #[serde(rename = "skillsPackage")]
+    pub skills_package: String,
+    #[serde(rename = "allowPrivateHttp", default)]
+    pub allow_private_http: bool,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,7 +114,17 @@ pub struct RegistryInfo {
 struct RegistrySkillExport {
     id: String,
     pack: String,
-    source: PathBuf,
+    description: Option<String>,
+    source: RegistrySkillSource,
+}
+
+#[derive(Debug, Clone)]
+enum RegistrySkillSource {
+    Local(PathBuf),
+    External {
+        source: String,
+        skills_package: String,
+    },
 }
 
 struct RegistrySkillInstallOptions<'a> {
@@ -885,7 +913,13 @@ fn registry_info(
                 locked
                     .installed_skills
                     .iter()
-                    .map(|skill| format!("{} ({})", skill.id, skill.target))
+                    .map(|skill| {
+                        if skill.kind == "external" {
+                            format!("{} ({}; external)", skill.id, skill.target)
+                        } else {
+                            format!("{} ({})", skill.id, skill.target)
+                        }
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -1662,7 +1696,30 @@ fn discover_registry_skills(registry_root: &Path) -> RainyResult<Vec<RegistrySki
             exports.push(RegistrySkillExport {
                 id,
                 pack: pack.metadata.name.clone(),
-                source,
+                description: None,
+                source: RegistrySkillSource::Local(source),
+            });
+        }
+        for external in pack.exports.external_skills {
+            validate_external_skill_export(&external)?;
+            if let Some(existing_pack) = ids.insert(external.id.clone(), pack.metadata.name.clone())
+            {
+                return Err(RainyError::registry(
+                    "REGISTRY_SKILL_DUPLICATE",
+                    format!(
+                        "Skill ID {} is exported by both {existing_pack} and {}; enterprise Skill IDs must be unique",
+                        external.id, pack.metadata.name
+                    ),
+                ));
+            }
+            exports.push(RegistrySkillExport {
+                id: external.id,
+                pack: pack.metadata.name.clone(),
+                description: external.description,
+                source: RegistrySkillSource::External {
+                    source: external.source,
+                    skills_package: external.skills_package,
+                },
             });
         }
     }
@@ -1714,7 +1771,21 @@ fn select_registry_skill_ids(
         .collect::<BTreeSet<_>>();
     let labels = exports
         .iter()
-        .map(|export| format!("{:<28} from {}", export.id, export.pack))
+        .map(|export| {
+            let source_kind = match export.source {
+                RegistrySkillSource::Local(_) => "local",
+                RegistrySkillSource::External { .. } => "download",
+            };
+            let detail = export
+                .description
+                .as_deref()
+                .map(|description| format!(" - {description}"))
+                .unwrap_or_default();
+            format!(
+                "{:<28} {source_kind:8} from {}{detail}",
+                export.id, export.pack
+            )
+        })
         .collect::<Vec<_>>();
     let defaults = if previous_ids.is_empty() {
         vec![true; exports.len()]
@@ -1817,7 +1888,37 @@ fn install_discovered_registry_skills(
                 continue;
             }
             let destination = workspace.join(&relative);
-            let incoming_digest = registry_digest(&export.source)?;
+            let (incoming_digest, kind, source, installer) = match &export.source {
+                RegistrySkillSource::Local(source) => {
+                    (registry_digest(source)?, "local".to_string(), None, None)
+                }
+                RegistrySkillSource::External {
+                    source,
+                    skills_package,
+                    ..
+                } => (
+                    declared_external_skill_digest(source, skills_package, target),
+                    "external".to_string(),
+                    Some(source.clone()),
+                    Some(skills_package.clone()),
+                ),
+            };
+            if kind == "external" {
+                planned.push((
+                    config::InstalledRegistrySkill {
+                        id: export.id.clone(),
+                        target: target.clone(),
+                        path: relative_text,
+                        digest: incoming_digest,
+                        kind,
+                        source,
+                        installer,
+                    },
+                    export.source.clone(),
+                    destination,
+                ));
+                continue;
+            }
             if destination.exists() {
                 if !destination.is_dir() {
                     return Err(RainyError::registry(
@@ -1853,6 +1954,9 @@ fn install_discovered_registry_skills(
                     target: target.clone(),
                     path: relative_text,
                     digest: incoming_digest,
+                    kind,
+                    source,
+                    installer,
                 },
                 export.source.clone(),
                 destination,
@@ -1869,6 +1973,11 @@ fn install_discovered_registry_skills(
         .iter()
         .filter(|item| !planned_paths.contains(item.path.as_str()))
     {
+        if item.kind == "external" {
+            // The external `skills` CLI owns its host directory. Removing it here could
+            // delete unrelated user-managed files, so Rainy only stops tracking it.
+            continue;
+        }
         validate_relative_registry_file(&item.path)?;
         let destination = workspace.join(&item.path);
         if destination.exists() {
@@ -1929,7 +2038,28 @@ fn install_discovered_registry_skills(
             std::fs::remove_dir_all(destination)?;
         }
     }
-    for (item, source, destination) in &planned {
+    for (item, source, destination) in &mut planned {
+        if item.kind == "external" {
+            let RegistrySkillSource::External {
+                source,
+                skills_package,
+                ..
+            } = source
+            else {
+                return Err(RainyError::registry(
+                    "REGISTRY_EXTERNAL_SKILL_INVALID",
+                    format!("external Skill {} has no external source", item.id),
+                ));
+            };
+            item.digest = install_external_registry_skill(
+                workspace,
+                &item.target,
+                &item.id,
+                source,
+                skills_package,
+            )?;
+            continue;
+        }
         if destination.exists()
             && registry_digest(destination).is_ok_and(|digest| digest == item.digest)
         {
@@ -1937,6 +2067,12 @@ fn install_discovered_registry_skills(
         }
         let staging = staging_path(destination);
         reset_staging(&staging)?;
+        let RegistrySkillSource::Local(source) = source else {
+            return Err(RainyError::registry(
+                "REGISTRY_SKILL_INVALID",
+                format!("local Skill {} has no local source", item.id),
+            ));
+        };
         copy_directory_secure(source, &staging)?;
         atomic_replace_directory(&staging, destination)?;
     }
@@ -1958,7 +2094,190 @@ fn validate_installed_registry_skill(skill: &config::InstalledRegistrySkill) -> 
             ),
         ));
     }
+    match skill.kind.as_str() {
+        "local" => {}
+        "external" => {
+            if skill.source.as_deref().is_none() || skill.installer.as_deref().is_none() {
+                return Err(RainyError::registry(
+                    "REGISTRY_EXTERNAL_SKILL_LOCK_INVALID",
+                    format!(
+                        "external Skill {} is missing source or installer metadata",
+                        skill.id
+                    ),
+                ));
+            }
+        }
+        _ => {
+            return Err(RainyError::registry(
+                "REGISTRY_SKILL_LOCK_INVALID",
+                format!("unsupported locked Skill kind: {}", skill.kind),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn validate_external_skill_export(export: &ExternalSkillExport) -> RainyResult<()> {
+    validate_registry_skill_id(&export.id)?;
+    crate::security::validate_git_with_private_http(
+        &export.source,
+        false,
+        export.allow_private_http,
+    )
+    .map_err(|reason| {
+        RainyError::registry(
+            "REGISTRY_EXTERNAL_SKILL_SOURCE_INVALID",
+            format!(
+                "external Skill {} source is not allowed: {reason}",
+                export.id
+            ),
+        )
+    })?;
+    let (package, version) = export.skills_package.rsplit_once('@').ok_or_else(|| {
+        RainyError::registry(
+            "REGISTRY_EXTERNAL_SKILL_INSTALLER_INVALID",
+            format!(
+                "external Skill {} skillsPackage must pin an exact package version, for example skills@1.5.20",
+                export.id
+            ),
+        )
+    })?;
+    if package != "skills"
+        || version.is_empty()
+        || version == "latest"
+        || version.contains(['*', '^', '~'])
+    {
+        return Err(RainyError::registry(
+            "REGISTRY_EXTERNAL_SKILL_INSTALLER_INVALID",
+            format!(
+                "external Skill {} skillsPackage must use an exact skills@<VERSION> value",
+                export.id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_registry_skill_id(id: &str) -> RainyResult<()> {
+    if !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Ok(());
+    }
+    Err(RainyError::registry(
+        "REGISTRY_SKILL_INVALID",
+        "Skill ID must contain 1-64 ASCII letters, digits, '-' or '_'",
+    ))
+}
+
+fn declared_external_skill_digest(source: &str, skills_package: &str, target: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"rainy.external-skill.v1\0");
+    digest.update(source.as_bytes());
+    digest.update(b"\0");
+    digest.update(skills_package.as_bytes());
+    digest.update(b"\0");
+    digest.update(target.as_bytes());
+    hex(&digest.finalize())
+}
+
+fn install_external_registry_skill(
+    workspace: &Path,
+    target: &str,
+    id: &str,
+    source: &str,
+    skills_package: &str,
+) -> RainyResult<String> {
+    let agent = skills_agent_name(target)?;
+    let executable = std::env::var_os("RAINY_SKILLS_BIN").unwrap_or_else(|| {
+        if cfg!(windows) {
+            OsString::from("npx.cmd")
+        } else {
+            OsString::from("npx")
+        }
+    });
+    let mut command = std::process::Command::new(&executable);
+    command
+        .args([OsStr::new("--yes"), OsStr::new("--package")])
+        .arg(OsString::from(skills_package))
+        .arg(OsStr::new("skills"))
+        .arg(OsStr::new("add"))
+        .arg(OsString::from(source))
+        .args([
+            OsStr::new("--yes"),
+            OsStr::new("--copy"),
+            OsStr::new("--agent"),
+        ])
+        .arg(OsStr::new(agent))
+        .current_dir(workspace);
+    let output = crate::process::run_command(
+        command,
+        &executable,
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if output.success() {
+        let destination = workspace.join(registry_skill_target_root(target)?).join(id);
+        if !destination.is_dir() || !destination.join("SKILL.md").is_file() {
+            return Err(RainyError::registry(
+                "REGISTRY_EXTERNAL_SKILL_INSTALL_INCOMPLETE",
+                format!(
+                    "external Skill {id} completed but did not create {}; verify the declared id and the skills CLI target mapping",
+                    destination.join("SKILL.md").display()
+                ),
+            ));
+        }
+        return registry_digest(&destination);
+    }
+    Err(RainyError::registry(
+        "REGISTRY_EXTERNAL_SKILL_INSTALL_FAILED",
+        format!(
+            "external Skill {id} installer exited with {}: {}",
+            process_status(&output),
+            truncate_registry_output(&output.stderr, 3000)
+        ),
+    ))
+}
+
+fn skills_agent_name(target: &str) -> RainyResult<&'static str> {
+    match target {
+        "universal" => Ok("universal"),
+        "codex" => Ok("codex"),
+        "claude" => Ok("claude-code"),
+        "cursor" => Ok("cursor"),
+        "github-copilot" => Ok("github-copilot"),
+        "gemini" => Ok("gemini-cli"),
+        "opencode" => Ok("opencode"),
+        _ => Err(RainyError::registry(
+            "REGISTRY_SKILL_TARGET_UNSUPPORTED",
+            format!("unsupported Skill target: {target}"),
+        )),
+    }
+}
+
+fn process_status(output: &crate::process::ProcessOutput) -> String {
+    if output.termination == crate::process::Termination::TimedOut {
+        "timeout".to_string()
+    } else if output.termination == crate::process::Termination::Cancelled {
+        "cancelled".to_string()
+    } else {
+        output
+            .status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "unknown status".to_string())
+    }
+}
+
+fn truncate_registry_output(value: &str, limit: usize) -> String {
+    let value = value.trim();
+    if value.chars().count() <= limit {
+        value.to_string()
+    } else {
+        format!("{}...", value.chars().take(limit).collect::<String>())
+    }
 }
 
 fn pack_roots(root: &Path) -> RainyResult<Vec<PathBuf>> {

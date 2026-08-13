@@ -592,7 +592,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install Rainy
-        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.3/install.sh | RAINY_VERSION=v0.5.3 sh
+        run: curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.4/install.sh | RAINY_VERSION=v0.5.4 sh
       - name: Validate packs
         run: |
           for pack in */pack.yaml; do
@@ -622,7 +622,7 @@ validate-rainy-registry:
   image: ubuntu:24.04
   before_script:
     - apt-get update && apt-get install -y curl git ca-certificates
-    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.3/install.sh | RAINY_VERSION=v0.5.3 sh
+    - curl -fsSL https://github.com/RainLib/rainy-cli/releases/download/v0.5.4/install.sh | RAINY_VERSION=v0.5.4 sh
   script:
     - find . -name pack.yaml -print0 | xargs -0 -n1 ~/.rainy/bin/rainy schema validate --schema capability-pack --file
     - ~/.rainy/bin/rainy conformance check --path . --json

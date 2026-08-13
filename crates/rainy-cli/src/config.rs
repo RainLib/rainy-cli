@@ -218,10 +218,22 @@ pub struct InstalledRegistrySkill {
     pub target: String,
     pub path: String,
     pub digest: String,
+    /// `local` Skills are copied from the verified registry cache. `external` Skills are
+    /// installed by the pinned `skills` CLI from a declared enterprise source.
+    #[serde(default = "default_registry_skill_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installer: Option<String>,
 }
 
 fn registry_lock_version() -> u32 {
     1
+}
+
+fn default_registry_skill_kind() -> String {
+    "local".to_string()
 }
 
 impl RegistrySourceConfig {

@@ -114,6 +114,27 @@ x-company-classification: internal
 打包在 Source 中，两种方式可以并存。一个 Source 可以声明多个 `project-template`，创建时只能选择一个。`workspace-module` 可以多选，
 `required: true` 的模块会始终启用。多个内容渲染到同一路径时 Rainy 会失败，不会覆盖先前内容。
 
+Pack 还可以通过 `exports.externalSkills` 声明由独立仓库维护的下载型 Skill。此类 Skill 不会被复制
+进 Source 缓存；Rainy 在用户明确选择后使用固定版本的 `skills` CLI 安装，并在项目 Registry lock 中
+记录来源和安装器版本：
+
+```yaml
+exports:
+  skills:
+    - skills/company-delivery
+  externalSkills:
+    - id: company-gradle-conventions
+      source: https://git.example.com/build/gradle-conventions-skills
+      skillsPackage: skills@1.5.20
+      description: Company Gradle dependency and build workflow
+```
+
+使用 SSH 或 HTTPS。企业私网 HTTP 必须逐项设置 `allowPrivateHttp: true`，且只能指向私网或 loopback
+地址。URL 中不能出现用户名、密码、Token 或敏感查询参数。`skillsPackage` 必须是精确的
+`skills@<VERSION>`，禁止 `latest`、范围和通配符。下载型 Skill 与本地导出的 Skill 出现在同一选择器；
+通过 `rainy registry sync ... --install-skills --skill <ID> --apply` 安装。Rainy 不会自动移除外部
+安装器写入的目录；清理此类目录应使用对应安装器提供的卸载方式或人工审阅后处理。
+
 `.hbs` 文件的内容和路径支持以下变量：
 
 - `{{ project.name }}`

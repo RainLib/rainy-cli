@@ -4795,6 +4795,101 @@ exports:
     assert!(cache.exists(), "shared registry cache was deleted");
 }
 
+#[cfg(unix)]
+#[test]
+fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&[
+        "--workspace",
+        &root,
+        "new",
+        "external-skill-demo",
+        "--apply",
+    ]);
+    let app = temp.path().join("external-skill-demo");
+    let app_path = app.to_string_lossy().to_string();
+    let source = temp.path().join("enterprise-registry");
+    let rainy_home = temp.path().join("rainy-home");
+    let invocation = temp.path().join("skills-invocation.txt");
+    let runner = temp.path().join("fake-skills");
+
+    write(
+        &source.join("build/pack.yaml"),
+        "apiVersion: rainy.dev/v1\nkind: CapabilityPack\nmetadata:\n  name: build\n  version: 1.0.0\nexports:\n  capabilities: []\n  validators: []\n  skills: []\n  externalSkills:\n    - id: dependencies-gradle-common\n      source: https://git.example.com/build/dependencies-gradle-common\n      skillsPackage: skills@1.5.20\n      description: Shared Gradle build conventions\n  plugins: []\n",
+    );
+    write(
+        &runner,
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > \"$RAINY_TEST_SKILLS_INVOCATION\"\nmkdir -p \"$PWD/.agents/skills/dependencies-gradle-common\"\nprintf '%s\\n' '---' 'name: dependencies-gradle-common' 'description: test external skill' '---' > \"$PWD/.agents/skills/dependencies-gradle-common/SKILL.md\"\n",
+    );
+    let mut permissions = fs::metadata(&runner)
+        .expect("runner metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&runner, permissions).expect("make runner executable");
+
+    let source_path = source.to_string_lossy().to_string();
+    let add = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "add",
+            "company",
+            &source_path,
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .output()
+        .expect("add registry");
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let sync = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "registry",
+            "sync",
+            "company",
+            "--module",
+            "build",
+            "--install-skills",
+            "--target",
+            "codex",
+            "--skill",
+            "dependencies-gradle-common",
+            "--apply",
+        ])
+        .env("RAINY_HOME", &rainy_home)
+        .env("RAINY_SKILLS_BIN", &runner)
+        .env("RAINY_TEST_SKILLS_INVOCATION", &invocation)
+        .output()
+        .expect("install external enterprise Skill");
+    assert!(
+        sync.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    let args = fs::read_to_string(&invocation).expect("recorded skills arguments");
+    assert!(args.contains("--yes\n--package\nskills@1.5.20\nskills\nadd"));
+    assert!(args.contains("https://git.example.com/build/dependencies-gradle-common"));
+    assert!(args.contains("--copy\n--agent\ncodex"));
+    assert!(
+        app.join(".agents/skills/dependencies-gradle-common/SKILL.md")
+            .is_file()
+    );
+    let lock = fs::read_to_string(app.join(".rainy/registry.lock")).expect("registry lock");
+    assert!(lock.contains("kind: external"));
+    assert!(lock.contains("source: https://git.example.com/build/dependencies-gradle-common"));
+    assert!(lock.contains("installer: skills@1.5.20"));
+}
+
 #[test]
 fn archive_registry_verifies_sidecar_and_extracts_selected_modules() {
     let temp = TempDir::new().expect("tempdir");

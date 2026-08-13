@@ -3,7 +3,7 @@ kind: RainyDefaults
 
 metadata:
   name: rainy-official
-  version: 0.5.3
+  version: 0.5.4
 
 requires:
   rainy: ">=0.5.0, <0.6.0"
