@@ -111,14 +111,14 @@ irm https://github.com/RainLib/rainy-cli/releases/latest/download/install.ps1 | 
 
 ```bash
 INSTALL_DIR=/usr/local/bin sh scripts/install.sh
-RAINY_REPO=owner/repo RAINY_VERSION=v0.5.5 sh scripts/install.sh
+RAINY_REPO=owner/repo RAINY_VERSION=v0.5.6 sh scripts/install.sh
 RAINY_NO_MODIFY_PATH=1 sh scripts/install.sh
 ```
 
 Windows 安装脚本也支持同样的参数：
 
 ```powershell
-.\scripts\install.ps1 -Repo owner/repo -Version v0.5.5 -InstallDir "$HOME\.rainy\bin"
+.\scripts\install.ps1 -Repo owner/repo -Version v0.5.6 -InstallDir "$HOME\.rainy\bin"
 .\scripts\install.ps1 -NoModifyPath
 ```
 
@@ -525,16 +525,16 @@ rainy self check --json
 rainy self check --repo owner/repo
 rainy self update                                      # 预览
 rainy self update --apply                              # 安装最新版
-rainy self update --repo owner/repo --version v0.5.5 --apply
-rainy self skip 0.5.5                                  # 预览
-rainy self skip --repo owner/repo 0.5.5 --apply
+rainy self update --repo owner/repo --version v0.5.6 --apply
+rainy self skip 0.5.6                                  # 预览
+rainy self skip --repo owner/repo 0.5.6 --apply
 ```
 
 release 构建出来的非 debug CLI 会周期性检查 GitHub latest release，并在发现新版本时提示：
 
 ```text
 Rainy CLI update available: 0.1.1 -> 0.2.0.
-Run `rainy self update --apply` to update, or `rainy self skip 0.5.5 --apply` to skip this version.
+Run `rainy self update --apply` to update, or `rainy self skip 0.5.6 --apply` to skip this version.
 ```
 
 自动检查默认行为：
@@ -562,8 +562,8 @@ make release-check
 创建并推送版本标签后会触发 release workflow：
 
 ```bash
-git tag -a v0.5.5 -m "Rainy CLI v0.5.5"
-git push origin v0.5.5
+git tag -a v0.5.6 -m "Rainy CLI v0.5.6"
+git push origin v0.5.6
 ```
 
 release workflow 会先执行格式、测试、clippy、audit/deny、schema、MCP wrapper、PTY 和安装脚本检查，然后分别构建并上传：

@@ -2758,10 +2758,19 @@ templates:
         "--scope",
         "auto",
     ]);
-    assert_eq!(
-        command_envelope(&doctor)["data"]["report"]["status"],
-        "passed"
+    let report = &command_envelope(&doctor)["data"]["report"];
+    assert_ne!(report["status"], "failed");
+    let checks = report["checks"].as_array().expect("doctor checks");
+    assert!(
+        checks.iter().all(|check| check["status"] != "failed"),
+        "enterprise template doctor failed: {report}"
     );
+    assert!(checks.iter().any(|check| {
+        check["id"] == "project.file.exists:rainy.yaml" && check["status"] == "passed"
+    }));
+    assert!(checks.iter().any(|check| {
+        check["id"] == "project.file.exists:capability.lock" && check["status"] == "passed"
+    }));
 }
 
 #[test]

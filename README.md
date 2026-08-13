@@ -167,8 +167,8 @@ Only a pushed `vX.Y.Z` tag triggers the release workflow. It validates that the 
 
 ```bash
 make production-check
-git tag -a v0.5.5 -m "Rainy CLI v0.5.5"
-git push origin v0.5.5
+git tag -a v0.5.6 -m "Rainy CLI v0.5.6"
+git push origin v0.5.6
 ```
 
 See [Release checklist](docs/releasing.md) for required acceptance checks and mirror publication.
