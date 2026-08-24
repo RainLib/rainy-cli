@@ -43,5 +43,5 @@ tar = "0.4"
 ureq = { version = "2.12", default-features = true }
 url = "2.5"
 walkdir = "2.5"
-wasmtime = "36.0.8"
+wasmtime = "47.0.3"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
