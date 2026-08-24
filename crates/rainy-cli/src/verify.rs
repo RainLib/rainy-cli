@@ -1,4 +1,5 @@
 use crate::config;
+use crate::config::VerifyStep;
 use crate::doctor;
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
@@ -89,10 +90,16 @@ fn run_verify_inner(
     let mut checks = Vec::new();
     let strict = strict_verify_enabled(profile);
     for step in steps {
+        let label = match &step {
+            VerifyStep::Named(name) => name.as_str(),
+            VerifyStep::Structured(step) => step.uses.as_str(),
+        };
         if let Some(progress) = progress {
-            progress.detail(format!("Running verification step: {step}"));
+            progress.detail(format!("Running verification step: {label}"));
         }
-        checks.push(run_step(workspace, &step, capability, strict)?);
+        checks.push(run_project_step(
+            workspace, &step, capability, profile, strict,
+        )?);
     }
     if let Some(progress) = progress {
         progress.detail("Running installed capability validations");
@@ -114,6 +121,69 @@ fn run_verify_inner(
         profile: profile.to_string(),
         status: status.to_string(),
         checks,
+    })
+}
+
+fn run_project_step(
+    workspace: &Path,
+    step: &VerifyStep,
+    capability: Option<&str>,
+    profile: &str,
+    strict: bool,
+) -> RainyResult<VerifyCheckResult> {
+    match step {
+        VerifyStep::Named(name) => run_step(workspace, name, capability, strict),
+        VerifyStep::Structured(step) if step.uses == "build.check" => run_build_step(
+            workspace,
+            step,
+            crate::build::BuildOperation::Check,
+            profile,
+        ),
+        VerifyStep::Structured(step) if step.uses == "build.package" => run_build_step(
+            workspace,
+            step,
+            crate::build::BuildOperation::Package,
+            profile,
+        ),
+        VerifyStep::Structured(step) if step.uses == "security.basic" => {
+            run_step(workspace, "security-basic", capability, strict)
+        }
+        VerifyStep::Structured(step) => run_step(workspace, &step.uses, capability, strict),
+    }
+}
+
+fn run_build_step(
+    workspace: &Path,
+    step: &config::StructuredVerifyStep,
+    operation: crate::build::BuildOperation,
+    profile: &str,
+) -> RainyResult<VerifyCheckResult> {
+    let target = step
+        .with_value
+        .get("target")
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or("backend");
+    let report = crate::build::run(workspace, target, operation, profile)?;
+    Ok(VerifyCheckResult {
+        id: format!("{}:{target}", step.uses),
+        status: report.status,
+        message: if report.warnings.is_empty() {
+            format!("{} completed for build target {target}", step.uses)
+        } else {
+            report.warnings.join("; ")
+        },
+        duration_ms: report.duration_ms,
+        command: Some(
+            std::iter::once(report.executable)
+                .chain(report.args)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        stdout: report.stdout,
+        stderr: report.stderr,
+        stdout_truncated: report.stdout_truncated,
+        stderr_truncated: report.stderr_truncated,
+        timed_out: report.timed_out,
     })
 }
 
@@ -267,7 +337,7 @@ fn run_capability_validations(
         }
     };
     let mut checks = Vec::new();
-    for id in lock.capabilities.keys() {
+    for (id, installed) in &lock.capabilities {
         if capability.is_some_and(|wanted| wanted != id) {
             continue;
         }
@@ -276,6 +346,7 @@ fn run_capability_validations(
             workspace,
             config,
             &definition,
+            installed.provider.as_deref(),
             strict,
         )?);
     }
@@ -286,11 +357,22 @@ fn run_validations_for_capability(
     workspace: &Path,
     config: &config::ProjectConfig,
     capability: &CapabilityDefinition,
+    provider: Option<&str>,
     strict: bool,
 ) -> RainyResult<Vec<VerifyCheckResult>> {
+    let provider_validations = provider
+        .and_then(|selected| {
+            capability
+                .providers
+                .iter()
+                .find(|candidate| candidate.id == selected)
+        })
+        .map(|provider| provider.validations.as_slice())
+        .unwrap_or_default();
     Ok(capability
         .validations
         .iter()
+        .chain(provider_validations.iter())
         .map(|validation| {
             run_validation(workspace, config, capability, validation, strict).unwrap_or_else(
                 |error| {

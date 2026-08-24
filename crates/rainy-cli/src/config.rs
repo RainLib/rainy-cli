@@ -20,6 +20,8 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub policy: PolicySection,
     #[serde(default)]
+    pub build: BuildSection,
+    #[serde(default)]
     pub verify: VerifySection,
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_yaml::Value>,
@@ -119,9 +121,59 @@ pub struct PolicySection {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BuildSection {
+    #[serde(default)]
+    pub targets: BTreeMap<String, BuildTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildTarget {
+    #[serde(default = "default_build_root")]
+    pub root: String,
+    #[serde(default)]
+    pub system: BuildSystem,
+    #[serde(rename = "checkArgs", default)]
+    pub check_args: Vec<String>,
+    #[serde(rename = "packageArgs", default)]
+    pub package_args: Vec<String>,
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuildSystem {
+    #[default]
+    Auto,
+    Maven,
+    Gradle,
+}
+
+fn default_build_root() -> String {
+    ".".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum VerifyStep {
+    Named(String),
+    Structured(StructuredVerifyStep),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StructuredVerifyStep {
+    pub uses: String,
+    #[serde(rename = "with", default)]
+    pub with_value: BTreeMap<String, serde_yaml::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifySection {
     #[serde(default)]
-    pub profiles: BTreeMap<String, Vec<String>>,
+    pub profiles: BTreeMap<String, Vec<VerifyStep>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +216,22 @@ pub struct LockedCapability {
     pub installed_at: DateTime<Utc>,
     #[serde(default)]
     pub artifacts: Vec<String>,
+    #[serde(rename = "managedChanges", default)]
+    pub managed_changes: Vec<ManagedChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub struct ManagedChange {
+    pub action_id: String,
+    pub kind: String,
+    pub path: String,
+    pub marker: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_value_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,6 +292,10 @@ pub struct InstalledRegistrySkill {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installer: Option<String>,
 }
@@ -312,6 +384,7 @@ fn validate_project_top_level(content: &str) -> RainyResult<()> {
         "package",
         "capabilityRegistry",
         "policy",
+        "build",
         "verify",
         "extensions",
     ];
@@ -346,7 +419,7 @@ pub fn load_lock(workspace: &Path) -> RainyResult<CapabilityLock> {
     }
     let content = std::fs::read_to_string(&path)?;
     let lock: CapabilityLock = serde_yaml::from_str(&content)?;
-    if lock.lockfile_version != 1 {
+    if !matches!(lock.lockfile_version, 1 | 2) {
         return Err(RainyError::config(
             "LOCK_VERSION_UNSUPPORTED",
             format!(
@@ -390,7 +463,7 @@ pub fn save_lock_content(lock: &CapabilityLock) -> RainyResult<String> {
 
 pub fn empty_lock(project_name: &str) -> CapabilityLock {
     CapabilityLock {
-        lockfile_version: 1,
+        lockfile_version: 2,
         project: LockProject {
             name: project_name.to_string(),
         },

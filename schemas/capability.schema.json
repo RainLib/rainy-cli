@@ -25,62 +25,38 @@
           "default": { "type": "boolean" },
           "requiredConfig": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "oneOf": [
+                { "type": "string", "minLength": 1 },
+                {
+                  "type": "object",
+                  "required": ["key"],
+                  "properties": {
+                    "key": { "type": "string", "minLength": 1 },
+                    "type": { "type": "string" },
+                    "required": { "type": "boolean", "default": false },
+                    "secret": { "type": "boolean", "default": false },
+                    "default": true,
+                    "env": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "actions": { "$ref": "#/$defs/actions" },
+          "validations": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/validation" }
           }
         },
         "additionalProperties": false
       }
     },
-    "actions": {
-      "type": "object",
-      "properties": {
-        "install": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["id", "uses"],
-            "properties": {
-              "id": { "type": "string" },
-              "uses": { "type": "string" },
-              "with": { "type": "object" }
-            },
-            "additionalProperties": false
-          }
-        }
-      },
-      "additionalProperties": false
-    },
+    "actions": { "$ref": "#/$defs/actions" },
     "validations": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id"],
-        "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "run": {
-            "type": "object",
-            "required": ["program"],
-            "properties": {
-              "program": { "type": "string", "minLength": 1 },
-              "args": { "type": "array", "items": { "type": "string" } }
-            },
-            "additionalProperties": false
-          },
-          "command": { "type": "string", "minLength": 1 },
-          "workingDirectory": { "type": "string" },
-          "timeoutSeconds": { "type": "integer", "minimum": 1 },
-          "platforms": {
-            "type": "array",
-            "items": { "type": "string", "minLength": 1 },
-            "uniqueItems": true
-          }
-        },
-        "oneOf": [
-          { "required": ["run"], "not": { "required": ["command"] } },
-          { "required": ["command"], "not": { "required": ["run"] } }
-        ],
-        "additionalProperties": false
-      }
+      "items": { "$ref": "#/$defs/validation" }
     },
     "doctor": {
       "type": "object",
@@ -133,6 +109,56 @@
           "items": { "type": "string" }
         }
       },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "actions": {
+      "type": "object",
+      "properties": {
+        "install": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "uses"],
+            "properties": {
+              "id": { "type": "string" },
+              "uses": { "type": "string" },
+              "with": { "type": "object" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "validation": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "run": {
+          "type": "object",
+          "required": ["program"],
+          "properties": {
+            "program": { "type": "string", "minLength": 1 },
+            "args": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "command": { "type": "string", "minLength": 1 },
+        "workingDirectory": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "platforms": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "oneOf": [
+        { "required": ["run"], "not": { "required": ["command"] } },
+        { "required": ["command"], "not": { "required": ["run"] } }
+      ],
       "additionalProperties": false
     }
   },

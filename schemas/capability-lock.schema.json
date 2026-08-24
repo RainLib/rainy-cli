@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["lockfileVersion", "project", "rainy", "capabilities"],
   "properties": {
-    "lockfileVersion": { "const": 1 },
+    "lockfileVersion": { "enum": [1, 2] },
     "project": {
       "type": "object",
       "required": ["name"],
@@ -34,7 +34,40 @@
           "source": { "type": "string" },
           "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "installedAt": { "type": "string", "format": "date-time" },
-          "artifacts": { "type": "array", "items": { "type": "string" } }
+          "artifacts": { "type": "array", "items": { "type": "string" } },
+          "managedChanges": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": ["actionId", "kind", "path", "marker"],
+                  "properties": {
+                    "actionId": { "type": "string" },
+                    "kind": { "const": "jvm-managed-block" },
+                    "path": { "type": "string" },
+                    "marker": { "type": "string", "pattern": "^rainy-managed:" },
+                    "expectedValueSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                    "provider": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": ["actionId", "kind", "path", "marker", "expectedValueSha256"],
+                  "properties": {
+                    "actionId": { "type": "string" },
+                    "kind": { "const": "yaml-semantic-path" },
+                    "path": { "type": "string" },
+                    "marker": { "type": "string", "pattern": "^/" },
+                    "expectedValueSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                    "provider": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
         },
         "additionalProperties": false
       }

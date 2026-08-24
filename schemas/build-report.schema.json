@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rainy.dev/schemas/build-report.schema.json",
+  "title": "Rainy Build Report",
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "status",
+    "target",
+    "operation",
+    "profile",
+    "system",
+    "root",
+    "executable",
+    "wrapper",
+    "args",
+    "artifacts",
+    "warnings"
+  ],
+  "properties": {
+    "protocolVersion": { "const": "rainy.build.v1" },
+    "status": { "enum": ["passed", "warning", "failed"] },
+    "target": { "type": "string", "minLength": 1 },
+    "operation": { "enum": ["detect", "check", "package"] },
+    "profile": { "enum": ["local", "ci"] },
+    "system": { "enum": ["maven", "gradle"] },
+    "root": { "type": "string" },
+    "executable": { "type": "string" },
+    "wrapper": { "type": "boolean" },
+    "args": { "type": "array", "items": { "type": "string" } },
+    "durationMs": { "type": "integer", "minimum": 0 },
+    "exitCode": { "type": ["integer", "null"] },
+    "stdout": { "type": "string" },
+    "stderr": { "type": "string" },
+    "stdoutTruncated": { "type": "boolean" },
+    "stderrTruncated": { "type": "boolean" },
+    "timedOut": { "type": "boolean" },
+    "artifacts": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

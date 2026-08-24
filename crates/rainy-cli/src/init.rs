@@ -323,6 +323,7 @@ fn lock_yaml(project_name: &str, registry_path: &std::path::Path) -> RainyResult
                 digest: crate::registry::pack_digest(&registry_path.join(id)).ok(),
                 installed_at: now,
                 artifacts: artifacts.into_iter().map(str::to_string).collect(),
+                managed_changes: Vec::new(),
             },
         );
         lock.skills.push(format!("{id}@0.1.0"));

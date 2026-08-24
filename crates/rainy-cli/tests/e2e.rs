@@ -391,6 +391,7 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["plugin"],
         &["agent"],
         &["skill"],
+        &["build"],
         &["conformance"],
         &["schema"],
         &["self"],
@@ -418,6 +419,10 @@ fn help_describes_every_command_and_leaf_with_business_placeholders_and_examples
         &["capability", "installed"],
         &["capability", "upgrade"],
         &["capability", "remove"],
+        &["capability", "switch-provider"],
+        &["build", "detect"],
+        &["build", "check"],
+        &["build", "package"],
         &["pack", "list"],
         &["pack", "inspect"],
         &["pack", "install"],
@@ -1304,6 +1309,265 @@ x-company-mirror: true
     let checked = command_data(&checked);
     assert_eq!(checked["report"]["sources"][0]["state"], "current");
     assert_eq!(checked["report"]["sources"][0]["latestVersion"], "1.2.0");
+}
+
+#[cfg(unix)]
+#[test]
+fn build_detect_check_and_package_use_the_configured_wrapper() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("tempdir");
+    let workspace = temp.path().join("build-demo");
+    fs::create_dir_all(&workspace).expect("workspace");
+    write(
+        &workspace.join("rainy.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: Project
+project:
+  name: build-demo
+paths:
+  backend: .
+  frontend: apps/frontend
+package:
+  java: com.example
+build:
+  targets:
+    backend:
+      root: .
+      system: auto
+      checkArgs: [check]
+      packageArgs: [package]
+      artifacts: [build/libs/*.jar]
+verify:
+  profiles:
+    ci:
+      - uses: build.check
+        with:
+          target: backend
+"#,
+    );
+    write(
+        &workspace.join("capability.lock"),
+        "lockfileVersion: 2\nproject:\n  name: build-demo\nrainy:\n  version: 0.6.0\ncapabilities: {}\nskills: []\n",
+    );
+    write(
+        &workspace.join("settings.gradle"),
+        "rootProject.name = 'build-demo'\n",
+    );
+    write(
+        &workspace.join("gradlew"),
+        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = package ]; then mkdir -p build/libs; printf jar > build/libs/app.jar; fi\nprintf '%s\\n' \"$*\"\n",
+    );
+    let mut permissions = fs::metadata(workspace.join("gradlew"))
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(workspace.join("gradlew"), permissions).expect("wrapper executable");
+    let root = workspace.to_string_lossy().to_string();
+
+    let detected = command_data(&run(&[
+        "--workspace",
+        &root,
+        "build",
+        "detect",
+        "--target",
+        "backend",
+        "--profile",
+        "ci",
+        "--json",
+    ]));
+    assert_eq!(detected["report"]["system"], "gradle");
+    assert_eq!(detected["report"]["wrapper"], true);
+
+    run(&[
+        "--workspace",
+        &root,
+        "build",
+        "check",
+        "--target",
+        "backend",
+        "--profile",
+        "ci",
+        "--json",
+    ]);
+    let packaged = command_data(&run(&[
+        "--workspace",
+        &root,
+        "build",
+        "package",
+        "--target",
+        "backend",
+        "--profile",
+        "ci",
+        "--json",
+    ]));
+    assert_eq!(packaged["report"]["artifacts"][0], "build/libs/app.jar");
+    run(&["--workspace", &root, "verify", "--profile", "ci", "--json"]);
+}
+
+#[test]
+fn provider_actions_switch_a_rainy_managed_gradle_dependency_idempotently() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "provider-demo", "--apply"]);
+    let app = temp.path().join("provider-demo");
+    let config_path = app.join("rainy.yaml");
+    let config = fs::read_to_string(&config_path).expect("config");
+    fs::write(
+        &config_path,
+        config
+            .replace(
+                "    - apps/backend/pom.xml\n",
+                "    - apps/backend/pom.xml\n    - apps/backend/build.gradle\n",
+            )
+            .replace(
+                "verify:\n",
+                "build:\n  targets:\n    backend:\n      root: apps/backend\n      system: gradle\nverify:\n",
+            ),
+    )
+    .expect("add build target");
+    write(
+        &app.join("apps/backend/build.gradle"),
+        "plugins { id 'java' }\n",
+    );
+    write(
+        &app.join("apps/backend/src/main/resources/application.yml"),
+        "spring:\n  application:\n    name: provider-demo\n",
+    );
+    let pack = app.join("packs/provider-demo");
+    write(
+        &pack.join("pack.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: CapabilityPack
+metadata:
+  name: provider-demo
+  version: 1.0.0
+exports:
+  capabilities: [capabilities/provider-demo.yaml]
+"#,
+    );
+    write(
+        &pack.join("capabilities/provider-demo.yaml"),
+        r#"apiVersion: rainy.dev/v1
+kind: Capability
+id: provider-demo
+name: Provider Demo
+version: 1.0.0
+actions:
+  install:
+    - id: platform-bom
+      uses: jvm.addBom
+      with:
+        target: backend
+        groupId: com.example
+        artifactId: platform-bom
+        version: 1.0.0
+        configuration: implementation
+providers:
+  - id: alpha
+    default: true
+    actions:
+      install:
+        - id: provider-dependency
+          uses: jvm.addDependency
+          with:
+            target: backend
+            groupId: com.example
+            artifactId: alpha
+            version: 1.0.0
+        - id: provider-selection
+          uses: yaml.merge
+          with:
+            file: apps/backend/src/main/resources/application.yml
+            mergeStrategy: overwrite
+            patch:
+              demo:
+                provider: alpha
+  - id: beta
+    actions:
+      install:
+        - id: provider-dependency
+          uses: jvm.addDependency
+          with:
+            target: backend
+            groupId: com.example
+            artifactId: beta
+            version: 2.0.0
+        - id: provider-selection
+          uses: yaml.merge
+          with:
+            file: apps/backend/src/main/resources/application.yml
+            mergeStrategy: overwrite
+            patch:
+              demo:
+                provider: beta
+"#,
+    );
+    inject_registry_source(&app, "packs");
+    let app_path = app.to_string_lossy().to_string();
+    run(&[
+        "--workspace",
+        &app_path,
+        "capability",
+        "add",
+        "provider-demo",
+        "--provider",
+        "alpha",
+        "--apply",
+    ]);
+    let alpha = fs::read_to_string(app.join("apps/backend/build.gradle")).expect("alpha build");
+    assert!(alpha.contains("com.example:alpha:1.0.0"));
+    assert!(alpha.contains("com.example:platform-bom:1.0.0"));
+    run(&[
+        "--workspace",
+        &app_path,
+        "capability",
+        "switch-provider",
+        "provider-demo",
+        "--provider",
+        "beta",
+        "--apply",
+    ]);
+    let beta = fs::read_to_string(app.join("apps/backend/build.gradle")).expect("beta build");
+    assert!(!beta.contains("com.example:alpha:1.0.0"));
+    assert!(beta.contains("com.example:beta:2.0.0"));
+    assert!(beta.contains("com.example:platform-bom:1.0.0"));
+    assert_eq!(
+        beta.matches("rainy-managed:provider-demo:provider-dependency:begin")
+            .count(),
+        1
+    );
+    let application =
+        fs::read_to_string(app.join("apps/backend/src/main/resources/application.yml"))
+            .expect("provider application YAML");
+    assert!(application.contains("provider: beta"));
+    let lock = fs::read_to_string(app.join("capability.lock")).expect("provider lock");
+    assert!(lock.contains("kind: yaml-semantic-path"));
+    assert!(lock.contains("expectedValueSha256:"));
+
+    fs::write(
+        app.join("apps/backend/src/main/resources/application.yml"),
+        application.replace("provider: beta", "provider: custom"),
+    )
+    .expect("create managed YAML drift");
+    let drift = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "capability",
+            "switch-provider",
+            "provider-demo",
+            "--provider",
+            "alpha",
+            "--apply",
+            "--json",
+        ])
+        .output()
+        .expect("reject managed YAML drift");
+    assert_eq!(drift.status.code(), Some(2));
+    let error: serde_json::Value =
+        serde_json::from_slice(&drift.stderr).expect("managed drift error");
+    assert_eq!(error["error"]["code"], "CAPABILITY_OWNERSHIP_REQUIRED");
 }
 
 fn rainy() -> Command {
@@ -2787,7 +3051,7 @@ metadata:
   name: rainy-official
   version: 0.5.0
 requires:
-  rainy: ">=0.5.0, <0.6.0"
+  rainy: ">=0.5.0, <0.7.0"
 paths:
   packs: community-packs
   skills: integrations/skills
@@ -2978,7 +3242,7 @@ metadata:
   name: rainy-local
   version: 0.5.0
 requires:
-  rainy: ">=0.5.0, <0.6.0"
+  rainy: ">=0.5.0, <0.7.0"
 paths:
   packs: packs
   skills: skills
@@ -4852,10 +5116,53 @@ fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
     let rainy_home = temp.path().join("rainy-home");
     let invocation = temp.path().join("skills-invocation.txt");
     let runner = temp.path().join("fake-skills");
+    let external_repository = temp.path().join("external-skill-repository");
+    write(
+        &external_repository.join(".agents/skills/dependencies-gradle-common/SKILL.md"),
+        "---\nname: dependencies-gradle-common\ndescription: pinned source fixture\n---\n",
+    );
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "rainy-test@example.com"],
+        vec!["config", "user.name", "Rainy Test"],
+        vec!["add", "."],
+        vec!["commit", "--quiet", "-m", "pinned external Skill"],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&external_repository)
+            .args(args)
+            .status()
+            .expect("prepare external Skill repository");
+        assert!(status.success());
+    }
+    let external_commit = Command::new("git")
+        .arg("-C")
+        .arg(&external_repository)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("resolve external Skill commit");
+    let external_commit = String::from_utf8(external_commit.stdout)
+        .expect("external commit UTF-8")
+        .trim()
+        .to_string();
+    let external_url = "ssh://git@localhost/dependencies-gradle-common";
+    let git_ssh = temp.path().join("fake-git-ssh");
+    write(
+        &git_ssh,
+        "#!/bin/sh\nset -eu\nexec git-upload-pack \"$RAINY_TEST_EXTERNAL_REPOSITORY\"\n",
+    );
+    let mut git_ssh_permissions = fs::metadata(&git_ssh)
+        .expect("git SSH helper metadata")
+        .permissions();
+    git_ssh_permissions.set_mode(0o755);
+    fs::set_permissions(&git_ssh, git_ssh_permissions).expect("make git SSH helper executable");
 
     write(
         &source.join("build/pack.yaml"),
-        "apiVersion: rainy.dev/v1\nkind: CapabilityPack\nmetadata:\n  name: build\n  version: 1.0.0\nexports:\n  capabilities: []\n  validators: []\n  skills: []\n  externalSkills:\n    - id: dependencies-gradle-common\n      source: https://git.example.com/build/dependencies-gradle-common\n      skillsPackage: skills@1.5.20\n      description: Shared Gradle build conventions\n  plugins: []\n",
+        &format!(
+            "apiVersion: rainy.dev/v1\nkind: CapabilityPack\nmetadata:\n  name: build\n  version: 1.0.0\nexports:\n  capabilities: []\n  validators: []\n  skills: []\n  externalSkills:\n    - id: dependencies-gradle-common\n      source: {external_url}\n      sourceSkill: dependencies-gradle-common\n      sourceRef: {external_commit}\n      skillsPackage: skills@1.5.20\n      description: Shared Gradle build conventions\n  plugins: []\n"
+        ),
     );
     write(
         &runner,
@@ -4908,6 +5215,8 @@ fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
         .env("RAINY_HOME", &rainy_home)
         .env("RAINY_SKILLS_BIN", &runner)
         .env("RAINY_TEST_SKILLS_INVOCATION", &invocation)
+        .env("GIT_SSH_COMMAND", &git_ssh)
+        .env("RAINY_TEST_EXTERNAL_REPOSITORY", &external_repository)
         .output()
         .expect("install external enterprise Skill");
     assert!(
@@ -4917,7 +5226,8 @@ fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
     );
     let args = fs::read_to_string(&invocation).expect("recorded skills arguments");
     assert!(args.contains("--yes\n--package\nskills@1.5.20\nskills\nadd"));
-    assert!(args.contains("https://git.example.com/build/dependencies-gradle-common"));
+    assert!(args.contains("rainy-external-skill-"));
+    assert!(!args.contains(external_url));
     assert!(args.contains("--copy\n--agent\ncodex"));
     assert!(
         app.join(".agents/skills/dependencies-gradle-common/SKILL.md")
@@ -4932,7 +5242,9 @@ fn registry_installs_selected_external_skill_with_pinned_skills_cli() {
     assert!(upstream_lock.contains("dependencies-gradle-common"));
     let lock = fs::read_to_string(app.join(".rainy/registry.lock")).expect("registry lock");
     assert!(lock.contains("kind: external"));
-    assert!(lock.contains("source: https://git.example.com/build/dependencies-gradle-common"));
+    assert!(lock.contains("source: ssh://git@localhost/dependencies-gradle-common"));
+    assert!(lock.contains(&format!("sourceRef: {external_commit}")));
+    assert!(lock.contains(&format!("sourceCommit: {external_commit}")));
     assert!(lock.contains("installer: skills@1.5.20"));
 }
 
@@ -5911,7 +6223,7 @@ metadata:
   name: company-source
   version: {version}
 requires:
-  rainy: ">=0.5.0, <0.6.0"
+  rainy: ">=0.5.0, <0.7.0"
 contents:
   - id: enterprise-project-templates
     type: project-template-catalog

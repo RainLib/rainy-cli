@@ -1,6 +1,7 @@
 mod actions;
 mod agent;
 mod audit;
+mod build;
 mod bundled_assets;
 mod cli;
 mod config;
@@ -335,6 +336,7 @@ fn command_benefits_from_progress(command: &Commands) -> bool {
             CapabilitySubcommand::Add(_)
                 | CapabilitySubcommand::Upgrade(_)
                 | CapabilitySubcommand::Remove(_)
+                | CapabilitySubcommand::SwitchProvider(_)
         ),
         Commands::Pack(command) => matches!(
             command.command,
@@ -360,7 +362,9 @@ fn command_benefits_from_progress(command: &Commands) -> bool {
             command.command,
             cli::DefaultsSubcommand::Install(_) | cli::DefaultsSubcommand::Update(_)
         ),
-        Commands::Doctor(_) | Commands::Verify(_) | Commands::Evidence(_) => true,
+        Commands::Doctor(_) | Commands::Verify(_) | Commands::Build(_) | Commands::Evidence(_) => {
+            true
+        }
         Commands::Plugin(command) => matches!(
             command.command,
             cli::PluginSubcommand::Install(_) | cli::PluginSubcommand::Call(_)
@@ -368,7 +372,9 @@ fn command_benefits_from_progress(command: &Commands) -> bool {
         Commands::Agent(command) => matches!(command.command, cli::AgentSubcommand::Init(_)),
         Commands::Skill(command) => !matches!(
             command.command,
-            cli::SkillSubcommand::Status | cli::SkillSubcommand::Doctor
+            cli::SkillSubcommand::Status
+                | cli::SkillSubcommand::Doctor
+                | cli::SkillSubcommand::Check(_)
         ),
         Commands::Conformance(_) | Commands::SelfCommand(_) | Commands::External(_) => true,
         Commands::Schema(_) | Commands::Completion(_) => false,
@@ -385,7 +391,9 @@ fn command_uses_default_content(command: &Commands) -> bool {
                 | cli::PackSubcommand::Inspect { .. }
                 | cli::PackSubcommand::Update(_)
         ),
-        Commands::Doctor(_) | Commands::Verify(_) | Commands::Evidence(_) => true,
+        Commands::Doctor(_) | Commands::Verify(_) | Commands::Build(_) | Commands::Evidence(_) => {
+            true
+        }
         Commands::Skill(command) => matches!(
             command.command,
             cli::SkillSubcommand::Init(_)
@@ -410,6 +418,7 @@ fn command_requires_audit(command: &Commands, interactive: bool) -> bool {
         Commands::Capability(command) => match &command.command {
             CapabilitySubcommand::Add(args) => args.apply,
             CapabilitySubcommand::Upgrade(args) | CapabilitySubcommand::Remove(args) => args.apply,
+            CapabilitySubcommand::SwitchProvider(args) => args.apply,
             _ => false,
         },
         Commands::Pack(command) => match &command.command {
@@ -461,7 +470,9 @@ fn command_requires_audit(command: &Commands, interactive: bool) -> bool {
             cli::SkillSubcommand::Sync(args) => args.apply,
             cli::SkillSubcommand::Update(args) => args.apply,
             cli::SkillSubcommand::Uninstall(args) => args.apply,
-            cli::SkillSubcommand::Status | cli::SkillSubcommand::Doctor => false,
+            cli::SkillSubcommand::Status
+            | cli::SkillSubcommand::Doctor
+            | cli::SkillSubcommand::Check(_) => false,
         },
         Commands::SelfCommand(command) => match &command.command {
             cli::SelfSubcommand::Update(args) => args.apply,
@@ -483,6 +494,7 @@ fn command_label(command: &Commands) -> &'static str {
             CapabilitySubcommand::Add(_) => "capability add",
             CapabilitySubcommand::Upgrade(_) => "capability upgrade",
             CapabilitySubcommand::Remove(_) => "capability remove",
+            CapabilitySubcommand::SwitchProvider(_) => "capability switch-provider",
             _ => "capability",
         },
         Commands::Pack(_) => "pack",
@@ -492,6 +504,7 @@ fn command_label(command: &Commands) -> &'static str {
         Commands::Defaults(_) => "defaults",
         Commands::Doctor(_) => "doctor",
         Commands::Verify(_) => "verify",
+        Commands::Build(_) => "build",
         Commands::Evidence(_) => "evidence",
         Commands::Plugin(_) => "plugin",
         Commands::Agent(_) => "agent",
@@ -630,6 +643,7 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
             CapabilitySubcommand::Graph => registry::capability_graph(&workspace),
             CapabilitySubcommand::Upgrade(args) => upgrade_capability(&workspace, args),
             CapabilitySubcommand::Remove(args) => remove_capability(&workspace, args),
+            CapabilitySubcommand::SwitchProvider(args) => switch_provider(&workspace, args),
         },
         Commands::Pack(command) => registry::handle_pack_command(
             &workspace,
@@ -659,6 +673,7 @@ fn run(cli: Cli, context: &runtime::RunContext<'_>) -> RainyResult<CommandOutput
             args.capability.as_deref(),
             context.progress,
         ),
+        Commands::Build(command) => build::handle_build_command(&workspace, command),
         Commands::Evidence(args) => {
             let (format, dry_run, apply) = match args.command {
                 Some(EvidenceSubcommand::Generate(generate)) => (
@@ -796,6 +811,15 @@ fn remove_capability(
 ) -> RainyResult<CommandOutput> {
     let apply = resolve_apply_flags(args.dry_run, args.apply)?;
     let result = actions::plan_remove_capability(workspace, &args.id)?;
+    if let Some(path) = args.output_plan {
+        write_json(workspace, &path, &result.plan)?;
+    }
+    finish_capability_changes(workspace, result, apply)
+}
+
+fn switch_provider(workspace: &Path, args: cli::SwitchProviderArgs) -> RainyResult<CommandOutput> {
+    let apply = resolve_apply_flags(args.dry_run, args.apply)?;
+    let result = actions::plan_switch_provider(workspace, &args.id, &args.provider, args.force)?;
     if let Some(path) = args.output_plan {
         write_json(workspace, &path, &result.plan)?;
     }

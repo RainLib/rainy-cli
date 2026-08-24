@@ -92,6 +92,26 @@
       },
       "additionalProperties": false
     },
+    "build": {
+      "type": "object",
+      "properties": {
+        "targets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "root": { "type": "string", "default": "." },
+              "system": { "enum": ["auto", "maven", "gradle"], "default": "auto" },
+              "checkArgs": { "type": "array", "items": { "type": "string" } },
+              "packageArgs": { "type": "array", "items": { "type": "string" } },
+              "artifacts": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "verify": {
       "type": "object",
       "properties": {
@@ -99,7 +119,20 @@
           "type": "object",
           "additionalProperties": {
             "type": "array",
-            "items": { "type": "string", "minLength": 1 }
+            "items": {
+              "oneOf": [
+                { "type": "string", "minLength": 1 },
+                {
+                  "type": "object",
+                  "required": ["uses"],
+                  "properties": {
+                    "uses": { "type": "string", "minLength": 1 },
+                    "with": { "type": "object" }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         }
       },

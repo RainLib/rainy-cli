@@ -1,6 +1,9 @@
 name: ci
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -65,6 +68,8 @@ jobs:
           target/debug/rainy capability list --json >/dev/null
       - name: Cross-platform command contract E2E
         run: |
+          cargo test --test e2e build_detect_check_and_package_use_the_configured_wrapper --locked
+          cargo test --test e2e provider_actions_switch_a_rainy_managed_gradle_dependency_idempotently --locked
           cargo test --test e2e structured_verify_is_shell_free_and_definition_failures_are_reports --locked
           cargo test --test e2e self_update_and_skip_preview_by_default_and_yes_applies --locked
           cargo test --test e2e read_only_and_preview_commands_do_not_create_audit_or_managed_outputs --locked

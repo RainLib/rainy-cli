@@ -311,7 +311,12 @@ fn check_capability(
             "duplicate capability id",
         ));
     }
-    for action in &capability.actions.install {
+    for action in capability.actions.install.iter().chain(
+        capability
+            .providers
+            .iter()
+            .flat_map(|provider| provider.actions.install.iter()),
+    ) {
         if known_action(&action.uses) {
             checks.push(passed(
                 format!("capability:{}:action:{}", capability.id, action.id),
@@ -422,7 +427,10 @@ fn check_plugin_executables(
 fn known_action(action: &str) -> bool {
     matches!(
         action,
-        "maven.addDependency"
+        "jvm.addDependency"
+            | "jvm.addBom"
+            | "jvm.removeDependency"
+            | "maven.addDependency"
             | "maven.addBom"
             | "yaml.merge"
             | "json.merge"

@@ -76,6 +76,12 @@ pub struct PackExports {
 pub struct ExternalSkillExport {
     pub id: String,
     pub source: String,
+    #[serde(rename = "sourceSkill", default)]
+    pub source_skill: Option<String>,
+    #[serde(rename = "sourceRef", default)]
+    pub source_ref: Option<String>,
+    #[serde(rename = "sha256", default)]
+    pub sha256: Option<String>,
     #[serde(rename = "skillsPackage")]
     pub skills_package: String,
     #[serde(rename = "allowPrivateHttp", default)]
@@ -124,6 +130,9 @@ enum RegistrySkillSource {
     External {
         source: String,
         skills_package: String,
+        source_skill: String,
+        source_ref: Option<String>,
+        sha256: Option<String>,
     },
 }
 
@@ -192,7 +201,34 @@ pub struct CapabilityProvider {
     #[serde(default)]
     pub default: bool,
     #[serde(rename = "requiredConfig", default)]
-    pub required_config: Vec<String>,
+    pub required_config: Vec<RequiredConfig>,
+    #[serde(default)]
+    pub actions: CapabilityActions,
+    #[serde(default)]
+    pub validations: Vec<ValidationCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RequiredConfig {
+    Key(String),
+    Detail(RequiredConfigDetail),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredConfigDetail {
+    pub key: String,
+    #[serde(rename = "type", default)]
+    pub value_type: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub default: Option<serde_yaml::Value>,
+    #[serde(default)]
+    pub env: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,7 +240,7 @@ pub struct CapabilityInput {
     pub default: Option<serde_yaml::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityActions {
     #[serde(default)]
@@ -1713,12 +1749,15 @@ fn discover_registry_skills(registry_root: &Path) -> RainyResult<Vec<RegistrySki
                 ));
             }
             exports.push(RegistrySkillExport {
-                id: external.id,
+                id: external.id.clone(),
                 pack: pack.metadata.name.clone(),
                 description: external.description,
                 source: RegistrySkillSource::External {
                     source: external.source,
                     skills_package: external.skills_package,
+                    source_skill: external.source_skill.unwrap_or(external.id),
+                    source_ref: external.source_ref,
+                    sha256: external.sha256,
                 },
             });
         }
@@ -1895,9 +1934,19 @@ fn install_discovered_registry_skills(
                 RegistrySkillSource::External {
                     source,
                     skills_package,
-                    ..
+                    source_skill,
+                    source_ref,
+                    sha256,
                 } => (
-                    declared_external_skill_digest(source, skills_package, target),
+                    sha256.clone().unwrap_or_else(|| {
+                        declared_external_skill_digest(
+                            source,
+                            skills_package,
+                            source_skill,
+                            source_ref.as_deref(),
+                            target,
+                        )
+                    }),
                     "external".to_string(),
                     Some(source.clone()),
                     Some(skills_package.clone()),
@@ -1912,6 +1961,11 @@ fn install_discovered_registry_skills(
                         digest: incoming_digest,
                         kind,
                         source,
+                        source_ref: match &export.source {
+                            RegistrySkillSource::External { source_ref, .. } => source_ref.clone(),
+                            RegistrySkillSource::Local(_) => None,
+                        },
+                        source_commit: None,
                         installer,
                     },
                     export.source.clone(),
@@ -1956,6 +2010,8 @@ fn install_discovered_registry_skills(
                     digest: incoming_digest,
                     kind,
                     source,
+                    source_ref: None,
+                    source_commit: None,
                     installer,
                 },
                 export.source.clone(),
@@ -2043,7 +2099,9 @@ fn install_discovered_registry_skills(
             let RegistrySkillSource::External {
                 source,
                 skills_package,
-                ..
+                source_skill,
+                source_ref,
+                sha256,
             } = source
             else {
                 return Err(RainyError::registry(
@@ -2051,13 +2109,18 @@ fn install_discovered_registry_skills(
                     format!("external Skill {} has no external source", item.id),
                 ));
             };
-            item.digest = install_external_registry_skill(
+            let installed = install_external_registry_skill(
                 workspace,
                 &item.target,
                 &item.id,
                 source,
                 skills_package,
+                source_skill,
+                source_ref.as_deref(),
+                sha256.as_deref(),
             )?;
+            item.digest = installed.digest;
+            item.source_commit = installed.source_commit;
             continue;
         }
         if destination.exists()
@@ -2119,6 +2182,25 @@ fn validate_installed_registry_skill(skill: &config::InstalledRegistrySkill) -> 
 
 fn validate_external_skill_export(export: &ExternalSkillExport) -> RainyResult<()> {
     validate_registry_skill_id(&export.id)?;
+    if let Some(source_skill) = &export.source_skill {
+        validate_registry_skill_id(source_skill)?;
+    }
+    if let Some(source_ref) = &export.source_ref {
+        let immutable_commit = matches!(source_ref.len(), 40 | 64)
+            && source_ref.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if !immutable_commit {
+            return Err(RainyError::registry(
+                "REGISTRY_EXTERNAL_SKILL_REF_INVALID",
+                format!(
+                    "external Skill {} sourceRef must be a full immutable Git commit",
+                    export.id
+                ),
+            ));
+        }
+    }
+    if let Some(sha256) = &export.sha256 {
+        validate_sha256(sha256)?;
+    }
     crate::security::validate_git_with_private_http(
         &export.source,
         false,
@@ -2173,12 +2255,22 @@ fn validate_registry_skill_id(id: &str) -> RainyResult<()> {
     ))
 }
 
-fn declared_external_skill_digest(source: &str, skills_package: &str, target: &str) -> String {
+fn declared_external_skill_digest(
+    source: &str,
+    skills_package: &str,
+    source_skill: &str,
+    source_ref: Option<&str>,
+    target: &str,
+) -> String {
     let mut digest = Sha256::new();
     digest.update(b"rainy.external-skill.v1\0");
     digest.update(source.as_bytes());
     digest.update(b"\0");
     digest.update(skills_package.as_bytes());
+    digest.update(b"\0");
+    digest.update(source_skill.as_bytes());
+    digest.update(b"\0");
+    digest.update(source_ref.unwrap_or_default().as_bytes());
     digest.update(b"\0");
     digest.update(target.as_bytes());
     hex(&digest.finalize())
@@ -2190,9 +2282,13 @@ fn install_external_registry_skill(
     id: &str,
     source: &str,
     skills_package: &str,
-) -> RainyResult<String> {
+    source_skill: &str,
+    source_ref: Option<&str>,
+    expected_sha256: Option<&str>,
+) -> RainyResult<InstalledExternalRegistrySkill> {
     let legacy_lock = crate::skills::capture_legacy_upstream_lock(workspace)?;
     let agent = skills_agent_name(target)?;
+    let prepared_source = prepare_external_skill_source(source, source_ref)?;
     let executable = std::env::var_os("RAINY_SKILLS_BIN").unwrap_or_else(|| {
         if cfg!(windows) {
             OsString::from("npx.cmd")
@@ -2206,7 +2302,8 @@ fn install_external_registry_skill(
         .arg(OsString::from(skills_package))
         .arg(OsStr::new("skills"))
         .arg(OsStr::new("add"))
-        .arg(OsString::from(source))
+        .arg(&prepared_source.install_source)
+        .args([OsStr::new("--skill"), OsStr::new(source_skill)])
         .args([
             OsStr::new("--yes"),
             OsStr::new("--copy"),
@@ -2232,7 +2329,28 @@ fn install_external_registry_skill(
                 ),
             ));
         }
-        return registry_digest(&destination);
+        crate::skills::validate_source_skill(&destination, id).map_err(|error| {
+            RainyError::registry(
+                "REGISTRY_EXTERNAL_SKILL_IDENTITY_MISMATCH",
+                format!("external Skill {id} has invalid installed identity: {error}"),
+            )
+        })?;
+        let actual = registry_digest(&destination)?;
+        if let Some(expected) = expected_sha256
+            && !actual.eq_ignore_ascii_case(expected)
+        {
+            return Err(RainyError::registry(
+                "REGISTRY_EXTERNAL_SKILL_DIGEST_MISMATCH",
+                format!(
+                    "external Skill {id} at source ref {} has digest {actual}, expected {expected}",
+                    source_ref.unwrap_or("unspecified")
+                ),
+            ));
+        }
+        return Ok(InstalledExternalRegistrySkill {
+            digest: actual,
+            source_commit: prepared_source.resolved_commit,
+        });
     }
     crate::skills::restore_legacy_upstream_lock(workspace, legacy_lock.as_deref())?;
     Err(RainyError::registry(
@@ -2240,6 +2358,124 @@ fn install_external_registry_skill(
         format!(
             "external Skill {id} installer exited with {}: {}",
             process_status(&output),
+            truncate_registry_output(&output.stderr, 3000)
+        ),
+    ))
+}
+
+struct InstalledExternalRegistrySkill {
+    digest: String,
+    source_commit: Option<String>,
+}
+
+struct PreparedExternalSkillSource {
+    _temp: Option<tempfile::TempDir>,
+    install_source: OsString,
+    resolved_commit: Option<String>,
+}
+
+fn prepare_external_skill_source(
+    source: &str,
+    source_ref: Option<&str>,
+) -> RainyResult<PreparedExternalSkillSource> {
+    let Some(source_ref) = source_ref else {
+        return Ok(PreparedExternalSkillSource {
+            _temp: None,
+            install_source: OsString::from(source),
+            resolved_commit: None,
+        });
+    };
+    let temp = tempfile::Builder::new()
+        .prefix("rainy-external-skill-")
+        .tempdir()?;
+    let checkout = temp.path().join("checkout");
+    run_external_skill_git(
+        None,
+        &[
+            OsStr::new("init"),
+            OsStr::new("--quiet"),
+            checkout.as_os_str(),
+        ],
+    )?;
+    run_external_skill_git(
+        Some(&checkout),
+        &[
+            OsStr::new("remote"),
+            OsStr::new("add"),
+            OsStr::new("origin"),
+            OsStr::new(source),
+        ],
+    )?;
+    run_external_skill_git(
+        Some(&checkout),
+        &[
+            OsStr::new("fetch"),
+            OsStr::new("--depth"),
+            OsStr::new("1"),
+            OsStr::new("--no-tags"),
+            OsStr::new("origin"),
+            OsStr::new(source_ref),
+        ],
+    )?;
+    run_external_skill_git(
+        Some(&checkout),
+        &[
+            OsStr::new("checkout"),
+            OsStr::new("--quiet"),
+            OsStr::new("--detach"),
+            OsStr::new("FETCH_HEAD"),
+        ],
+    )?;
+    let mut rev_parse = std::process::Command::new("git");
+    rev_parse.args(["rev-parse", "HEAD"]).current_dir(&checkout);
+    let output = crate::process::run_command(
+        rev_parse,
+        "git",
+        Duration::from_secs(60),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if !output.success() {
+        return Err(RainyError::registry(
+            "REGISTRY_EXTERNAL_SKILL_CHECKOUT_FAILED",
+            format!(
+                "could not resolve external Skill commit: {}",
+                truncate_registry_output(&output.stderr, 3000)
+            ),
+        ));
+    }
+    let resolved_commit = output.stdout.trim().to_string();
+    if !resolved_commit.eq_ignore_ascii_case(source_ref) {
+        return Err(RainyError::registry(
+            "REGISTRY_EXTERNAL_SKILL_COMMIT_MISMATCH",
+            format!("external Skill checkout resolved to {resolved_commit}, expected {source_ref}"),
+        ));
+    }
+    Ok(PreparedExternalSkillSource {
+        _temp: Some(temp),
+        install_source: checkout.into_os_string(),
+        resolved_commit: Some(resolved_commit),
+    })
+}
+
+fn run_external_skill_git(current_dir: Option<&Path>, args: &[&OsStr]) -> RainyResult<()> {
+    let mut command = std::process::Command::new("git");
+    command.args(args);
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    let output = crate::process::run_command(
+        command,
+        "git",
+        Duration::from_secs(900),
+        crate::process::DEFAULT_OUTPUT_LIMIT,
+    )?;
+    if output.success() {
+        return Ok(());
+    }
+    Err(RainyError::registry(
+        "REGISTRY_EXTERNAL_SKILL_CHECKOUT_FAILED",
+        format!(
+            "could not check out pinned external Skill source: {}",
             truncate_registry_output(&output.stderr, 3000)
         ),
     ))

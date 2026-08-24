@@ -96,6 +96,8 @@ pub enum Commands {
     Doctor(DoctorCommand),
     /// Run workspace and capability verification profiles.
     Verify(VerifyCommand),
+    /// Detect and run configured Maven or Gradle build targets.
+    Build(BuildCommand),
     /// Generate audit and delivery evidence reports.
     Evidence(EvidenceCommand),
     /// Discover, install, and invoke Rainy plugins.
@@ -531,6 +533,12 @@ pub enum CapabilitySubcommand {
         after_help = "EXAMPLES:\n  Preview capability removal:\n    rainy capability remove minio-file-storage --dry-run\n\n  Apply capability removal:\n    rainy capability remove minio-file-storage --apply"
     )]
     Remove(CapabilityChangeArgs),
+    #[command(
+        name = "switch-provider",
+        about = "Switch an installed capability to another provider",
+        after_help = "EXAMPLES:\n  Preview a provider switch:\n    rainy capability switch-provider identity --provider ldap --dry-run\n\n  Apply the reviewed switch:\n    rainy capability switch-provider identity --provider ldap --apply"
+    )]
+    SwitchProvider(SwitchProviderArgs),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -565,6 +573,33 @@ pub struct CapabilityChangeArgs {
     pub dry_run: bool,
 
     /// Apply the capability change.
+    #[arg(long, visible_alias = "yes")]
+    pub apply: bool,
+
+    /// Write the generated plan to this JSON file.
+    #[arg(long, value_name = "PLAN_FILE")]
+    pub output_plan: Option<PathBuf>,
+
+    /// Continue after explicitly reviewing detected conflicts.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SwitchProviderArgs {
+    /// Installed capability identifier.
+    #[arg(value_name = "CAPABILITY_ID")]
+    pub id: String,
+
+    /// New provider identifier.
+    #[arg(long, value_name = "PROVIDER")]
+    pub provider: String,
+
+    /// Preview the provider change without writing files.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Apply the reviewed provider change.
     #[arg(long, visible_alias = "yes")]
     pub apply: bool,
 
@@ -989,6 +1024,48 @@ pub struct VerifyCommand {
 
 #[derive(Debug, Args)]
 #[command(
+    arg_required_else_help = true,
+    about = "Detect and run configured Maven or Gradle build targets",
+    long_about = "Use build targets declared in rainy.yaml. CI profiles require the checked-in Maven or Gradle wrapper; local profiles may fall back to a system executable with a warning.",
+    after_help = "EXAMPLES:\n  Detect the backend build system:\n    rainy build detect --target backend\n\n  Run the strict CI checks:\n    rainy build check --target backend --profile ci\n\n  Build configured artifacts:\n    rainy build package --target backend --profile ci --json"
+)]
+pub struct BuildCommand {
+    #[command(subcommand)]
+    pub command: BuildSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BuildSubcommand {
+    #[command(
+        about = "Detect the target build system and wrapper",
+        after_help = "EXAMPLES:\n  Detect the backend build:\n    rainy build detect --target backend\n\n  Enforce the CI Wrapper contract:\n    rainy build detect --target backend --profile ci --json"
+    )]
+    Detect(BuildArgs),
+    #[command(
+        about = "Run the target's verification lifecycle",
+        after_help = "EXAMPLES:\n  Run local checks:\n    rainy build check --target backend\n\n  Run CI checks through the Wrapper:\n    rainy build check --target backend --profile ci --json"
+    )]
+    Check(BuildArgs),
+    #[command(
+        about = "Build the target's configured artifacts",
+        after_help = "EXAMPLES:\n  Package the backend:\n    rainy build package --target backend\n\n  Return the rainy.build.v1 report:\n    rainy build package --target backend --profile ci --json"
+    )]
+    Package(BuildArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// Build target declared under build.targets.
+    #[arg(long, value_name = "TARGET", default_value = "backend")]
+    pub target: String,
+
+    /// Execution profile; ci requires a checked-in wrapper.
+    #[arg(long, value_name = "PROFILE", default_value = "local", value_parser = ["local", "ci"])]
+    pub profile: String,
+}
+
+#[derive(Debug, Args)]
+#[command(
     about = "Generate audit and delivery evidence reports",
     after_help = "EXAMPLES:\n  Preview the default evidence report:\n    rainy evidence generate\n\n  Generate Markdown and JSON reports:\n    rainy evidence generate --format all --apply\n\n  Compatibility form without the generate subcommand:\n    rainy evidence --format json --apply"
 )]
@@ -1167,6 +1244,11 @@ pub struct SkillCommand {
 #[derive(Debug, Subcommand)]
 pub enum SkillSubcommand {
     #[command(
+        about = "Validate Skill routing cases and optionally score fixed-model results",
+        after_help = "EXAMPLES:\n  Validate routing cases:\n    rainy skill check --routing-cases .agents/skills/routing-cases.json --json\n\n  Score model-produced selections:\n    rainy skill check --routing-cases cases.json --results results.json --json"
+    )]
+    Check(SkillRoutingCheckArgs),
+    #[command(
         about = "Create and install a project Skill profile",
         long_about = "Explicitly create rainy-skills.yaml and install the selected project-scoped Skills.\n\nWhen the profile, target hosts, or project-owned Skills are omitted in a terminal, Rainy opens keyboard-driven selectors. Without --apply the reviewed selection is returned as a preview and an exact apply command. Interactive --apply runs ask for final confirmation before writing. Most users should run rainy skill install, which invokes this initialization automatically when the profile is missing.",
         after_help = "EXAMPLES:\n  Explicitly initialize with interactive selectors:\n    rainy skill init\n\n  Apply the interactive selection:\n    rainy skill init --apply\n\n  --yes is an alias for --apply:\n    rainy skill init --yes\n\n  Install Rainy plus one project-owned Skill for Codex:\n    rainy skill init --profile rainy --target codex --skill release-review --apply\n\n  Install the full workflow for multiple hosts without prompting:\n    rainy skill init --profile comet --target codex,claude,cursor --language zh --all-custom-skills --apply\n\n  Explicitly install no project-owned Skills:\n    rainy skill init --profile rainy --target codex --no-custom-skills --apply\n\n  Inspect the machine-readable non-interactive preview:\n    rainy skill init --dry-run --json"
@@ -1214,6 +1296,17 @@ pub enum SkillSubcommand {
         after_help = "EXAMPLES:\n  Preview removal:\n    rainy skill uninstall\n\n  Apply removal:\n    rainy skill uninstall --apply\n\n  Remove after reviewing managed-file drift:\n    rainy skill uninstall --force --apply"
     )]
     Uninstall(SkillChangeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SkillRoutingCheckArgs {
+    /// JSON file containing prompt and expected Skill routing cases.
+    #[arg(long, value_name = "CASES_FILE")]
+    pub routing_cases: PathBuf,
+
+    /// Optional JSON file mapping each prompt to the actual selected Skill ID or null.
+    #[arg(long, value_name = "RESULTS_FILE")]
+    pub results: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -1,7 +1,7 @@
 use crate::agent;
 use crate::cli::{
     SkillChangeArgs, SkillCommand, SkillCreateArgs, SkillInitArgs, SkillInstallArgs, SkillLanguage,
-    SkillProfile, SkillSubcommand, SkillTarget, SkillUpdateArgs,
+    SkillProfile, SkillRoutingCheckArgs, SkillSubcommand, SkillTarget, SkillUpdateArgs,
 };
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
@@ -145,6 +145,42 @@ pub struct SkillCheck {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRoutingReport {
+    pub protocol_version: String,
+    pub status: String,
+    pub cases_file: String,
+    pub evaluated: bool,
+    pub total: usize,
+    pub correct: usize,
+    pub accuracy: Option<f64>,
+    pub cases: Vec<SkillRoutingCaseResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRoutingCaseResult {
+    pub prompt: String,
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RoutingCasesFile {
+    schema_version: String,
+    cases: Vec<RoutingCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoutingCase {
+    prompt: String,
+    expected: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct CustomSkill {
     id: String,
@@ -174,6 +210,7 @@ pub fn handle_skill_command(
     no_color: bool,
 ) -> RainyResult<CommandOutput> {
     match command.command {
+        SkillSubcommand::Check(args) => check_routing(workspace, args),
         SkillSubcommand::Init(args) => init(workspace, args, progress, interactive, no_color),
         SkillSubcommand::Install(args) => install(workspace, args, progress, interactive, no_color),
         SkillSubcommand::Create(args) => create(workspace, args, progress),
@@ -183,6 +220,61 @@ pub fn handle_skill_command(
         SkillSubcommand::Update(args) => update(workspace, args, progress),
         SkillSubcommand::Uninstall(args) => uninstall(workspace, args, progress),
     }
+}
+
+fn check_routing(workspace: &Path, args: SkillRoutingCheckArgs) -> RainyResult<CommandOutput> {
+    let cases_path = workspace.join(&args.routing_cases);
+    let cases: RoutingCasesFile = serde_json::from_str(&std::fs::read_to_string(&cases_path)?)?;
+    if cases.schema_version != "pkulaw.skill-routing.v1" || cases.cases.is_empty() {
+        return Err(RainyError::config(
+            "SKILL_ROUTING_CASES_INVALID",
+            "routing cases must use pkulaw.skill-routing.v1 and contain at least one case",
+        ));
+    }
+    let actual_by_prompt: Option<BTreeMap<String, Option<String>>> = args
+        .results
+        .as_ref()
+        .map(|path| std::fs::read_to_string(workspace.join(path)))
+        .transpose()?
+        .map(|text| serde_json::from_str(&text))
+        .transpose()?;
+    let mut correct = 0;
+    let mut results = Vec::new();
+    for case in cases.cases {
+        let actual = actual_by_prompt
+            .as_ref()
+            .and_then(|values| values.get(&case.prompt).cloned())
+            .flatten();
+        let status = if actual_by_prompt.is_none() {
+            "validated"
+        } else if actual == case.expected {
+            correct += 1;
+            "passed"
+        } else {
+            "failed"
+        };
+        results.push(SkillRoutingCaseResult {
+            prompt: case.prompt,
+            expected: case.expected,
+            actual,
+            status: status.to_string(),
+        });
+    }
+    let evaluated = actual_by_prompt.is_some();
+    let total = results.len();
+    let failed = results.iter().any(|case| case.status == "failed");
+    Ok(CommandOutput::SkillRouting {
+        report: SkillRoutingReport {
+            protocol_version: "rainy.skill-routing.v1".to_string(),
+            status: if failed { "failed" } else { "passed" }.to_string(),
+            cases_file: args.routing_cases.to_string_lossy().replace('\\', "/"),
+            evaluated,
+            total,
+            correct,
+            accuracy: evaluated.then(|| correct as f64 / total as f64),
+            cases: results,
+        },
+    })
 }
 
 pub fn context_summary(workspace: &Path) -> RainyResult<Option<String>> {

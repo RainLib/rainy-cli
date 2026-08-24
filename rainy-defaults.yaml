@@ -3,10 +3,10 @@ kind: RainyDefaults
 
 metadata:
   name: rainy-official
-  version: 0.5.4
+  version: 0.6.0
 
 requires:
-  rainy: ">=0.5.0, <0.6.0"
+  rainy: ">=0.6.0, <0.7.0"
 
 paths:
   packs: community-packs

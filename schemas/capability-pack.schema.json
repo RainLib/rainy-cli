@@ -41,6 +41,9 @@
             "properties": {
               "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
               "source": { "type": "string", "minLength": 1 },
+              "sourceSkill": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+              "sourceRef": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
               "skillsPackage": { "type": "string", "pattern": "^skills@[^@*^~]+$" },
               "allowPrivateHttp": { "type": "boolean", "default": false },
               "description": { "type": "string" }

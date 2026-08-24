@@ -114,6 +114,9 @@ pub enum CommandOutput {
     Verify {
         report: VerifyReport,
     },
+    Build {
+        report: crate::build::BuildReport,
+    },
     Evidence {
         status: &'static str,
         files: Vec<String>,
@@ -144,6 +147,9 @@ pub enum CommandOutput {
     },
     Skill {
         report: crate::skills::SkillReport,
+    },
+    SkillRouting {
+        report: crate::skills::SkillRoutingReport,
     },
     Update {
         report: crate::update::UpdateReport,
@@ -224,6 +230,7 @@ impl CommandOutput {
             Self::Defaults { .. } => "defaults",
             Self::Doctor { .. } => "doctor",
             Self::Verify { .. } => "verify",
+            Self::Build { .. } => "build",
             Self::Evidence { .. } => "evidence",
             Self::Plugins { .. } => "plugins",
             Self::PluginRun { .. } => "plugin-run",
@@ -231,7 +238,7 @@ impl CommandOutput {
             Self::Schemas { .. } => "schemas",
             Self::SchemaValidation { .. } => "schema-validation",
             Self::AgentContext { .. } => "agent-context",
-            Self::Skill { .. } => "skill",
+            Self::Skill { .. } | Self::SkillRouting { .. } => "skill",
             Self::Update { .. } => "update",
             Self::Completion { .. } => "completion",
         }
@@ -250,9 +257,11 @@ impl CommandOutput {
             | Self::Evidence { status, .. } => status,
             Self::Doctor { report } => &report.status,
             Self::Verify { report } => &report.status,
+            Self::Build { report } => &report.status,
             Self::Conformance { report } => &report.status,
             Self::SchemaValidation { report } => &report.status,
             Self::Skill { report } => &report.status,
+            Self::SkillRouting { report } => &report.status,
             Self::Registry { report } => &report.status,
             Self::Source { report } => &report.status,
             Self::Defaults { report } => &report.status,
@@ -295,6 +304,7 @@ impl CommandOutput {
                 status: "dry-run", ..
             } => true,
             Self::Skill { report } => report.status == "dry-run",
+            Self::SkillRouting { .. } => false,
             Self::Source { report } => report.status == "dry-run",
             _ => false,
         }
@@ -366,6 +376,10 @@ impl CommandOutput {
             }
             Self::Doctor { report } => format!("doctor {}", report.status),
             Self::Verify { report } => format!("verify {} {}", report.profile, report.status),
+            Self::Build { report } => format!(
+                "build {} {} {}",
+                report.target, report.operation, report.status
+            ),
             Self::Evidence { files, .. } => format!("generated {} evidence files", files.len()),
             Self::Plugins { plugins } => format!("listed {} plugins", plugins.len()),
             Self::PluginRun { plugin, .. } => format!("ran plugin {plugin}"),
@@ -375,6 +389,9 @@ impl CommandOutput {
             Self::AgentContext { .. } => "rendered agent context".to_string(),
             Self::Skill { report } => {
                 format!("skill {} {}", report.operation, report.status)
+            }
+            Self::SkillRouting { report } => {
+                format!("{} routing cases ({})", report.total, report.status)
             }
             Self::Update { report } => {
                 if report.update_available {
@@ -947,6 +964,34 @@ impl CommandOutput {
                     vec![("Profile", report.profile.clone())],
                 );
             }
+            Self::Build { report } => {
+                print_title("Project build");
+                print_summary(&[
+                    ("Status", result_status_label(&report.status).to_string()),
+                    ("Target", report.target.clone()),
+                    ("Operation", report.operation.clone()),
+                    ("System", report.system.clone()),
+                    ("Root", report.root.clone()),
+                    ("Executable", report.executable.clone()),
+                    ("Wrapper", report.wrapper.to_string()),
+                ]);
+                for warning in &report.warnings {
+                    print_details(&format!("WARN {warning}"));
+                }
+                if verbose {
+                    if let Some(stdout) = &report.stdout
+                        && !stdout.is_empty()
+                    {
+                        print_details(stdout);
+                    }
+                    if let Some(stderr) = &report.stderr
+                        && !stderr.is_empty()
+                    {
+                        print_details(stderr);
+                    }
+                }
+                print_paths("Artifacts", &report.artifacts);
+            }
             Self::Evidence {
                 status,
                 files,
@@ -1139,6 +1184,13 @@ impl CommandOutput {
                     println!();
                     println!("Details");
                     println!("  Run with --verbose to show upstream commands and every path.");
+                }
+            }
+            Self::SkillRouting { report } => {
+                println!("Skill routing {}", report.status);
+                println!("  Cases: {}", report.total);
+                if let Some(accuracy) = report.accuracy {
+                    println!("  Accuracy: {:.2}%", accuracy * 100.0);
                 }
             }
             Self::Update { report } => {
