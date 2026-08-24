@@ -1055,6 +1055,12 @@ fn variables_for(
     inputs: &std::collections::BTreeMap<String, CapabilityInput>,
     provider: &str,
 ) -> serde_json::Value {
+    let backend = config.paths.backend.trim_matches('/');
+    let backend_prefix = if backend.is_empty() || backend == "." {
+        String::new()
+    } else {
+        format!("{backend}/")
+    };
     let mut input_values = serde_json::Map::new();
     for (key, input) in inputs {
         if let Some(value) = &input.default {
@@ -1064,6 +1070,7 @@ fn variables_for(
     json!({
         "paths": {
             "backend": config.paths.backend,
+            "backendPrefix": backend_prefix,
             "frontend": config.paths.frontend,
             "generated": config.paths.generated,
             "evidence": config.paths.evidence
@@ -1741,13 +1748,12 @@ fn template_render(ctx: &ActionContext<'_>, input: Value) -> RainyResult<ChangeS
         };
         if let Some(existing) = ctx.read_file(&target_rel)?
             && !ctx.force
+            && existing != content
         {
-            if existing != content {
-                return Err(RainyError::action(
-                    "TEMPLATE_CONFLICT",
-                    format!("template target already exists with different content: {target_rel}"),
-                ));
-            }
+            return Err(RainyError::action(
+                "TEMPLATE_CONFLICT",
+                format!("template target already exists with different content: {target_rel}"),
+            ));
         }
         changes.push(patch::change_for_file(
             ctx.workspace,

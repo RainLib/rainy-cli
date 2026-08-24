@@ -337,10 +337,7 @@ fn operation_args(
         }
         _ => return Vec::new(),
     };
-    defaults
-        .into_iter()
-        .map(|value| (*value).to_string())
-        .collect()
+    defaults.iter().map(|value| (*value).to_string()).collect()
 }
 
 fn collect_artifacts(workspace: &Path, target: &BuildTarget) -> RainyResult<Vec<String>> {

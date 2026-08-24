@@ -36,12 +36,21 @@ if grep -Eq '^  (branches|pull_request|pull_request_target|schedule|workflow_dis
   exit 1
 fi
 
-for workflow in .github/workflows/ci.yml .github/workflows/security.yml; do
-  grep -q '^  workflow_dispatch:$' "$workflow"
-  if grep -Eq '^  (push|pull_request|pull_request_target|schedule):' "$workflow"; then
-    echo "release test: $workflow has an automatic trigger" >&2
-    exit 1
-  fi
-done
+CI_WORKFLOW=".github/workflows/ci.yml"
+grep -q '^  pull_request:$' "$CI_WORKFLOW"
+grep -q '^  push:$' "$CI_WORKFLOW"
+grep -q '^    branches: \[main\]$' "$CI_WORKFLOW"
+grep -q '^  workflow_dispatch:$' "$CI_WORKFLOW"
+if grep -Eq '^  (pull_request_target|schedule):' "$CI_WORKFLOW"; then
+  echo "release test: $CI_WORKFLOW has an unsupported trigger" >&2
+  exit 1
+fi
+
+SECURITY_WORKFLOW=".github/workflows/security.yml"
+grep -q '^  workflow_dispatch:$' "$SECURITY_WORKFLOW"
+if grep -Eq '^  (push|pull_request|pull_request_target|schedule):' "$SECURITY_WORKFLOW"; then
+  echo "release test: $SECURITY_WORKFLOW has an unexpected automatic trigger" >&2
+  exit 1
+fi
 
 printf '%s\n' 'release input tests passed'

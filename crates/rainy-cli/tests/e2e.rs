@@ -1478,7 +1478,7 @@ providers:
         - id: provider-selection
           uses: yaml.merge
           with:
-            file: apps/backend/src/main/resources/application.yml
+            file: "{{ paths.backendPrefix }}src/main/resources/application.yml"
             mergeStrategy: overwrite
             patch:
               demo:
@@ -1496,7 +1496,7 @@ providers:
         - id: provider-selection
           uses: yaml.merge
           with:
-            file: apps/backend/src/main/resources/application.yml
+            file: "{{ paths.backendPrefix }}src/main/resources/application.yml"
             mergeStrategy: overwrite
             patch:
               demo:

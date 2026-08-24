@@ -2111,13 +2111,15 @@ fn install_discovered_registry_skills(
             };
             let installed = install_external_registry_skill(
                 workspace,
-                &item.target,
-                &item.id,
-                source,
-                skills_package,
-                source_skill,
-                source_ref.as_deref(),
-                sha256.as_deref(),
+                ExternalRegistrySkillInstall {
+                    target: &item.target,
+                    id: &item.id,
+                    source,
+                    skills_package,
+                    source_skill,
+                    source_ref: source_ref.as_deref(),
+                    expected_sha256: sha256.as_deref(),
+                },
             )?;
             item.digest = installed.digest;
             item.source_commit = installed.source_commit;
@@ -2276,16 +2278,29 @@ fn declared_external_skill_digest(
     hex(&digest.finalize())
 }
 
+struct ExternalRegistrySkillInstall<'a> {
+    target: &'a str,
+    id: &'a str,
+    source: &'a str,
+    skills_package: &'a str,
+    source_skill: &'a str,
+    source_ref: Option<&'a str>,
+    expected_sha256: Option<&'a str>,
+}
+
 fn install_external_registry_skill(
     workspace: &Path,
-    target: &str,
-    id: &str,
-    source: &str,
-    skills_package: &str,
-    source_skill: &str,
-    source_ref: Option<&str>,
-    expected_sha256: Option<&str>,
+    request: ExternalRegistrySkillInstall<'_>,
 ) -> RainyResult<InstalledExternalRegistrySkill> {
+    let ExternalRegistrySkillInstall {
+        target,
+        id,
+        source,
+        skills_package,
+        source_skill,
+        source_ref,
+        expected_sha256,
+    } = request;
     let legacy_lock = crate::skills::capture_legacy_upstream_lock(workspace)?;
     let agent = skills_agent_name(target)?;
     let prepared_source = prepare_external_skill_source(source, source_ref)?;
