@@ -3347,6 +3347,135 @@ fn doctor_fails_when_installed_capability_artifact_is_missing() {
 }
 
 #[test]
+fn doctor_reports_selected_provider_required_configuration_and_conflicts() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().to_string_lossy().to_string();
+    run(&["--workspace", &root, "new", "provider-check", "--apply"]);
+    let app = temp.path().join("provider-check");
+    let pack = app.join("provider-packs/provider");
+    write(
+        &pack.join("pack.yaml"),
+        "apiVersion: rainy.dev/v1\nkind: CapabilityPack\nmetadata: { name: provider, version: 1.0.0 }\nexports:\n  capabilities: [capabilities/provider-check.yaml]\n  validators: []\n  skills: []\n  externalSkills: []\n  plugins: []\n",
+    );
+    write(
+        &pack.join("capabilities/provider-check.yaml"),
+        "apiVersion: rainy.dev/v1\nkind: Capability\nid: provider-check\nname: Provider check\nversion: 1.0.0\ndescription: Doctor fixture\ndependsOn: []\nproviders:\n  - id: alpha\n    requiredConfig:\n      - key: pkulaw.provider-check.alpha.url\n        required: true\n        type: uri\n    actions:\n      install:\n        - id: provider-dependency\n          uses: jvm.addDependency\n          with: { target: backend, groupId: com.example, artifactId: alpha-provider, configuration: implementation }\n        - id: provider-selection\n          uses: yaml.merge\n          with:\n            file: src/main/resources/application.yml\n            mergeStrategy: overwrite\n            patch: { pkulaw: { provider-check: { enabled: true, provider: alpha, alpha: { url: \"${ALPHA_URL:}\" } } } }\n  - id: beta\n    requiredConfig: []\n    actions:\n      install:\n        - id: provider-dependency\n          uses: jvm.addDependency\n          with: { target: backend, groupId: com.example, artifactId: beta-provider, configuration: implementation }\nactions: { install: [] }\nvalidations: []\ndoctor: { checks: [] }\nagentRules: []\npolicy: {}\n",
+    );
+    write(
+        &app.join("build.gradle"),
+        "plugins { id 'java' }\nrepositories { mavenCentral() }\n",
+    );
+    write(
+        &app.join("settings.gradle"),
+        "rootProject.name = 'provider-check'\n",
+    );
+    write(
+        &app.join("src/main/resources/application.yml"),
+        "spring: {}\n",
+    );
+    let rainy_config = app.join("rainy.yaml");
+    let config = fs::read_to_string(&rainy_config)
+        .expect("rainy config")
+        .replace("backend: apps/backend", "backend: .")
+        .replace("    - apps/backend/src/**", "    - src/**")
+        .replace("    - apps/backend/pom.xml", "    - build.gradle");
+    fs::write(
+        &rainy_config,
+        format!(
+            "{config}\nbuild:\n  targets:\n    backend:\n      root: .\n      system: gradle\n"
+        ),
+    )
+    .expect("add build target");
+    inject_registry_source(&app, "provider-packs/provider");
+    let app_path = app.to_string_lossy().to_string();
+    run(&[
+        "--workspace",
+        &app_path,
+        "add",
+        "capability",
+        "provider-check",
+        "--provider",
+        "alpha",
+        "--apply",
+    ]);
+    let doctor = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "doctor",
+            "--scope",
+            "project",
+            "--capability",
+            "provider-check",
+            "--json",
+        ])
+        .output()
+        .expect("run doctor");
+    assert!(
+        !doctor.status.success(),
+        "empty required environment default must fail"
+    );
+    assert!(
+        command_data(&doctor)["report"]["checks"]
+            .to_string()
+            .contains("alpha.url")
+    );
+
+    let application = app.join("src/main/resources/application.yml");
+    let configured = fs::read_to_string(&application)
+        .expect("application")
+        .replace("${ALPHA_URL:}", "https://provider.example.test");
+    fs::write(&application, configured).expect("configure provider");
+    let passing = run(&[
+        "--workspace",
+        &app_path,
+        "doctor",
+        "--scope",
+        "project",
+        "--capability",
+        "provider-check",
+        "--json",
+    ]);
+    let passing_report = &command_data(&passing)["report"];
+    assert!(
+        passing_report["checks"]
+            .as_array()
+            .expect("doctor checks")
+            .iter()
+            .all(|check| check["status"] != "failed"),
+        "configured provider doctor failed: {passing_report}"
+    );
+    assert!(
+        passing_report["checks"]
+            .to_string()
+            .contains("provider.configuration")
+    );
+
+    let mut build = fs::read_to_string(app.join("build.gradle")).expect("build");
+    build.push_str("dependencies { implementation 'com.example:beta-provider:1.0' }\n");
+    fs::write(app.join("build.gradle"), build).expect("add conflicting provider");
+    let conflict = rainy()
+        .args([
+            "--workspace",
+            &app_path,
+            "doctor",
+            "--scope",
+            "project",
+            "--capability",
+            "provider-check",
+            "--json",
+        ])
+        .output()
+        .expect("run conflict doctor");
+    assert!(!conflict.status.success());
+    assert!(
+        command_data(&conflict)["report"]["checks"]
+            .to_string()
+            .contains("provider.conflict")
+    );
+}
+
+#[test]
 fn verify_ci_profile_rejects_unknown_steps() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().to_string_lossy().to_string();

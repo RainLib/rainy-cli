@@ -3,7 +3,7 @@ use crate::config;
 use crate::error::{RainyError, RainyResult};
 use crate::output::CommandOutput;
 use crate::progress::ProgressReporter;
-use crate::registry::{CapabilityDefinition, DoctorCheckSpec, RegistryClient};
+use crate::registry::{CapabilityDefinition, DoctorCheckSpec, RegistryClient, RequiredConfig};
 use handlebars::Handlebars;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -327,7 +327,7 @@ pub fn run_doctor(workspace: &Path, capability: Option<&str>) -> RainyResult<Doc
         if capability.is_some_and(|wanted| wanted != id) {
             continue;
         }
-        for artifact in locked.artifacts {
+        for artifact in &locked.artifacts {
             checks.push(check_exists(
                 workspace,
                 &artifact,
@@ -342,10 +342,16 @@ pub fn run_doctor(workspace: &Path, capability: Option<&str>) -> RainyResult<Doc
                         &project_config,
                         &definition,
                     )?);
+                    checks.extend(run_provider_checks(
+                        workspace,
+                        &project_config,
+                        &definition,
+                        locked.provider.as_deref(),
+                    ));
                 }
                 Err(err) => checks.push(DoctorCheckResult {
                     id: format!("capability.definition:{id}"),
-                    status: "warning".to_string(),
+                    status: "failed".to_string(),
                     message: err.to_string(),
                 }),
             }
@@ -567,6 +573,269 @@ fn run_capability_check(
             status: "warning".to_string(),
             message: format!("unknown doctor check type: {other}"),
         }),
+    }
+}
+
+fn run_provider_checks(
+    workspace: &Path,
+    config: &config::ProjectConfig,
+    capability: &CapabilityDefinition,
+    selected: Option<&str>,
+) -> Vec<DoctorCheckResult> {
+    if capability.providers.is_empty() {
+        return Vec::new();
+    }
+    let mut checks = Vec::new();
+    let Some(selected) = selected else {
+        checks.push(failed_check(
+            "provider.selection",
+            "capability lock has no selected provider",
+        ));
+        return checks;
+    };
+    let Some(provider) = capability
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == selected)
+    else {
+        checks.push(failed_check(
+            "provider.selection",
+            format!("locked provider {selected} is absent from capability definition"),
+        ));
+        return checks;
+    };
+    checks.push(passed_check(
+        "provider.selection",
+        format!("selected provider {selected} is defined"),
+    ));
+
+    let Some(dependency_action) = provider
+        .actions
+        .install
+        .iter()
+        .find(|action| action.uses == "jvm.addDependency")
+    else {
+        checks.push(failed_check(
+            "provider.dependency",
+            "selected provider has no JVM dependency action",
+        ));
+        return checks;
+    };
+    let target_name = yaml_string(&dependency_action.with_value, "target").unwrap_or("backend");
+    let Some(target) = config.build.targets.get(target_name) else {
+        checks.push(failed_check(
+            "provider.dependency",
+            format!("build target {target_name} is missing"),
+        ));
+        return checks;
+    };
+    let (system, root) = match crate::build::resolve_target_definition(workspace, target) {
+        Ok(value) => value,
+        Err(error) => {
+            checks.push(failed_check("provider.dependency", error.body().message));
+            return checks;
+        }
+    };
+    let descriptor = match system {
+        config::BuildSystem::Maven => root.join("pom.xml"),
+        config::BuildSystem::Gradle => root.join("build.gradle"),
+        config::BuildSystem::Auto => unreachable!(),
+    };
+    let content = match std::fs::read_to_string(&descriptor) {
+        Ok(value) => value,
+        Err(_) => {
+            checks.push(failed_check(
+                "provider.dependency",
+                format!("build descriptor {} is missing", descriptor.display()),
+            ));
+            return checks;
+        }
+    };
+    let group = yaml_string(&dependency_action.with_value, "groupId").unwrap_or("");
+    let artifact = yaml_string(&dependency_action.with_value, "artifactId").unwrap_or("");
+    if group.is_empty() || artifact.is_empty() {
+        checks.push(failed_check(
+            "provider.dependency",
+            "selected provider action has no complete Maven coordinate",
+        ));
+        return checks;
+    }
+    if jvm_has_dependency(&content, system, group, artifact) {
+        checks.push(passed_check(
+            "provider.dependency",
+            format!("selected dependency {group}:{artifact} is present"),
+        ));
+    } else {
+        checks.push(failed_check(
+            "provider.dependency",
+            format!("selected dependency {group}:{artifact} is missing"),
+        ));
+    }
+    for other in capability
+        .providers
+        .iter()
+        .filter(|candidate| candidate.id != selected)
+    {
+        if let Some(action) = other
+            .actions
+            .install
+            .iter()
+            .find(|action| action.uses == "jvm.addDependency")
+        {
+            if let (Some(other_group), Some(other_artifact)) = (
+                yaml_string(&action.with_value, "groupId"),
+                yaml_string(&action.with_value, "artifactId"),
+            ) {
+                if jvm_has_dependency(&content, system, other_group, other_artifact) {
+                    checks.push(failed_check(
+                        "provider.conflict",
+                        format!("another provider dependency is installed: {}", other.id),
+                    ));
+                }
+            }
+        }
+    }
+    if !checks.iter().any(|check| check.id == "provider.conflict") {
+        checks.push(passed_check(
+            "provider.conflict",
+            "no competing provider dependency is installed",
+        ));
+    }
+
+    let application = workspace
+        .join(&config.paths.backend)
+        .join("src/main/resources/application.yml");
+    let source = match std::fs::read_to_string(&application) {
+        Ok(value) => value,
+        Err(_) => {
+            checks.push(failed_check(
+                "provider.configuration",
+                "application.yml is missing",
+            ));
+            return checks;
+        }
+    };
+    let mut documents = Vec::new();
+    for document in serde_yaml::Deserializer::from_str(&source) {
+        match serde_yaml::Value::deserialize(document) {
+            Ok(value) => documents.push(value),
+            Err(_) => {
+                checks.push(failed_check(
+                    "provider.configuration",
+                    "application.yml is invalid",
+                ));
+                return checks;
+            }
+        }
+    }
+    let prefix = format!(
+        "pkulaw.{}",
+        capability
+            .id
+            .strip_prefix("pkulaw-")
+            .unwrap_or(&capability.id)
+    );
+    let enabled_key = format!("{prefix}.enabled");
+    let provider_key = format!("{prefix}.provider");
+    let enabled = yaml_path_in_documents(&documents, &enabled_key);
+    let configured_provider = yaml_path_in_documents(&documents, &provider_key);
+    if enabled == Some(&serde_yaml::Value::Bool(true))
+        && configured_provider.and_then(serde_yaml::Value::as_str) == Some(selected)
+    {
+        checks.push(passed_check(
+            "provider.configuration",
+            format!("{prefix} is enabled and selects {selected}"),
+        ));
+    } else {
+        checks.push(failed_check(
+            "provider.configuration",
+            format!("{prefix} must be enabled and select {selected}"),
+        ));
+    }
+    for required in &provider.required_config {
+        let (key, required) = match required {
+            RequiredConfig::Key(key) => (key.as_str(), true),
+            RequiredConfig::Detail(detail) => (detail.key.as_str(), detail.required),
+        };
+        if !required {
+            continue;
+        }
+        let present = yaml_path_in_documents(&documents, key).is_some_and(config_value_present);
+        if present {
+            checks.push(passed_check(
+                &format!("provider.required:{key}"),
+                format!("required configuration {key} is declared"),
+            ));
+        } else {
+            checks.push(failed_check(
+                &format!("provider.required:{key}"),
+                format!("required configuration {key} is absent or empty"),
+            ));
+        }
+    }
+    checks
+}
+
+fn yaml_string<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a str> {
+    value
+        .as_mapping()?
+        .get(serde_yaml::Value::String(key.to_string()))?
+        .as_str()
+}
+
+fn yaml_path_in_documents<'a>(
+    documents: &'a [serde_yaml::Value],
+    path: &str,
+) -> Option<&'a serde_yaml::Value> {
+    let mut found = None;
+    for document in documents {
+        let mut current = document;
+        let mut valid = true;
+        for segment in path.split('.') {
+            let Some(next) = current
+                .as_mapping()
+                .and_then(|mapping| mapping.get(serde_yaml::Value::String(segment.to_string())))
+            else {
+                valid = false;
+                break;
+            };
+            current = next;
+        }
+        if valid {
+            found = Some(current);
+        }
+    }
+    found
+}
+
+fn config_value_present(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => false,
+        serde_yaml::Value::String(text) => {
+            let value = text.trim();
+            !value.is_empty() && !value.ends_with(":}") && value != "${}"
+        }
+        _ => true,
+    }
+}
+
+fn jvm_has_dependency(
+    content: &str,
+    system: config::BuildSystem,
+    group: &str,
+    artifact: &str,
+) -> bool {
+    match system {
+        config::BuildSystem::Maven => content.split("</dependency>").any(|block| {
+            let block = block.rsplit("<dependency>").next().unwrap_or("");
+            block.contains(&format!("<groupId>{group}</groupId>"))
+                && block.contains(&format!("<artifactId>{artifact}</artifactId>"))
+        }),
+        config::BuildSystem::Gradle => content.lines().any(|line| {
+            let line = line.split("//").next().unwrap_or("").trim();
+            line.contains(&format!("{group}:{artifact}")) && !line.starts_with('#')
+        }),
+        config::BuildSystem::Auto => false,
     }
 }
 
